@@ -3,7 +3,10 @@ use rand::{Rng, SeedableRng, rngs::SmallRng};
 use std::time::Duration;
 
 pub const FOOD_RADIUS: f32 = 3.4;
+<<<<<<< HEAD
 pub const FEEDER_FOOD_SURFACE_GAP: f32 = 2.2;
+=======
+>>>>>>> af5daf2225def6f22646cd30380798fc0897eb11
 pub const LIQUID_FLOW_SCALE: f32 = 340.0;
 pub const LIQUID_FLOW_SPEED: f32 = 0.08;
 pub const LIQUID_CAUSTIC_STRENGTH: f32 = 0.16;
@@ -21,10 +24,13 @@ const CELL_CURRENT_SPEED: f32 = 24.0;
 const OBSTACLE_CURRENT_SPEED: f32 = 22.0;
 const GROWER_CURRENT_SPEED: f32 = 10.0;
 const FOOD_PUSH_STRENGTH: f32 = 58.0;
+<<<<<<< HEAD
 const GROWER_FOOD_PUSH_STRENGTH: f32 = 42.0;
 const FOOD_SOLID_SPAWN_MARGIN: f32 = 18.0;
 const CELL_AVOIDANCE_MARGIN: f32 = 92.0;
 const CELL_AVOIDANCE_STRENGTH: f32 = 1.15;
+=======
+>>>>>>> af5daf2225def6f22646cd30380798fc0897eb11
 const CELL_OBSTACLE_RESTITUTION: f32 = 0.35;
 const COLLISION_RESTITUTION: f32 = 0.18;
 const COLLISION_PUSH: f32 = 0.54;
@@ -172,6 +178,7 @@ impl FoodShape {
             _ => FoodShape::Pebble,
         }
     }
+<<<<<<< HEAD
 
     fn random_feeder_food(rng: &mut SmallRng) -> Self {
         match rng.random_range(0..5) {
@@ -182,6 +189,8 @@ impl FoodShape {
             _ => FoodShape::Pebble,
         }
     }
+=======
+>>>>>>> af5daf2225def6f22646cd30380798fc0897eb11
 }
 
 impl FoodKind {
@@ -204,12 +213,19 @@ impl FoodKind {
 impl WorldState {
     pub fn new(config: &SimConfig) -> Self {
         let mut rng = SmallRng::seed_from_u64(config.seed);
+<<<<<<< HEAD
         let food_grower_count = config.food_growers.max(1);
+=======
+>>>>>>> af5daf2225def6f22646cd30380798fc0897eb11
         let cells = CellStore::new(config.cells, config.width, config.height, &mut rng);
         let food = FoodStore::new(config.food, config.width, config.height, &mut rng);
         let obstacles = ObstacleStore::new(config.obstacles, config.width, config.height, &mut rng);
         let food_growers =
+<<<<<<< HEAD
             FoodGrowerStore::new(food_grower_count, config.width, config.height, &mut rng);
+=======
+            FoodGrowerStore::new(config.food_growers, config.width, config.height, &mut rng);
+>>>>>>> af5daf2225def6f22646cd30380798fc0897eb11
         let mut grid = SpatialGrid::new(config.width, config.height, GRID_CELL_SIZE);
         grid.rebuild(&food);
         let mut cell_grid = CellGrid::new(config.width, config.height, CELL_GRID_SIZE);
@@ -228,12 +244,18 @@ impl WorldState {
             elapsed: 0.0,
             max_food: config
                 .food
+<<<<<<< HEAD
                 .saturating_add(food_grower_count.saturating_mul(80))
                 .max(config.food),
         };
         world.relocate_world_food_away_from_solids();
         world.grid.rebuild(&world.food);
         world
+=======
+                .saturating_add(config.food_growers.saturating_mul(80))
+                .max(config.food),
+        }
+>>>>>>> af5daf2225def6f22646cd30380798fc0897eb11
     }
 
     pub fn update(&mut self, dt: f32) {
@@ -244,7 +266,10 @@ impl WorldState {
         self.grow_food(dt);
         self.advect_food(dt);
         self.push_food_from_obstacles(dt);
+<<<<<<< HEAD
         self.push_food_from_food_growers(dt);
+=======
+>>>>>>> af5daf2225def6f22646cd30380798fc0897eb11
         self.grid.rebuild(&self.food);
         self.decay_visuals(dt);
 
@@ -270,6 +295,7 @@ impl WorldState {
                 )
             };
 
+<<<<<<< HEAD
             let desired_velocity = (Vec2::new(desired_x, desired_y)
                 + self.cell_avoidance_velocity(i, Vec2::new(desired_x, desired_y)))
             .clamp_length_max(speed * 1.2);
@@ -281,22 +307,38 @@ impl WorldState {
             self.cells.vy[i] = (self.cells.vy[i]
                 + (desired_velocity.y + current.y - self.cells.vy[i]) * steer)
                 * DRAG;
+=======
+            let current = liquid_current_at(Vec2::new(x, y), self.elapsed) * CELL_CURRENT_SPEED;
+            let steer = (STEER_GAIN * dt).clamp(0.0, 1.0);
+            self.cells.vx[i] =
+                (self.cells.vx[i] + (desired_x + current.x - self.cells.vx[i]) * steer) * DRAG;
+            self.cells.vy[i] =
+                (self.cells.vy[i] + (desired_y + current.y - self.cells.vy[i]) * steer) * DRAG;
+>>>>>>> af5daf2225def6f22646cd30380798fc0897eb11
 
             self.cells.x[i] += self.cells.vx[i] * dt;
             self.cells.y[i] += self.cells.vy[i] * dt;
 
             self.bounce_cell(i);
             self.resolve_cell_obstacles(i);
+<<<<<<< HEAD
             self.resolve_cell_food_growers(i);
+=======
+>>>>>>> af5daf2225def6f22646cd30380798fc0897eb11
 
             if let Some((food_index, dist_sq)) = target_food {
                 let eat_radius = self.cells.collision_bound_radius(i) + FOOD_RADIUS;
                 if dist_sq <= eat_radius * eat_radius {
+<<<<<<< HEAD
                     if self.food.is_feeder_food(food_index) {
                         self.food.deactivate(food_index);
                     } else {
                         self.respawn_world_food(food_index);
                     }
+=======
+                    self.food
+                        .respawn(food_index, self.width, self.height, &mut self.rng);
+>>>>>>> af5daf2225def6f22646cd30380798fc0897eb11
                     self.cells.energy[i] = (self.cells.energy[i] + 1.0).min(255.0);
                 }
             }
@@ -342,7 +384,10 @@ impl WorldState {
         let half_h = self.height * 0.5;
 
         for i in 0..self.food_growers.len() {
+<<<<<<< HEAD
             let extent = self.food_growers.extent_radius(i);
+=======
+>>>>>>> af5daf2225def6f22646cd30380798fc0897eb11
             let position = Vec2::new(self.food_growers.x[i], self.food_growers.y[i]);
             let current = liquid_current_at(position, self.elapsed + self.food_growers.phase[i])
                 * GROWER_CURRENT_SPEED;
@@ -355,13 +400,21 @@ impl WorldState {
                 &mut self.food_growers.x[i],
                 &mut self.food_growers.vx[i],
                 half_w,
+<<<<<<< HEAD
                 extent,
+=======
+                self.food_growers.radius[i],
+>>>>>>> af5daf2225def6f22646cd30380798fc0897eb11
             );
             clamp_bounce_axis(
                 &mut self.food_growers.y[i],
                 &mut self.food_growers.vy[i],
                 half_h,
+<<<<<<< HEAD
                 extent,
+=======
+                self.food_growers.radius[i],
+>>>>>>> af5daf2225def6f22646cd30380798fc0897eb11
             );
         }
     }
@@ -369,13 +422,18 @@ impl WorldState {
     fn grow_food(&mut self, dt: f32) {
         for i in 0..self.food_growers.len() {
             self.food_growers.timer[i] -= dt;
+<<<<<<< HEAD
             if self.food_growers.timer[i] > 0.0
                 || (self.food.len() >= self.max_food && !self.food.has_inactive_slot())
             {
+=======
+            if self.food_growers.timer[i] > 0.0 || self.food.len() >= self.max_food {
+>>>>>>> af5daf2225def6f22646cd30380798fc0897eb11
                 continue;
             }
 
             self.food_growers.timer[i] = self.food_growers.interval[i];
+<<<<<<< HEAD
             let branch_range = self.food_growers.branch_range(i);
             if branch_range.is_empty() {
                 continue;
@@ -419,6 +477,23 @@ impl WorldState {
                     &mut self.rng,
                 );
             }
+=======
+            let angle = self.rng.random_range(0.0..std::f32::consts::TAU);
+            let distance = self.rng.random_range(
+                (self.food_growers.radius[i] * 0.75)..(self.food_growers.radius[i] * 1.55),
+            );
+            let (s, c) = angle.sin_cos();
+            let x = self.food_growers.x[i] + c * distance;
+            let y = self.food_growers.y[i] + s * distance;
+            self.food.push_at(
+                x,
+                y,
+                FoodKind::Grass,
+                self.width,
+                self.height,
+                &mut self.rng,
+            );
+>>>>>>> af5daf2225def6f22646cd30380798fc0897eb11
         }
     }
 
@@ -427,6 +502,7 @@ impl WorldState {
         let half_h = self.height * 0.5;
 
         for i in 0..self.food.len() {
+<<<<<<< HEAD
             if !self.food.active[i] {
                 continue;
             }
@@ -450,11 +526,16 @@ impl WorldState {
                 continue;
             }
 
+=======
+>>>>>>> af5daf2225def6f22646cd30380798fc0897eb11
             let position = Vec2::new(self.food.x[i], self.food.y[i]);
             let current = liquid_current_at(position, self.elapsed) * FOOD_CURRENT_SPEED;
             self.food.x[i] += current.x * dt;
             self.food.y[i] += current.y * dt;
+<<<<<<< HEAD
             self.food.rotation[i] += self.food.spin[i] * dt;
+=======
+>>>>>>> af5daf2225def6f22646cd30380798fc0897eb11
 
             wrap_axis(&mut self.food.x[i], half_w, FOOD_RADIUS);
             wrap_axis(&mut self.food.y[i], half_h, FOOD_RADIUS);
@@ -470,10 +551,13 @@ impl WorldState {
             let radius = self.obstacles.radius[obstacle_index] + FOOD_RADIUS + 18.0;
 
             for food_index in 0..self.food.len() {
+<<<<<<< HEAD
                 if !self.food.active[food_index] || self.food.is_feeder_food(food_index) {
                     continue;
                 }
 
+=======
+>>>>>>> af5daf2225def6f22646cd30380798fc0897eb11
                 let delta = Vec2::new(self.food.x[food_index], self.food.y[food_index]) - center;
                 let dist_sq = delta.length_squared();
                 if dist_sq >= radius * radius {
@@ -492,6 +576,7 @@ impl WorldState {
         }
     }
 
+<<<<<<< HEAD
     fn push_food_from_food_growers(&mut self, dt: f32) {
         for grower_index in 0..self.food_growers.len() {
             let center = Vec2::new(
@@ -523,6 +608,8 @@ impl WorldState {
         }
     }
 
+=======
+>>>>>>> af5daf2225def6f22646cd30380798fc0897eb11
     fn resolve_cell_obstacles(&mut self, cell_index: usize) {
         for obstacle_index in 0..self.obstacles.len() {
             let dx = self.cells.x[cell_index] - self.obstacles.x[obstacle_index];
@@ -556,6 +643,7 @@ impl WorldState {
         }
     }
 
+<<<<<<< HEAD
     fn resolve_cell_food_growers(&mut self, cell_index: usize) {
         for grower_index in 0..self.food_growers.len() {
             let grower_x = self.food_growers.x[grower_index];
@@ -807,6 +895,8 @@ impl WorldState {
         avoidance
     }
 
+=======
+>>>>>>> af5daf2225def6f22646cd30380798fc0897eb11
     fn decay_visuals(&mut self, dt: f32) {
         let decay = (1.0 - JELLY_DECAY * dt).clamp(0.0, 1.0);
 
@@ -1150,6 +1240,7 @@ pub struct FoodStore {
     pub kind: Vec<FoodKind>,
     pub shape: Vec<FoodShape>,
     pub phase: Vec<f32>,
+<<<<<<< HEAD
     pub rotation: Vec<f32>,
     pub spin: Vec<f32>,
     pub growth: Vec<f32>,
@@ -1158,6 +1249,8 @@ pub struct FoodStore {
     pub anchor_angle: Vec<f32>,
     pub anchor_distance: Vec<f32>,
     pub anchor_lateral: Vec<f32>,
+=======
+>>>>>>> af5daf2225def6f22646cd30380798fc0897eb11
 }
 
 impl FoodStore {
@@ -1168,6 +1261,7 @@ impl FoodStore {
             kind: Vec::with_capacity(count),
             shape: Vec::with_capacity(count),
             phase: Vec::with_capacity(count),
+<<<<<<< HEAD
             rotation: Vec::with_capacity(count),
             spin: Vec::with_capacity(count),
             growth: Vec::with_capacity(count),
@@ -1176,6 +1270,8 @@ impl FoodStore {
             anchor_angle: Vec::with_capacity(count),
             anchor_distance: Vec::with_capacity(count),
             anchor_lateral: Vec::with_capacity(count),
+=======
+>>>>>>> af5daf2225def6f22646cd30380798fc0897eb11
         };
 
         for index in 0..count {
@@ -1199,6 +1295,7 @@ impl FoodStore {
         self.shape.push(FoodShape::random(rng));
         self.phase
             .push(rng.random_range(0.0..std::f32::consts::TAU));
+<<<<<<< HEAD
         self.rotation
             .push(rng.random_range(0.0..std::f32::consts::TAU));
         self.spin.push(random_food_spin(rng));
@@ -1218,12 +1315,22 @@ impl FoodStore {
         anchor_angle: f32,
         anchor_distance: f32,
         anchor_lateral: f32,
+=======
+    }
+
+    fn push_at(
+        &mut self,
+        x: f32,
+        y: f32,
+        kind: FoodKind,
+>>>>>>> af5daf2225def6f22646cd30380798fc0897eb11
         arena_w: f32,
         arena_h: f32,
         rng: &mut SmallRng,
     ) {
         let half_w = arena_w * 0.5 - FOOD_RADIUS;
         let half_h = arena_h * 0.5 - FOOD_RADIUS;
+<<<<<<< HEAD
         let x = x.clamp(-half_w, half_w);
         let y = y.clamp(-half_h, half_h);
 
@@ -1259,11 +1366,30 @@ impl FoodStore {
         self.anchor_angle.push(anchor_angle);
         self.anchor_distance.push(anchor_distance);
         self.anchor_lateral.push(anchor_lateral);
+=======
+        self.x.push(x.clamp(-half_w, half_w));
+        self.y.push(y.clamp(-half_h, half_h));
+        self.kind.push(kind);
+        self.shape.push(FoodShape::random(rng));
+        self.phase
+            .push(rng.random_range(0.0..std::f32::consts::TAU));
+    }
+
+    fn respawn(&mut self, index: usize, arena_w: f32, arena_h: f32, rng: &mut SmallRng) {
+        self.x[index] =
+            rng.random_range((-arena_w * 0.5 + FOOD_RADIUS)..(arena_w * 0.5 - FOOD_RADIUS));
+        self.y[index] =
+            rng.random_range((-arena_h * 0.5 + FOOD_RADIUS)..(arena_h * 0.5 - FOOD_RADIUS));
+        self.kind[index] = FoodKind::random(rng);
+        self.shape[index] = FoodShape::random(rng);
+        self.phase[index] = rng.random_range(0.0..std::f32::consts::TAU);
+>>>>>>> af5daf2225def6f22646cd30380798fc0897eb11
     }
 
     pub fn len(&self) -> usize {
         self.x.len()
     }
+<<<<<<< HEAD
 
     pub fn active_count(&self) -> usize {
         self.active.iter().filter(|active| **active).count()
@@ -1317,6 +1443,8 @@ fn add_avoidance(avoidance: &mut Vec2, delta: Vec2, influence: f32, desired_dir:
     }
     *avoidance +=
         (normal * 1.18 + tangent * 0.72) * pressure * pressure * speed * CELL_AVOIDANCE_STRENGTH;
+=======
+>>>>>>> af5daf2225def6f22646cd30380798fc0897eb11
 }
 
 pub struct ObstacleStore {
@@ -1348,7 +1476,11 @@ impl ObstacleStore {
         };
 
         for _ in 0..count {
+<<<<<<< HEAD
             let radius = 14.0 + (76.0 - 14.0) * rng.random_range(0.0_f32..1.0).powf(1.65);
+=======
+            let radius = rng.random_range(14.0_f32..118.0_f32).powf(1.08);
+>>>>>>> af5daf2225def6f22646cd30380798fc0897eb11
             let half_w = arena_w * 0.5 - radius;
             let half_h = arena_h * 0.5 - radius;
             store.x.push(rng.random_range(-half_w..half_w));
@@ -1368,6 +1500,81 @@ impl ObstacleStore {
         }
 
         store
+<<<<<<< HEAD
+=======
+    }
+
+    pub fn len(&self) -> usize {
+        self.x.len()
+    }
+}
+
+pub struct FoodGrowerStore {
+    pub x: Vec<f32>,
+    pub y: Vec<f32>,
+    pub vx: Vec<f32>,
+    pub vy: Vec<f32>,
+    pub radius: Vec<f32>,
+    pub phase: Vec<f32>,
+    pub rotation: Vec<f32>,
+    pub spin: Vec<f32>,
+    pub branches: Vec<f32>,
+    pub timer: Vec<f32>,
+    pub interval: Vec<f32>,
+}
+
+impl FoodGrowerStore {
+    fn new(count: usize, arena_w: f32, arena_h: f32, rng: &mut SmallRng) -> Self {
+        let mut store = Self {
+            x: Vec::with_capacity(count),
+            y: Vec::with_capacity(count),
+            vx: Vec::with_capacity(count),
+            vy: Vec::with_capacity(count),
+            radius: Vec::with_capacity(count),
+            phase: Vec::with_capacity(count),
+            rotation: Vec::with_capacity(count),
+            spin: Vec::with_capacity(count),
+            branches: Vec::with_capacity(count),
+            timer: Vec::with_capacity(count),
+            interval: Vec::with_capacity(count),
+        };
+
+        for _ in 0..count {
+            let giant = rng.random_bool(0.18);
+            let radius = if giant {
+                rng.random_range(145.0..190.0)
+            } else {
+                rng.random_range(54.0..92.0)
+            };
+            let half_w = arena_w * 0.5 - radius * 1.8;
+            let half_h = arena_h * 0.5 - radius * 1.8;
+            store.x.push(rng.random_range(-half_w..half_w));
+            store.y.push(rng.random_range(-half_h..half_h));
+            store.vx.push(rng.random_range(-2.0..2.0));
+            store.vy.push(rng.random_range(-2.0..2.0));
+            store.radius.push(radius);
+            store
+                .phase
+                .push(rng.random_range(0.0..std::f32::consts::TAU));
+            store
+                .rotation
+                .push(rng.random_range(0.0..std::f32::consts::TAU));
+            store.spin.push(rng.random_range(-0.018..0.018));
+            store.branches.push(if giant {
+                rng.random_range(12.0..19.0)
+            } else {
+                rng.random_range(5.0..10.0)
+            });
+            store.timer.push(rng.random_range(0.2..3.0));
+            store.interval.push(if giant {
+                rng.random_range(1.2..2.4)
+            } else {
+                rng.random_range(1.8..3.6)
+            });
+        }
+
+        store
+>>>>>>> af5daf2225def6f22646cd30380798fc0897eb11
     }
 
     pub fn len(&self) -> usize {
@@ -1876,6 +2083,108 @@ mod tests {
         world.cells.radius[0] = 8.0;
 
         world.resolve_cell_food_growers(0);
+
+        let dist = Vec2::new(world.cells.x[0], world.cells.y[0]).length();
+        assert!(dist >= 88.0);
+    }
+
+    #[test]
+    fn liquid_current_moves_food() {
+        let config = SimConfig {
+            cells: 0,
+            food: 1,
+            width: 1_000.0,
+            height: 1_000.0,
+            ..default()
+        };
+        let mut world = WorldState::new(&config);
+        world.food.x[0] = 123.0;
+        world.food.y[0] = -77.0;
+        let before = Vec2::new(world.food.x[0], world.food.y[0]);
+
+        world.update(1.0 / 60.0);
+
+        let after = Vec2::new(world.food.x[0], world.food.y[0]);
+        assert!(after.distance_squared(before) > 0.0001);
+    }
+
+    #[test]
+    fn food_spawns_as_grass_and_meat() {
+        let config = SimConfig {
+            cells: 0,
+            food: 12,
+            ..default()
+        };
+        let world = WorldState::new(&config);
+
+        assert!(world.food.kind.iter().any(|kind| *kind == FoodKind::Grass));
+        assert!(world.food.kind.iter().any(|kind| *kind == FoodKind::Meat));
+    }
+
+    #[test]
+    fn food_uses_multiple_shapes() {
+        let config = SimConfig {
+            cells: 0,
+            food: 40,
+            ..default()
+        };
+        let world = WorldState::new(&config);
+        let first = world.food.shape[0];
+
+        assert!(world.food.shape.iter().any(|shape| *shape != first));
+    }
+
+    #[test]
+    fn obstacles_and_food_growers_spawn() {
+        let config = SimConfig {
+            cells: 0,
+            food: 0,
+            obstacles: 7,
+            food_growers: 3,
+            ..default()
+        };
+        let world = WorldState::new(&config);
+
+        assert_eq!(world.obstacles.len(), 7);
+        assert_eq!(world.food_growers.len(), 3);
+    }
+
+    #[test]
+    fn food_growers_spawn_food_over_time() {
+        let config = SimConfig {
+            cells: 0,
+            food: 0,
+            obstacles: 0,
+            food_growers: 1,
+            ..default()
+        };
+        let mut world = WorldState::new(&config);
+
+        for _ in 0..240 {
+            world.update(1.0 / 60.0);
+        }
+
+        assert!(world.food.len() > 0);
+    }
+
+    #[test]
+    fn obstacles_push_cells_out() {
+        let config = SimConfig {
+            cells: 1,
+            food: 0,
+            obstacles: 1,
+            food_growers: 0,
+            ..default()
+        };
+        let mut world = WorldState::new(&config);
+        world.obstacles.x[0] = 0.0;
+        world.obstacles.y[0] = 0.0;
+        world.obstacles.radius[0] = 80.0;
+        world.cells.x[0] = 10.0;
+        world.cells.y[0] = 0.0;
+        world.cells.radius[0] = 8.0;
+
+        world.resolve_cell_obstacles(0);
 
         let dist = Vec2::new(world.cells.x[0], world.cells.y[0]).length();
         assert!(dist >= 88.0);

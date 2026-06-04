@@ -120,14 +120,22 @@ fn setup_menu(mut commands: Commands, config: Res<SimConfig>, asset_server: Res<
             spawn_setting_row(
                 parent,
                 font.clone(),
+<<<<<<< HEAD
                 "Препятствия",
+=======
+                "Obstacles",
+>>>>>>> af5daf2225def6f22646cd30380798fc0897eb11
                 MenuTextValue::Obstacles,
                 config.obstacles.to_string(),
             );
             spawn_setting_row(
                 parent,
                 font.clone(),
+<<<<<<< HEAD
                 "Кормушки",
+=======
+                "Food growers",
+>>>>>>> af5daf2225def6f22646cd30380798fc0897eb11
                 MenuTextValue::FoodGrowers,
                 config.food_growers.to_string(),
             );
@@ -245,7 +253,11 @@ fn menu_interaction_system(
                     config.width = config.width.max(1000.0);
                     config.height = config.height.max(1000.0);
                     config.obstacles = config.obstacles.min(500);
+<<<<<<< HEAD
                     config.food_growers = config.food_growers.clamp(1, 100);
+=======
+                    config.food_growers = config.food_growers.min(100);
+>>>>>>> af5daf2225def6f22646cd30380798fc0897eb11
                     next_state.set(AppState::Running);
                 } else if input_field.is_some() {
                     // Remove focus from others

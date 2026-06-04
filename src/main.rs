@@ -110,7 +110,11 @@ fn update_window_title(
     config: Res<SimConfig>,
 ) {
     if let Some(mut window) = windows.iter_mut().next() {
+<<<<<<< HEAD
         window.title = format!("Organoids - {} клеток / {} еды", config.cells, config.food);
+=======
+        window.title = format!("Organoids - {} cells / {} food", config.cells, config.food);
+>>>>>>> af5daf2225def6f22646cd30380798fc0897eb11
     }
 }
 
@@ -334,9 +338,15 @@ fn update_ui(
 
     let mut text = text.single_mut().expect("stats text exists");
     **text = format!(
+<<<<<<< HEAD
         "FPS {fps:>6.1} | кадр {frame_ms:>5.2} мс\nклетки {:>5} | еда {:>5}\nпрепят. {:>4} | корм. {:>4}\nсим {:>5.2} мс | ренд {:>5.2} мс\nарена {:.0} x {:.0}",
         world.cells.len(),
         world.food.active_count(),
+=======
+        "FPS {fps:>6.1} | frame {frame_ms:>5.2} ms\ncells {:>5} | food {:>5}\nobstacles {:>4} | growers {:>4}\nsim {:>5.2} ms | upload {:>5.2} ms\narena {:.0} x {:.0}",
+        world.cells.len(),
+        world.food.len(),
+>>>>>>> af5daf2225def6f22646cd30380798fc0897eb11
         world.obstacles.len(),
         world.food_growers.len(),
         stats.sim_time.as_secs_f64() * 1_000.0,

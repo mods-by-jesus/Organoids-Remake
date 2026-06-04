@@ -73,12 +73,18 @@ fn ring_mask(dist: f32, outer: f32, inner: f32) -> f32 {
 }
 
 fn food_fragment(local: vec2<f32>, color: vec4<f32>, kind: f32, motion: vec4<f32>, shape: vec4<f32>) -> vec4<f32> {
+<<<<<<< HEAD
     let time = globals.time + motion.w;
     let rotation = motion.z + globals.time * shape.z;
     let tumble = 0.82 + 0.18 * sin(time * 1.7 + shape.z * 0.41);
     let p = rotate2d(vec2<f32>(local.x, local.y / max(tumble, 0.2)), rotation);
     let dist = length(p);
     let angle = atan2(p.y, p.x);
+=======
+    let dist = length(local);
+    let angle = atan2(local.y, local.x);
+    let time = globals.time + motion.w;
+>>>>>>> af5daf2225def6f22646cd30380798fc0897eb11
     let lobes = shape.x;
     let roughness = shape.y;
     let shape_kind = shape.w;
@@ -90,27 +96,44 @@ fn food_fragment(local: vec2<f32>, color: vec4<f32>, kind: f32, motion: vec4<f32
     var alpha = 1.0 - smoothstep(radius - 0.11, radius, dist);
 
     if (shape_kind > 1.5 && shape_kind < 2.5) {
+<<<<<<< HEAD
         let box_dist = max(abs(p.x), abs(p.y));
+=======
+        let box_dist = max(abs(local.x), abs(local.y));
+>>>>>>> af5daf2225def6f22646cd30380798fc0897eb11
         alpha = 1.0 - smoothstep(0.66, 0.78, box_dist);
     } else if (shape_kind > 2.5 && shape_kind < 3.5) {
         let tri_radius = 0.58 + 0.2 * cos(3.0 * (angle + 0.52));
         alpha = 1.0 - smoothstep(tri_radius - 0.1, tri_radius, dist);
     } else if (shape_kind > 3.5 && shape_kind < 4.5) {
+<<<<<<< HEAD
         let diamond_dist = abs(p.x) + abs(p.y);
+=======
+        let diamond_dist = abs(local.x) + abs(local.y);
+>>>>>>> af5daf2225def6f22646cd30380798fc0897eb11
         alpha = 1.0 - smoothstep(0.86, 1.02, diamond_dist);
     } else if (shape_kind > 4.5 && shape_kind < 5.5) {
         let star_radius = 0.64 + 0.18 * cos(angle * 5.0 + time * 0.8);
         alpha = 1.0 - smoothstep(star_radius - 0.09, star_radius, dist);
     } else if (shape_kind > 5.5) {
         let pebble_radius = 0.72
+<<<<<<< HEAD
             + 0.09 * sin(angle * 2.0 + motion.w)
             + 0.07 * sin(angle * 4.0 - motion.w * 0.7);
+=======
+            + 0.09 * sin(angle * 2.0 + shape.z)
+            + 0.07 * sin(angle * 4.0 - shape.z * 0.7);
+>>>>>>> af5daf2225def6f22646cd30380798fc0897eb11
         alpha = 1.0 - smoothstep(pebble_radius - 0.12, pebble_radius, dist);
     }
 
     let normalized_dist = clamp(dist / max(radius, 0.1), 0.0, 1.0);
     let z = sqrt(max(0.0, 1.0 - normalized_dist * normalized_dist));
+<<<<<<< HEAD
     let normal = normalize(vec3<f32>(p.x * (1.0 + (1.0 - tumble) * 0.7), p.y, z + 0.3));
+=======
+    let normal = normalize(vec3<f32>(local.x, local.y, z + 0.3));
+>>>>>>> af5daf2225def6f22646cd30380798fc0897eb11
     let light_dir = normalize(vec3<f32>(-0.34, 0.42, 0.84));
     let view_dir = vec3<f32>(0.0, 0.0, 1.0);
     let diffuse = max(dot(normal, light_dir), 0.0) * 0.58;
@@ -129,7 +152,11 @@ fn food_fragment(local: vec2<f32>, color: vec4<f32>, kind: f32, motion: vec4<f32
         rgb += vec3<f32>(0.85, 0.05, 0.03) * vein * 0.18;
         rgb += vec3<f32>(1.0, 0.34, 0.28) * rim * 0.22;
     } else {
+<<<<<<< HEAD
         let sprout = smoothstep(0.16, 0.0, abs(p.x)) * smoothstep(-0.28, 0.42, p.y) * smoothstep(0.76, 0.08, dist);
+=======
+        let sprout = smoothstep(0.16, 0.0, abs(local.x)) * smoothstep(-0.28, 0.42, local.y) * smoothstep(0.76, 0.08, dist);
+>>>>>>> af5daf2225def6f22646cd30380798fc0897eb11
         rgb += vec3<f32>(0.36, 1.0, 0.38) * sprout * 0.16;
         rgb += vec3<f32>(0.72, 1.0, 0.52) * rim * 0.16;
     }
@@ -141,6 +168,7 @@ fn obstacle_fragment(local: vec2<f32>, color: vec4<f32>, motion: vec4<f32>, shap
     let p = rotate2d(local, motion.z);
     let dist = length(p);
     let angle = atan2(p.y, p.x);
+<<<<<<< HEAD
     let disc = 1.0 - smoothstep(0.92, 1.02, dist);
 
     let spokes = max(shape.x, 3.0);
@@ -154,12 +182,23 @@ fn obstacle_fragment(local: vec2<f32>, color: vec4<f32>, motion: vec4<f32>, shap
         * (1.0 - smoothstep(0.82, 0.94, dist))
         * disc;
     let rim = smoothstep(0.84, 0.92, dist) * (1.0 - smoothstep(0.96, 1.02, dist));
+=======
+    let alpha = (1.0 - smoothstep(0.92, 1.02, dist)) * color.a;
+
+    let spokes = max(shape.x, 3.0);
+    let rings = max(shape.y, 1.0);
+    let spoke_mask = 1.0 - smoothstep(0.02, 0.055, abs(sin(angle * spokes * 0.5)));
+    let ring_wave = abs(fract(dist * rings + 0.12) - 0.5);
+    let ring_mask = 1.0 - smoothstep(0.02, 0.08, ring_wave);
+    let rim = 1.0 - smoothstep(0.82, 0.96, abs(dist - 0.92));
+>>>>>>> af5daf2225def6f22646cd30380798fc0897eb11
     let core = 1.0 - smoothstep(0.0, 0.36, dist);
 
     var rgb = color.rgb * (0.45 + core * 0.22);
     rgb += vec3<f32>(0.88, 0.94, 1.0) * spoke_mask * 0.18;
     rgb += vec3<f32>(0.78, 0.90, 1.0) * ring_mask * 0.12;
     rgb += vec3<f32>(0.86, 0.94, 1.0) * rim * 0.26;
+<<<<<<< HEAD
     return vec4<f32>(rgb, clamp(disc * color.a + rim * 0.08 + spoke_mask * 0.04, 0.0, 0.42));
 }
 
@@ -213,6 +252,30 @@ fn feeder_branch_fragment(local: vec2<f32>, color: vec4<f32>, motion: vec4<f32>,
     return vec4<f32>(rgb, clamp(alpha * color.a, 0.0, color.a));
 }
 
+=======
+    return vec4<f32>(rgb, clamp(alpha + rim * 0.08 + spoke_mask * 0.04, 0.0, 0.42));
+}
+
+fn grower_fragment(local: vec2<f32>, color: vec4<f32>, motion: vec4<f32>, shape: vec4<f32>) -> vec4<f32> {
+    let p = rotate2d(local, motion.z);
+    let dist = length(p);
+    let angle = atan2(p.y, p.x);
+    let base_radius = max(shape.y / max(shape.y * 1.85, 1.0), 0.18);
+    let branches = max(shape.x, 3.0);
+    let branch_line = 1.0 - smoothstep(0.018, 0.05, abs(sin(angle * branches * 0.5)));
+    let branch_range = smoothstep(base_radius * 0.55, base_radius * 0.95, dist) * (1.0 - smoothstep(0.82, 0.98, dist));
+    let branch = branch_line * branch_range;
+    let body = 1.0 - smoothstep(base_radius * 0.82, base_radius, dist);
+    let glow = 1.0 - smoothstep(0.0, 0.96, dist);
+    let alpha = clamp(body * 0.18 + branch * 0.16 + glow * 0.04, 0.0, 0.36);
+
+    var rgb = color.rgb * (0.5 + glow * 0.42);
+    rgb += vec3<f32>(0.74, 1.0, 0.48) * branch * 0.32;
+    rgb += vec3<f32>(0.42, 1.0, 0.36) * body * 0.22;
+    return vec4<f32>(rgb, alpha);
+}
+
+>>>>>>> af5daf2225def6f22646cd30380798fc0897eb11
 @fragment
 fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let local = in.local_pos;
@@ -235,6 +298,7 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         return obstacle;
     }
 
+<<<<<<< HEAD
     if (kind > 2.5 && kind < 3.5) {
         let feeder_core = feeder_core_fragment(local, in.color, in.motion, in.shape);
         if (feeder_core.a < 0.01) {
@@ -249,6 +313,14 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
             discard;
         }
         return feeder_branch;
+=======
+    if (kind > 2.5) {
+        let grower = grower_fragment(local, in.color, in.motion, in.shape);
+        if (grower.a < 0.01) {
+            discard;
+        }
+        return grower;
+>>>>>>> af5daf2225def6f22646cd30380798fc0897eb11
     }
 
     let angle = atan2(local.y, local.x);

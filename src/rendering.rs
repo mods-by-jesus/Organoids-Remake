@@ -1,7 +1,13 @@
 use crate::simulation::{
+<<<<<<< HEAD
     FEEDER_FOOD_SURFACE_GAP, FOOD_RADIUS, FoodKind, FrameStats, GRASS_FOOD_COLOR,
     LIQUID_CAUSTIC_STRENGTH, LIQUID_FLOW_SCALE, LIQUID_FLOW_SPEED, LIQUID_VIGNETTE_STRENGTH,
     MEAT_FOOD_COLOR, SimConfig, WorldState, species_color,
+=======
+    FOOD_RADIUS, FoodKind, FrameStats, GRASS_FOOD_COLOR, LIQUID_CAUSTIC_STRENGTH,
+    LIQUID_FLOW_SCALE, LIQUID_FLOW_SPEED, LIQUID_VIGNETTE_STRENGTH, MEAT_FOOD_COLOR, SimConfig,
+    WorldState, species_color,
+>>>>>>> af5daf2225def6f22646cd30380798fc0897eb11
 };
 use bevy::camera::visibility::NoFrustumCulling;
 use bevy::core_pipeline::core_3d::Transparent3d;
@@ -154,11 +160,15 @@ pub fn sync_instance_data(
         .expect("particle instanced layer exists");
     particles.clear();
     particles.reserve(
+<<<<<<< HEAD
         world.cells.len()
             + world.food.len() * 2
             + world.obstacles.len()
             + world.food_growers.len()
             + world.food_growers.total_branches(),
+=======
+        world.cells.len() + world.food.len() + world.obstacles.len() + world.food_growers.len(),
+>>>>>>> af5daf2225def6f22646cd30380798fc0897eb11
     );
 
     for i in 0..world.cells.len() {
@@ -204,10 +214,13 @@ pub fn sync_instance_data(
     }
 
     for i in 0..world.food.len() {
+<<<<<<< HEAD
         if !world.food.active[i] {
             continue;
         }
 
+=======
+>>>>>>> af5daf2225def6f22646cd30380798fc0897eb11
         let color = match world.food.kind[i] {
             FoodKind::Grass => GRASS_FOOD_COLOR,
             FoodKind::Meat => MEAT_FOOD_COLOR,
@@ -221,6 +234,7 @@ pub fn sync_instance_data(
             FoodKind::Meat => 0.16,
         };
 
+<<<<<<< HEAD
         if world.food.feeder[i] >= 0 {
             let grower_index = world.food.feeder[i] as usize;
             if grower_index < world.food_growers.len() {
@@ -276,6 +290,17 @@ pub fn sync_instance_data(
                 lobes,
                 roughness,
                 world.food.spin[i],
+=======
+        particles.push(InstanceData {
+            pos_radius: [world.food.x[i], world.food.y[i], 3.0, FOOD_RADIUS],
+            color,
+            nucleus: [0.0, 0.0, 0.0, world.food.kind[i].shader_kind()],
+            motion: [0.0, 1.0, 0.0, world.food.phase[i]],
+            shape: [
+                lobes,
+                roughness,
+                world.food.phase[i],
+>>>>>>> af5daf2225def6f22646cd30380798fc0897eb11
                 world.food.shape[i].shader_shape(),
             ],
         });
@@ -304,6 +329,7 @@ pub fn sync_instance_data(
 
     for i in 0..world.food_growers.len() {
         let radius = world.food_growers.radius[i];
+<<<<<<< HEAD
         for branch_index in world.food_growers.branch_range(i) {
             let angle =
                 world.food_growers.rotation[i] + world.food_growers.branch_angle[branch_index];
@@ -336,14 +362,23 @@ pub fn sync_instance_data(
             });
         }
 
+=======
+>>>>>>> af5daf2225def6f22646cd30380798fc0897eb11
         particles.push(InstanceData {
             pos_radius: [
                 world.food_growers.x[i],
                 world.food_growers.y[i],
+<<<<<<< HEAD
                 1.75,
                 radius,
             ],
             color: [0.24, 1.0, 0.42, 0.78],
+=======
+                1.8,
+                radius * 1.85,
+            ],
+            color: [0.24, 1.0, 0.42, 0.24],
+>>>>>>> af5daf2225def6f22646cd30380798fc0897eb11
             nucleus: [0.0, 0.0, 0.0, 3.0],
             motion: [
                 world.food_growers.vx[i],
@@ -352,8 +387,13 @@ pub fn sync_instance_data(
                 world.food_growers.phase[i],
             ],
             shape: [
+<<<<<<< HEAD
                 world.food_growers.branch_count[i] as f32,
                 1.0,
+=======
+                world.food_growers.branches[i],
+                world.food_growers.radius[i],
+>>>>>>> af5daf2225def6f22646cd30380798fc0897eb11
                 world.food_growers.timer[i],
                 0.0,
             ],
