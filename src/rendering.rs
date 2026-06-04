@@ -1,13 +1,15 @@
 use crate::simulation::{
-    ARENA_HEIGHT, ARENA_WIDTH, FOOD_RADIUS, FrameStats, WorldState, species_color,
+    FEEDER_FOOD_SURFACE_GAP, FOOD_RADIUS, FoodKind, FrameStats, GRASS_FOOD_COLOR,
+    LIQUID_CAUSTIC_STRENGTH, LIQUID_FLOW_SCALE, LIQUID_FLOW_SPEED, LIQUID_VIGNETTE_STRENGTH,
+    MEAT_FOOD_COLOR, SimConfig, WorldState, species_color,
 };
 use bevy::camera::visibility::NoFrustumCulling;
 use bevy::core_pipeline::core_3d::Transparent3d;
 use bevy::ecs::{query::QueryItem, system::SystemParamItem, system::lifetimeless::*};
 use bevy::mesh::{Indices, MeshVertexBufferLayoutRef, VertexBufferLayout};
 use bevy::pbr::{
-    MeshPipeline, MeshPipelineKey, RenderMeshInstances, SetMeshBindGroup, SetMeshViewBindGroup,
-    SetMeshViewBindingArrayBindGroup,
+    Material, MeshPipeline, MeshPipelineKey, RenderMeshInstances, SetMeshBindGroup,
+    SetMeshViewBindGroup, SetMeshViewBindingArrayBindGroup,
 };
 use bevy::prelude::*;
 use bevy::render::{
@@ -24,11 +26,12 @@ use bevy::render::{
     sync_world::MainEntity,
     view::ExtractedView,
 };
+use bevy::{reflect::TypePath, render::render_resource::AsBindGroup, shader::ShaderRef};
 use bytemuck::{Pod, Zeroable};
 use std::time::Instant;
 
 const SHADER_ASSET_PATH: &str = "shaders/instanced_disc.wgsl";
-const FOOD_COLOR: [f32; 4] = [0.25, 1.0, 0.34, 0.92];
+const LIQUID_SHADER_ASSET_PATH: &str = "shaders/liquid_medium.wgsl";
 
 #[derive(Component)]
 pub struct ParticleLayer;
@@ -58,6 +61,44 @@ pub struct InstanceData {
 
 pub struct InstancedDiscPlugin;
 
+#[derive(Clone, Copy, Debug, ShaderType)]
+struct LiquidMediumParams {
+    deep_color: Vec4,
+    caustic_color: Vec4,
+    arena_size: Vec4,
+    flow: Vec4,
+}
+
+#[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
+pub struct LiquidMediumMaterial {
+    #[uniform(0)]
+    params: LiquidMediumParams,
+}
+
+impl LiquidMediumMaterial {
+    fn new(config: &SimConfig) -> Self {
+        Self {
+            params: LiquidMediumParams {
+                deep_color: Vec4::new(0.035, 0.075, 0.095, 1.0),
+                caustic_color: Vec4::new(0.18, 0.42, 0.48, 1.0),
+                arena_size: Vec4::new(config.width, config.height, 0.0, 0.0),
+                flow: Vec4::new(
+                    LIQUID_FLOW_SCALE,
+                    LIQUID_FLOW_SPEED,
+                    LIQUID_CAUSTIC_STRENGTH,
+                    LIQUID_VIGNETTE_STRENGTH,
+                ),
+            },
+        }
+    }
+}
+
+impl Material for LiquidMediumMaterial {
+    fn fragment_shader() -> ShaderRef {
+        LIQUID_SHADER_ASSET_PATH.into()
+    }
+}
+
 impl Plugin for InstancedDiscPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(ExtractComponentPlugin::<InstanceMaterialData>::default());
@@ -79,6 +120,8 @@ pub fn spawn_simulation_layers(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut liquid_materials: ResMut<Assets<LiquidMediumMaterial>>,
+    config: Res<SimConfig>,
 ) {
     let disc_mesh = meshes.add(unit_quad_mesh());
 
@@ -90,7 +133,13 @@ pub fn spawn_simulation_layers(
         NoFrustumCulling,
     ));
 
-    spawn_arena(&mut commands, &mut meshes, &mut materials);
+    spawn_arena(
+        &mut commands,
+        &mut meshes,
+        &mut materials,
+        &mut liquid_materials,
+        &config,
+    );
 }
 
 pub fn sync_instance_data(
@@ -104,7 +153,13 @@ pub fn sync_instance_data(
         .single_mut()
         .expect("particle instanced layer exists");
     particles.clear();
-    particles.reserve(world.cells.len() + world.food.len());
+    particles.reserve(
+        world.cells.len()
+            + world.food.len() * 2
+            + world.obstacles.len()
+            + world.food_growers.len()
+            + world.food_growers.total_branches(),
+    );
 
     for i in 0..world.cells.len() {
         let speed =
@@ -149,12 +204,159 @@ pub fn sync_instance_data(
     }
 
     for i in 0..world.food.len() {
+        if !world.food.active[i] {
+            continue;
+        }
+
+        let color = match world.food.kind[i] {
+            FoodKind::Grass => GRASS_FOOD_COLOR,
+            FoodKind::Meat => MEAT_FOOD_COLOR,
+        };
+        let lobes = match world.food.kind[i] {
+            FoodKind::Grass => 5.0,
+            FoodKind::Meat => 4.0,
+        };
+        let roughness = match world.food.kind[i] {
+            FoodKind::Grass => 0.11,
+            FoodKind::Meat => 0.16,
+        };
+
+        if world.food.feeder[i] >= 0 {
+            let grower_index = world.food.feeder[i] as usize;
+            if grower_index < world.food_growers.len() {
+                let angle = world.food_growers.rotation[grower_index] + world.food.anchor_angle[i];
+                let (s, c) = angle.sin_cos();
+                let centerline_point = Vec2::new(
+                    world.food_growers.x[grower_index] + c * world.food.anchor_distance[i],
+                    world.food_growers.y[grower_index] + s * world.food.anchor_distance[i],
+                );
+                let surface_lateral = world.food.anchor_lateral[i].signum()
+                    * (world.food.anchor_lateral[i].abs() - FOOD_RADIUS - FEEDER_FOOD_SURFACE_GAP)
+                        .max(0.0);
+                let branch_surface = centerline_point + Vec2::new(-s, c) * surface_lateral;
+                let food_point = Vec2::new(world.food.x[i], world.food.y[i]);
+                let stem = food_point - branch_surface;
+                let stem_len = stem.length();
+
+                if stem_len > 0.75 {
+                    let half_length = (stem_len * 0.5).max(0.5);
+                    let stem_width =
+                        (FOOD_RADIUS * 0.34 * world.food.growth[i].clamp(0.55, 1.0)).max(0.9);
+                    let instance_radius = half_length + stem_width * 2.0;
+                    let stem_center = branch_surface + stem * 0.5;
+                    let stem_angle = stem.y.atan2(stem.x);
+
+                    particles.push(InstanceData {
+                        pos_radius: [stem_center.x, stem_center.y, 2.85, instance_radius],
+                        color: [0.34, 1.0, 0.36, 0.82],
+                        nucleus: [0.0, 0.0, 0.0, 4.0],
+                        motion: [0.0, 0.0, stem_angle, world.food.phase[i]],
+                        shape: [
+                            (stem_width / instance_radius).clamp(0.02, 0.22),
+                            0.0,
+                            (half_length / instance_radius).clamp(0.1, 0.98),
+                            0.0,
+                        ],
+                    });
+                }
+            }
+        }
+
         particles.push(InstanceData {
-            pos_radius: [world.food.x[i], world.food.y[i], 3.0, FOOD_RADIUS],
-            color: FOOD_COLOR,
-            nucleus: [0.0, 0.0, 0.0, 0.0],
-            motion: [0.0, 1.0, 0.0, 0.0],
-            shape: [0.0, 0.0, 0.0, 0.0],
+            pos_radius: [
+                world.food.x[i],
+                world.food.y[i],
+                3.0,
+                FOOD_RADIUS * world.food.growth[i].clamp(0.28, 1.0),
+            ],
+            color,
+            nucleus: [0.0, 0.0, 0.0, world.food.kind[i].shader_kind()],
+            motion: [0.0, 1.0, world.food.rotation[i], world.food.phase[i]],
+            shape: [
+                lobes,
+                roughness,
+                world.food.spin[i],
+                world.food.shape[i].shader_shape(),
+            ],
+        });
+    }
+
+    for i in 0..world.obstacles.len() {
+        let radius = world.obstacles.radius[i];
+        particles.push(InstanceData {
+            pos_radius: [world.obstacles.x[i], world.obstacles.y[i], 1.5, radius],
+            color: [0.58, 0.72, 0.95, 0.22],
+            nucleus: [0.0, 0.0, 0.0, 2.0],
+            motion: [
+                world.obstacles.vx[i],
+                world.obstacles.vy[i],
+                world.obstacles.rotation[i],
+                world.obstacles.phase[i],
+            ],
+            shape: [
+                world.obstacles.spokes[i],
+                world.obstacles.rings[i],
+                radius,
+                0.0,
+            ],
+        });
+    }
+
+    for i in 0..world.food_growers.len() {
+        let radius = world.food_growers.radius[i];
+        for branch_index in world.food_growers.branch_range(i) {
+            let angle =
+                world.food_growers.rotation[i] + world.food_growers.branch_angle[branch_index];
+            let (s, c) = angle.sin_cos();
+            let start_distance = radius * 0.56;
+            let end_distance = world.food_growers.branch_length[branch_index];
+            let half_length = ((end_distance - start_distance) * 0.5).max(1.0);
+            let mid_distance = (start_distance + end_distance) * 0.5;
+            let branch_width = world.food_growers.branch_width[branch_index];
+            let instance_radius = half_length + branch_width * 2.0;
+            let x = world.food_growers.x[i] + c * mid_distance;
+            let y = world.food_growers.y[i] + s * mid_distance;
+
+            particles.push(InstanceData {
+                pos_radius: [x, y, 1.55, instance_radius],
+                color: [0.23, 0.98, 0.40, 0.72],
+                nucleus: [0.0, 0.0, 0.0, 4.0],
+                motion: [
+                    0.0,
+                    0.0,
+                    angle,
+                    world.food_growers.branch_phase[branch_index],
+                ],
+                shape: [
+                    (branch_width / instance_radius).clamp(0.02, 0.28),
+                    world.food_growers.branch_curve[branch_index],
+                    (half_length / instance_radius).clamp(0.1, 0.98),
+                    0.0,
+                ],
+            });
+        }
+
+        particles.push(InstanceData {
+            pos_radius: [
+                world.food_growers.x[i],
+                world.food_growers.y[i],
+                1.75,
+                radius,
+            ],
+            color: [0.24, 1.0, 0.42, 0.78],
+            nucleus: [0.0, 0.0, 0.0, 3.0],
+            motion: [
+                world.food_growers.vx[i],
+                world.food_growers.vy[i],
+                world.food_growers.rotation[i],
+                world.food_growers.phase[i],
+            ],
+            shape: [
+                world.food_growers.branch_count[i] as f32,
+                1.0,
+                world.food_growers.timer[i],
+                0.0,
+            ],
         });
     }
 
@@ -188,12 +390,10 @@ fn spawn_arena(
     commands: &mut Commands,
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<StandardMaterial>,
+    liquid_materials: &mut Assets<LiquidMediumMaterial>,
+    config: &SimConfig,
 ) {
-    let background = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.035, 0.045, 0.05),
-        unlit: true,
-        ..default()
-    });
+    let background = liquid_materials.add(LiquidMediumMaterial::new(config));
     let wall = materials.add(StandardMaterial {
         base_color: Color::srgb(0.58, 0.78, 0.92),
         unlit: true,
@@ -202,22 +402,22 @@ fn spawn_arena(
 
     commands.spawn((
         Name::new("arena_background"),
-        Mesh3d(meshes.add(Cuboid::new(ARENA_WIDTH, ARENA_HEIGHT, 0.4))),
+        Mesh3d(meshes.add(Cuboid::new(config.width, config.height, 0.4))),
         MeshMaterial3d(background),
         Transform::from_xyz(0.0, 0.0, -0.4),
     ));
 
     let thickness = 80.0;
-    let half_w = ARENA_WIDTH * 0.5;
-    let half_h = ARENA_HEIGHT * 0.5;
+    let half_w = config.width * 0.5;
+    let half_h = config.height * 0.5;
 
     for (name, x, y, w, h) in [
-        ("wall_top", 0.0, half_h, ARENA_WIDTH + thickness, thickness),
+        ("wall_top", 0.0, half_h, config.width + thickness, thickness),
         (
             "wall_bottom",
             0.0,
             -half_h,
-            ARENA_WIDTH + thickness,
+            config.width + thickness,
             thickness,
         ),
         (
@@ -225,14 +425,14 @@ fn spawn_arena(
             -half_w,
             0.0,
             thickness,
-            ARENA_HEIGHT + thickness,
+            config.height + thickness,
         ),
         (
             "wall_right",
             half_w,
             0.0,
             thickness,
-            ARENA_HEIGHT + thickness,
+            config.height + thickness,
         ),
     ] {
         commands.spawn((
