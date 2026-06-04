@@ -2,17 +2,25 @@ use bevy::prelude::*;
 use rand::{Rng, SeedableRng, rngs::SmallRng};
 use std::time::Duration;
 
-pub const DEFAULT_CELLS: usize = 10_000;
-pub const DEFAULT_FOOD: usize = 2_000;
-pub const ARENA_WIDTH: f32 = 24_000.0;
-pub const ARENA_HEIGHT: f32 = 13_500.0;
 pub const FOOD_RADIUS: f32 = 3.4;
+pub const LIQUID_FLOW_SCALE: f32 = 340.0;
+pub const LIQUID_FLOW_SPEED: f32 = 0.08;
+pub const LIQUID_CAUSTIC_STRENGTH: f32 = 0.16;
+pub const LIQUID_VIGNETTE_STRENGTH: f32 = 0.45;
+pub const GRASS_FOOD_COLOR: [f32; 4] = [0.25, 1.0, 0.34, 0.94];
+pub const MEAT_FOOD_COLOR: [f32; 4] = [1.0, 0.23, 0.18, 0.95];
 const GRID_CELL_SIZE: f32 = 240.0;
 const CELL_GRID_SIZE: f32 = 96.0;
 const SEARCH_RING: i32 = 2;
 const STEER_GAIN: f32 = 9.5;
 const DRAG: f32 = 0.985;
 const WANDER_GAIN: f32 = 0.45;
+const FOOD_CURRENT_SPEED: f32 = 42.0;
+const CELL_CURRENT_SPEED: f32 = 24.0;
+const OBSTACLE_CURRENT_SPEED: f32 = 22.0;
+const GROWER_CURRENT_SPEED: f32 = 10.0;
+const FOOD_PUSH_STRENGTH: f32 = 58.0;
+const CELL_OBSTACLE_RESTITUTION: f32 = 0.35;
 const COLLISION_RESTITUTION: f32 = 0.18;
 const COLLISION_PUSH: f32 = 0.54;
 const JELLY_DECAY: f32 = 2.8;
@@ -22,6 +30,10 @@ const JELLY_HIT_GAIN: f32 = 0.42;
 pub struct SimConfig {
     pub cells: usize,
     pub food: usize,
+    pub width: f32,
+    pub height: f32,
+    pub obstacles: usize,
+    pub food_growers: usize,
     pub seed: u64,
     pub vsync: bool,
 }
@@ -29,8 +41,12 @@ pub struct SimConfig {
 impl Default for SimConfig {
     fn default() -> Self {
         Self {
-            cells: DEFAULT_CELLS,
-            food: DEFAULT_FOOD,
+            cells: 10_000,
+            food: 2_000,
+            width: 24_000.0,
+            height: 13_500.0,
+            obstacles: 26,
+            food_growers: 4,
             seed: 0xC011_CE11,
             vsync: false,
         }
@@ -41,7 +57,6 @@ impl SimConfig {
     pub fn from_args() -> Result<Self, String> {
         let mut config = SimConfig::default();
         let mut args = std::env::args().skip(1);
-
         while let Some(arg) = args.next() {
             match arg.as_str() {
                 "--cells" => {
@@ -49,6 +64,18 @@ impl SimConfig {
                 }
                 "--food" => {
                     config.food = parse_next(&mut args, "--food")?;
+                }
+                "--width" => {
+                    config.width = parse_next(&mut args, "--width")?;
+                }
+                "--height" => {
+                    config.height = parse_next(&mut args, "--height")?;
+                }
+                "--obstacles" => {
+                    config.obstacles = parse_next(&mut args, "--obstacles")?;
+                }
+                "--food-growers" => {
+                    config.food_growers = parse_next(&mut args, "--food-growers")?;
                 }
                 "--seed" => {
                     config.seed = parse_next(&mut args, "--seed")?;
@@ -81,39 +108,123 @@ fn parse_next<T: std::str::FromStr>(
 }
 
 pub fn usage() -> String {
-    "Usage: organoids [--cells 10000] [--food 2000] [--seed 123] [--vsync]".to_string()
+    "Usage: organoids [--cells 10000] [--food 2000] [--width 24000] [--height 13500] [--obstacles 26] [--food-growers 4] [--seed 123] [--vsync]".to_string()
 }
 
 #[derive(Resource)]
 pub struct WorldState {
     pub cells: CellStore,
     pub food: FoodStore,
+    pub obstacles: ObstacleStore,
+    pub food_growers: FoodGrowerStore,
+    pub width: f32,
+    pub height: f32,
     grid: SpatialGrid,
     cell_grid: CellGrid,
     rng: SmallRng,
+    elapsed: f32,
+    max_food: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FoodKind {
+    Grass,
+    Meat,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FoodShape {
+    Blob,
+    Circle,
+    Square,
+    Triangle,
+    Diamond,
+    Star,
+    Pebble,
+}
+
+impl FoodShape {
+    pub fn shader_shape(self) -> f32 {
+        match self {
+            FoodShape::Blob => 0.0,
+            FoodShape::Circle => 1.0,
+            FoodShape::Square => 2.0,
+            FoodShape::Triangle => 3.0,
+            FoodShape::Diamond => 4.0,
+            FoodShape::Star => 5.0,
+            FoodShape::Pebble => 6.0,
+        }
+    }
+
+    fn random(rng: &mut SmallRng) -> Self {
+        match rng.random_range(0..7) {
+            0 => FoodShape::Blob,
+            1 => FoodShape::Circle,
+            2 => FoodShape::Square,
+            3 => FoodShape::Triangle,
+            4 => FoodShape::Diamond,
+            5 => FoodShape::Star,
+            _ => FoodShape::Pebble,
+        }
+    }
+}
+
+impl FoodKind {
+    pub fn shader_kind(self) -> f32 {
+        match self {
+            FoodKind::Grass => 0.0,
+            FoodKind::Meat => -1.0,
+        }
+    }
+
+    fn random(rng: &mut SmallRng) -> Self {
+        if rng.random_bool(0.5) {
+            FoodKind::Grass
+        } else {
+            FoodKind::Meat
+        }
+    }
 }
 
 impl WorldState {
     pub fn new(config: &SimConfig) -> Self {
         let mut rng = SmallRng::seed_from_u64(config.seed);
-        let cells = CellStore::new(config.cells, &mut rng);
-        let food = FoodStore::new(config.food, &mut rng);
-        let mut grid = SpatialGrid::new(ARENA_WIDTH, ARENA_HEIGHT, GRID_CELL_SIZE);
+        let cells = CellStore::new(config.cells, config.width, config.height, &mut rng);
+        let food = FoodStore::new(config.food, config.width, config.height, &mut rng);
+        let obstacles = ObstacleStore::new(config.obstacles, config.width, config.height, &mut rng);
+        let food_growers =
+            FoodGrowerStore::new(config.food_growers, config.width, config.height, &mut rng);
+        let mut grid = SpatialGrid::new(config.width, config.height, GRID_CELL_SIZE);
         grid.rebuild(&food);
-        let mut cell_grid = CellGrid::new(ARENA_WIDTH, ARENA_HEIGHT, CELL_GRID_SIZE);
+        let mut cell_grid = CellGrid::new(config.width, config.height, CELL_GRID_SIZE);
         cell_grid.rebuild(&cells);
 
         Self {
             cells,
             food,
+            obstacles,
+            food_growers,
+            width: config.width,
+            height: config.height,
             grid,
             cell_grid,
             rng,
+            elapsed: 0.0,
+            max_food: config
+                .food
+                .saturating_add(config.food_growers.saturating_mul(80))
+                .max(config.food),
         }
     }
 
     pub fn update(&mut self, dt: f32) {
         let dt = dt.clamp(0.0, 1.0 / 20.0);
+        self.elapsed += dt;
+        self.advect_obstacles(dt);
+        self.advect_food_growers(dt);
+        self.grow_food(dt);
+        self.advect_food(dt);
+        self.push_food_from_obstacles(dt);
         self.grid.rebuild(&self.food);
         self.decay_visuals(dt);
 
@@ -139,25 +250,191 @@ impl WorldState {
                 )
             };
 
+            let current = liquid_current_at(Vec2::new(x, y), self.elapsed) * CELL_CURRENT_SPEED;
             let steer = (STEER_GAIN * dt).clamp(0.0, 1.0);
-            self.cells.vx[i] = (self.cells.vx[i] + (desired_x - self.cells.vx[i]) * steer) * DRAG;
-            self.cells.vy[i] = (self.cells.vy[i] + (desired_y - self.cells.vy[i]) * steer) * DRAG;
+            self.cells.vx[i] =
+                (self.cells.vx[i] + (desired_x + current.x - self.cells.vx[i]) * steer) * DRAG;
+            self.cells.vy[i] =
+                (self.cells.vy[i] + (desired_y + current.y - self.cells.vy[i]) * steer) * DRAG;
 
             self.cells.x[i] += self.cells.vx[i] * dt;
             self.cells.y[i] += self.cells.vy[i] * dt;
 
             self.bounce_cell(i);
+            self.resolve_cell_obstacles(i);
 
             if let Some((food_index, dist_sq)) = target_food {
                 let eat_radius = self.cells.collision_bound_radius(i) + FOOD_RADIUS;
                 if dist_sq <= eat_radius * eat_radius {
-                    self.food.respawn(food_index, &mut self.rng);
+                    self.food
+                        .respawn(food_index, self.width, self.height, &mut self.rng);
                     self.cells.energy[i] = (self.cells.energy[i] + 1.0).min(255.0);
                 }
             }
         }
 
         self.solve_cell_collisions();
+    }
+
+    fn advect_obstacles(&mut self, dt: f32) {
+        let half_w = self.width * 0.5;
+        let half_h = self.height * 0.5;
+
+        for i in 0..self.obstacles.len() {
+            let position = Vec2::new(self.obstacles.x[i], self.obstacles.y[i]);
+            let current = liquid_current_at(position, self.elapsed + self.obstacles.phase[i])
+                * OBSTACLE_CURRENT_SPEED;
+            self.obstacles.vx[i] = self.obstacles.vx[i] * 0.985 + current.x * 0.015;
+            self.obstacles.vy[i] = self.obstacles.vy[i] * 0.985 + current.y * 0.015;
+            let velocity = Vec2::new(self.obstacles.vx[i], self.obstacles.vy[i])
+                .clamp_length_max(OBSTACLE_CURRENT_SPEED);
+            self.obstacles.vx[i] = velocity.x;
+            self.obstacles.vy[i] = velocity.y;
+            self.obstacles.x[i] += self.obstacles.vx[i] * dt;
+            self.obstacles.y[i] += self.obstacles.vy[i] * dt;
+            self.obstacles.rotation[i] += self.obstacles.spin[i] * dt;
+            clamp_bounce_axis(
+                &mut self.obstacles.x[i],
+                &mut self.obstacles.vx[i],
+                half_w,
+                self.obstacles.radius[i],
+            );
+            clamp_bounce_axis(
+                &mut self.obstacles.y[i],
+                &mut self.obstacles.vy[i],
+                half_h,
+                self.obstacles.radius[i],
+            );
+        }
+    }
+
+    fn advect_food_growers(&mut self, dt: f32) {
+        let half_w = self.width * 0.5;
+        let half_h = self.height * 0.5;
+
+        for i in 0..self.food_growers.len() {
+            let position = Vec2::new(self.food_growers.x[i], self.food_growers.y[i]);
+            let current = liquid_current_at(position, self.elapsed + self.food_growers.phase[i])
+                * GROWER_CURRENT_SPEED;
+            self.food_growers.vx[i] = self.food_growers.vx[i] * 0.99 + current.x * 0.01;
+            self.food_growers.vy[i] = self.food_growers.vy[i] * 0.99 + current.y * 0.01;
+            self.food_growers.x[i] += self.food_growers.vx[i] * dt;
+            self.food_growers.y[i] += self.food_growers.vy[i] * dt;
+            self.food_growers.rotation[i] += self.food_growers.spin[i] * dt;
+            clamp_bounce_axis(
+                &mut self.food_growers.x[i],
+                &mut self.food_growers.vx[i],
+                half_w,
+                self.food_growers.radius[i],
+            );
+            clamp_bounce_axis(
+                &mut self.food_growers.y[i],
+                &mut self.food_growers.vy[i],
+                half_h,
+                self.food_growers.radius[i],
+            );
+        }
+    }
+
+    fn grow_food(&mut self, dt: f32) {
+        for i in 0..self.food_growers.len() {
+            self.food_growers.timer[i] -= dt;
+            if self.food_growers.timer[i] > 0.0 || self.food.len() >= self.max_food {
+                continue;
+            }
+
+            self.food_growers.timer[i] = self.food_growers.interval[i];
+            let angle = self.rng.random_range(0.0..std::f32::consts::TAU);
+            let distance = self.rng.random_range(
+                (self.food_growers.radius[i] * 0.75)..(self.food_growers.radius[i] * 1.55),
+            );
+            let (s, c) = angle.sin_cos();
+            let x = self.food_growers.x[i] + c * distance;
+            let y = self.food_growers.y[i] + s * distance;
+            self.food.push_at(
+                x,
+                y,
+                FoodKind::Grass,
+                self.width,
+                self.height,
+                &mut self.rng,
+            );
+        }
+    }
+
+    fn advect_food(&mut self, dt: f32) {
+        let half_w = self.width * 0.5;
+        let half_h = self.height * 0.5;
+
+        for i in 0..self.food.len() {
+            let position = Vec2::new(self.food.x[i], self.food.y[i]);
+            let current = liquid_current_at(position, self.elapsed) * FOOD_CURRENT_SPEED;
+            self.food.x[i] += current.x * dt;
+            self.food.y[i] += current.y * dt;
+
+            wrap_axis(&mut self.food.x[i], half_w, FOOD_RADIUS);
+            wrap_axis(&mut self.food.y[i], half_h, FOOD_RADIUS);
+        }
+    }
+
+    fn push_food_from_obstacles(&mut self, dt: f32) {
+        for obstacle_index in 0..self.obstacles.len() {
+            let center = Vec2::new(
+                self.obstacles.x[obstacle_index],
+                self.obstacles.y[obstacle_index],
+            );
+            let radius = self.obstacles.radius[obstacle_index] + FOOD_RADIUS + 18.0;
+
+            for food_index in 0..self.food.len() {
+                let delta = Vec2::new(self.food.x[food_index], self.food.y[food_index]) - center;
+                let dist_sq = delta.length_squared();
+                if dist_sq >= radius * radius {
+                    continue;
+                }
+
+                let dir = if dist_sq > 0.0001 {
+                    delta * dist_sq.sqrt().recip()
+                } else {
+                    Vec2::X
+                };
+                let push = (1.0 - dist_sq.sqrt() / radius).clamp(0.0, 1.0);
+                self.food.x[food_index] += dir.x * push * FOOD_PUSH_STRENGTH * dt;
+                self.food.y[food_index] += dir.y * push * FOOD_PUSH_STRENGTH * dt;
+            }
+        }
+    }
+
+    fn resolve_cell_obstacles(&mut self, cell_index: usize) {
+        for obstacle_index in 0..self.obstacles.len() {
+            let dx = self.cells.x[cell_index] - self.obstacles.x[obstacle_index];
+            let dy = self.cells.y[cell_index] - self.obstacles.y[obstacle_index];
+            let min_dist = self.cells.collision_bound_radius(cell_index)
+                + self.obstacles.radius[obstacle_index];
+            let dist_sq = dx * dx + dy * dy;
+            if dist_sq >= min_dist * min_dist {
+                continue;
+            }
+
+            let (nx, ny, dist) = if dist_sq > 0.0001 {
+                let dist = dist_sq.sqrt();
+                (dx / dist, dy / dist, dist)
+            } else {
+                (1.0, 0.0, 0.001)
+            };
+            let push = min_dist - dist;
+            self.cells.x[cell_index] += nx * push;
+            self.cells.y[cell_index] += ny * push;
+
+            let into_obstacle = self.cells.vx[cell_index] * nx + self.cells.vy[cell_index] * ny;
+            if into_obstacle < 0.0 {
+                self.cells.vx[cell_index] -= into_obstacle * nx * (1.0 + CELL_OBSTACLE_RESTITUTION);
+                self.cells.vy[cell_index] -= into_obstacle * ny * (1.0 + CELL_OBSTACLE_RESTITUTION);
+                self.cells.jelly_intensity[cell_index] =
+                    (self.cells.jelly_intensity[cell_index] + 0.35).min(1.0);
+                self.cells.jelly_dir_x[cell_index] = nx;
+                self.cells.jelly_dir_y[cell_index] = ny;
+            }
+        }
     }
 
     fn decay_visuals(&mut self, dt: f32) {
@@ -271,8 +548,8 @@ impl WorldState {
     }
 
     fn bounce_cell(&mut self, i: usize) {
-        let half_w = ARENA_WIDTH * 0.5;
-        let half_h = ARENA_HEIGHT * 0.5;
+        let half_w = self.width * 0.5;
+        let half_h = self.height * 0.5;
         let r = self.cells.collision_bound_radius(i);
 
         if self.cells.x[i] < -half_w + r {
@@ -290,6 +567,51 @@ impl WorldState {
             self.cells.y[i] = half_h - r;
             self.cells.vy[i] = -self.cells.vy[i].abs();
         }
+    }
+}
+
+fn liquid_current_at(position: Vec2, time: f32) -> Vec2 {
+    let t = time * LIQUID_FLOW_SPEED * 8.0;
+    let p = position / LIQUID_FLOW_SCALE;
+    let drift = Vec2::new((t * 0.23).sin(), (t * 0.19).cos()) * 0.35;
+    let p = p + drift;
+
+    let wave_a = (p.x * 1.7 + (p.y * 0.9 + t * 0.7).sin() + t).sin();
+    let wave_b = ((p.x + p.y) * 1.15 - t * 0.63).sin();
+    let wave_c = ((p.x * 0.62 - p.y * 1.31) + t * 0.37).cos();
+    let wave_d = ((p.x * 1.41 + p.y * 0.73) - t * 0.29).sin();
+
+    let direction = Vec2::new(wave_b - wave_c * 0.7, wave_a + wave_d * 0.7);
+    let len_sq = direction.length_squared();
+    if len_sq < 0.0001 {
+        return Vec2::ZERO;
+    }
+
+    let pulse = 0.55 + 0.45 * ((p.x * 0.8 - p.y * 0.6 + t * 0.42).sin() * 0.5 + 0.5);
+    direction * len_sq.sqrt().recip() * pulse
+}
+
+fn wrap_axis(value: &mut f32, half_extent: f32, margin: f32) {
+    let min = -half_extent + margin;
+    let max = half_extent - margin;
+
+    if *value < min {
+        *value = max;
+    } else if *value > max {
+        *value = min;
+    }
+}
+
+fn clamp_bounce_axis(value: &mut f32, velocity: &mut f32, half_extent: f32, margin: f32) {
+    let min = -half_extent + margin;
+    let max = half_extent - margin;
+
+    if *value < min {
+        *value = min;
+        *velocity = velocity.abs() * 0.35;
+    } else if *value > max {
+        *value = max;
+        *velocity = -velocity.abs() * 0.35;
     }
 }
 
@@ -316,7 +638,7 @@ pub struct CellStore {
 }
 
 impl CellStore {
-    fn new(count: usize, rng: &mut SmallRng) -> Self {
+    fn new(count: usize, arena_w: f32, arena_h: f32, rng: &mut SmallRng) -> Self {
         let mut store = Self {
             x: Vec::with_capacity(count),
             y: Vec::with_capacity(count),
@@ -348,12 +670,12 @@ impl CellStore {
             let nucleus_distance = rng.random_range(0.0..0.36) * radius;
             let (nucleus_s, nucleus_c) = nucleus_angle.sin_cos();
 
-            store.x.push(
-                rng.random_range((-ARENA_WIDTH * 0.5 + radius)..(ARENA_WIDTH * 0.5 - radius)),
-            );
-            store.y.push(
-                rng.random_range((-ARENA_HEIGHT * 0.5 + radius)..(ARENA_HEIGHT * 0.5 - radius)),
-            );
+            store
+                .x
+                .push(rng.random_range((-arena_w * 0.5 + radius)..(arena_w * 0.5 - radius)));
+            store
+                .y
+                .push(rng.random_range((-arena_h * 0.5 + radius)..(arena_h * 0.5 - radius)));
             store.vx.push(c * speed);
             store.vy.push(s * speed);
             store.radius.push(radius);
@@ -405,6 +727,8 @@ pub struct CellGrid {
     cols: usize,
     rows: usize,
     cell_size: f32,
+    width: f32,
+    height: f32,
     buckets: Vec<Vec<usize>>,
 }
 
@@ -418,6 +742,8 @@ impl CellGrid {
             cols,
             rows,
             cell_size,
+            width,
+            height,
             buckets,
         }
     }
@@ -434,10 +760,10 @@ impl CellGrid {
     }
 
     fn bucket_index(&self, x: f32, y: f32) -> usize {
-        let gx = ((x + ARENA_WIDTH * 0.5) / self.cell_size)
+        let gx = ((x + self.width * 0.5) / self.cell_size)
             .floor()
             .clamp(0.0, self.cols as f32 - 1.0) as usize;
-        let gy = ((y + ARENA_HEIGHT * 0.5) / self.cell_size)
+        let gy = ((y + self.height * 0.5) / self.cell_size)
             .floor()
             .clamp(0.0, self.rows as f32 - 1.0) as usize;
         gy * self.cols + gx
@@ -451,38 +777,199 @@ impl CellGrid {
 pub struct FoodStore {
     pub x: Vec<f32>,
     pub y: Vec<f32>,
+    pub kind: Vec<FoodKind>,
+    pub shape: Vec<FoodShape>,
+    pub phase: Vec<f32>,
 }
 
 impl FoodStore {
-    fn new(count: usize, rng: &mut SmallRng) -> Self {
+    fn new(count: usize, arena_w: f32, arena_h: f32, rng: &mut SmallRng) -> Self {
         let mut store = Self {
             x: Vec::with_capacity(count),
             y: Vec::with_capacity(count),
+            kind: Vec::with_capacity(count),
+            shape: Vec::with_capacity(count),
+            phase: Vec::with_capacity(count),
         };
 
-        for _ in 0..count {
-            store.push_random(rng);
+        for index in 0..count {
+            let kind = if index % 2 == 0 {
+                FoodKind::Grass
+            } else {
+                FoodKind::Meat
+            };
+            store.push_random(arena_w, arena_h, kind, rng);
         }
 
         store
     }
 
-    fn push_random(&mut self, rng: &mut SmallRng) {
-        self.x.push(
-            rng.random_range((-ARENA_WIDTH * 0.5 + FOOD_RADIUS)..(ARENA_WIDTH * 0.5 - FOOD_RADIUS)),
-        );
-        self.y.push(
-            rng.random_range(
-                (-ARENA_HEIGHT * 0.5 + FOOD_RADIUS)..(ARENA_HEIGHT * 0.5 - FOOD_RADIUS),
-            ),
-        );
+    fn push_random(&mut self, arena_w: f32, arena_h: f32, kind: FoodKind, rng: &mut SmallRng) {
+        self.x
+            .push(rng.random_range((-arena_w * 0.5 + FOOD_RADIUS)..(arena_w * 0.5 - FOOD_RADIUS)));
+        self.y
+            .push(rng.random_range((-arena_h * 0.5 + FOOD_RADIUS)..(arena_h * 0.5 - FOOD_RADIUS)));
+        self.kind.push(kind);
+        self.shape.push(FoodShape::random(rng));
+        self.phase
+            .push(rng.random_range(0.0..std::f32::consts::TAU));
     }
 
-    fn respawn(&mut self, index: usize, rng: &mut SmallRng) {
+    fn push_at(
+        &mut self,
+        x: f32,
+        y: f32,
+        kind: FoodKind,
+        arena_w: f32,
+        arena_h: f32,
+        rng: &mut SmallRng,
+    ) {
+        let half_w = arena_w * 0.5 - FOOD_RADIUS;
+        let half_h = arena_h * 0.5 - FOOD_RADIUS;
+        self.x.push(x.clamp(-half_w, half_w));
+        self.y.push(y.clamp(-half_h, half_h));
+        self.kind.push(kind);
+        self.shape.push(FoodShape::random(rng));
+        self.phase
+            .push(rng.random_range(0.0..std::f32::consts::TAU));
+    }
+
+    fn respawn(&mut self, index: usize, arena_w: f32, arena_h: f32, rng: &mut SmallRng) {
         self.x[index] =
-            rng.random_range((-ARENA_WIDTH * 0.5 + FOOD_RADIUS)..(ARENA_WIDTH * 0.5 - FOOD_RADIUS));
-        self.y[index] = rng
-            .random_range((-ARENA_HEIGHT * 0.5 + FOOD_RADIUS)..(ARENA_HEIGHT * 0.5 - FOOD_RADIUS));
+            rng.random_range((-arena_w * 0.5 + FOOD_RADIUS)..(arena_w * 0.5 - FOOD_RADIUS));
+        self.y[index] =
+            rng.random_range((-arena_h * 0.5 + FOOD_RADIUS)..(arena_h * 0.5 - FOOD_RADIUS));
+        self.kind[index] = FoodKind::random(rng);
+        self.shape[index] = FoodShape::random(rng);
+        self.phase[index] = rng.random_range(0.0..std::f32::consts::TAU);
+    }
+
+    pub fn len(&self) -> usize {
+        self.x.len()
+    }
+}
+
+pub struct ObstacleStore {
+    pub x: Vec<f32>,
+    pub y: Vec<f32>,
+    pub vx: Vec<f32>,
+    pub vy: Vec<f32>,
+    pub radius: Vec<f32>,
+    pub phase: Vec<f32>,
+    pub rotation: Vec<f32>,
+    pub spin: Vec<f32>,
+    pub spokes: Vec<f32>,
+    pub rings: Vec<f32>,
+}
+
+impl ObstacleStore {
+    fn new(count: usize, arena_w: f32, arena_h: f32, rng: &mut SmallRng) -> Self {
+        let mut store = Self {
+            x: Vec::with_capacity(count),
+            y: Vec::with_capacity(count),
+            vx: Vec::with_capacity(count),
+            vy: Vec::with_capacity(count),
+            radius: Vec::with_capacity(count),
+            phase: Vec::with_capacity(count),
+            rotation: Vec::with_capacity(count),
+            spin: Vec::with_capacity(count),
+            spokes: Vec::with_capacity(count),
+            rings: Vec::with_capacity(count),
+        };
+
+        for _ in 0..count {
+            let radius = rng.random_range(14.0_f32..118.0_f32).powf(1.08);
+            let half_w = arena_w * 0.5 - radius;
+            let half_h = arena_h * 0.5 - radius;
+            store.x.push(rng.random_range(-half_w..half_w));
+            store.y.push(rng.random_range(-half_h..half_h));
+            store.vx.push(rng.random_range(-4.0..4.0));
+            store.vy.push(rng.random_range(-4.0..4.0));
+            store.radius.push(radius);
+            store
+                .phase
+                .push(rng.random_range(0.0..std::f32::consts::TAU));
+            store
+                .rotation
+                .push(rng.random_range(0.0..std::f32::consts::TAU));
+            store.spin.push(rng.random_range(-0.085..0.085));
+            store.spokes.push(rng.random_range(18.0..35.0));
+            store.rings.push(rng.random_range(2.0..5.0));
+        }
+
+        store
+    }
+
+    pub fn len(&self) -> usize {
+        self.x.len()
+    }
+}
+
+pub struct FoodGrowerStore {
+    pub x: Vec<f32>,
+    pub y: Vec<f32>,
+    pub vx: Vec<f32>,
+    pub vy: Vec<f32>,
+    pub radius: Vec<f32>,
+    pub phase: Vec<f32>,
+    pub rotation: Vec<f32>,
+    pub spin: Vec<f32>,
+    pub branches: Vec<f32>,
+    pub timer: Vec<f32>,
+    pub interval: Vec<f32>,
+}
+
+impl FoodGrowerStore {
+    fn new(count: usize, arena_w: f32, arena_h: f32, rng: &mut SmallRng) -> Self {
+        let mut store = Self {
+            x: Vec::with_capacity(count),
+            y: Vec::with_capacity(count),
+            vx: Vec::with_capacity(count),
+            vy: Vec::with_capacity(count),
+            radius: Vec::with_capacity(count),
+            phase: Vec::with_capacity(count),
+            rotation: Vec::with_capacity(count),
+            spin: Vec::with_capacity(count),
+            branches: Vec::with_capacity(count),
+            timer: Vec::with_capacity(count),
+            interval: Vec::with_capacity(count),
+        };
+
+        for _ in 0..count {
+            let giant = rng.random_bool(0.18);
+            let radius = if giant {
+                rng.random_range(145.0..190.0)
+            } else {
+                rng.random_range(54.0..92.0)
+            };
+            let half_w = arena_w * 0.5 - radius * 1.8;
+            let half_h = arena_h * 0.5 - radius * 1.8;
+            store.x.push(rng.random_range(-half_w..half_w));
+            store.y.push(rng.random_range(-half_h..half_h));
+            store.vx.push(rng.random_range(-2.0..2.0));
+            store.vy.push(rng.random_range(-2.0..2.0));
+            store.radius.push(radius);
+            store
+                .phase
+                .push(rng.random_range(0.0..std::f32::consts::TAU));
+            store
+                .rotation
+                .push(rng.random_range(0.0..std::f32::consts::TAU));
+            store.spin.push(rng.random_range(-0.018..0.018));
+            store.branches.push(if giant {
+                rng.random_range(12.0..19.0)
+            } else {
+                rng.random_range(5.0..10.0)
+            });
+            store.timer.push(rng.random_range(0.2..3.0));
+            store.interval.push(if giant {
+                rng.random_range(1.2..2.4)
+            } else {
+                rng.random_range(1.8..3.6)
+            });
+        }
+
+        store
     }
 
     pub fn len(&self) -> usize {
@@ -494,6 +981,8 @@ pub struct SpatialGrid {
     cols: usize,
     rows: usize,
     cell_size: f32,
+    width: f32,
+    height: f32,
     buckets: Vec<Vec<usize>>,
 }
 
@@ -507,6 +996,8 @@ impl SpatialGrid {
             cols,
             rows,
             cell_size,
+            width,
+            height,
             buckets,
         }
     }
@@ -565,10 +1056,10 @@ impl SpatialGrid {
     }
 
     fn grid_coords(&self, x: f32, y: f32) -> (i32, i32) {
-        let gx = ((x + ARENA_WIDTH * 0.5) / self.cell_size)
+        let gx = ((x + self.width * 0.5) / self.cell_size)
             .floor()
             .clamp(0.0, self.cols as f32 - 1.0) as i32;
-        let gy = ((y + ARENA_HEIGHT * 0.5) / self.cell_size)
+        let gy = ((y + self.height * 0.5) / self.cell_size)
             .floor()
             .clamp(0.0, self.rows as f32 - 1.0) as i32;
         (gx, gy)
@@ -604,10 +1095,10 @@ mod tests {
 
         for i in 0..world.cells.len() {
             let r = world.cells.radius[i];
-            assert!(world.cells.x[i] >= -ARENA_WIDTH * 0.5 + r);
-            assert!(world.cells.x[i] <= ARENA_WIDTH * 0.5 - r);
-            assert!(world.cells.y[i] >= -ARENA_HEIGHT * 0.5 + r);
-            assert!(world.cells.y[i] <= ARENA_HEIGHT * 0.5 - r);
+            assert!(world.cells.x[i] >= -world.width * 0.5 + r);
+            assert!(world.cells.x[i] <= world.width * 0.5 - r);
+            assert!(world.cells.y[i] >= -world.height * 0.5 + r);
+            assert!(world.cells.y[i] <= world.height * 0.5 - r);
         }
     }
 
@@ -616,6 +1107,7 @@ mod tests {
         let config = SimConfig {
             cells: 500,
             food: 50,
+            food_growers: 0,
             ..default()
         };
         let mut world = WorldState::new(&config);
@@ -626,6 +1118,108 @@ mod tests {
         }
 
         assert_eq!(world.food.len(), initial_food);
+    }
+
+    #[test]
+    fn food_spawns_as_grass_and_meat() {
+        let config = SimConfig {
+            cells: 0,
+            food: 12,
+            ..default()
+        };
+        let world = WorldState::new(&config);
+
+        assert!(world.food.kind.iter().any(|kind| *kind == FoodKind::Grass));
+        assert!(world.food.kind.iter().any(|kind| *kind == FoodKind::Meat));
+    }
+
+    #[test]
+    fn food_uses_multiple_shapes() {
+        let config = SimConfig {
+            cells: 0,
+            food: 40,
+            ..default()
+        };
+        let world = WorldState::new(&config);
+        let first = world.food.shape[0];
+
+        assert!(world.food.shape.iter().any(|shape| *shape != first));
+    }
+
+    #[test]
+    fn obstacles_and_food_growers_spawn() {
+        let config = SimConfig {
+            cells: 0,
+            food: 0,
+            obstacles: 7,
+            food_growers: 3,
+            ..default()
+        };
+        let world = WorldState::new(&config);
+
+        assert_eq!(world.obstacles.len(), 7);
+        assert_eq!(world.food_growers.len(), 3);
+    }
+
+    #[test]
+    fn food_growers_spawn_food_over_time() {
+        let config = SimConfig {
+            cells: 0,
+            food: 0,
+            obstacles: 0,
+            food_growers: 1,
+            ..default()
+        };
+        let mut world = WorldState::new(&config);
+
+        for _ in 0..240 {
+            world.update(1.0 / 60.0);
+        }
+
+        assert!(world.food.len() > 0);
+    }
+
+    #[test]
+    fn obstacles_push_cells_out() {
+        let config = SimConfig {
+            cells: 1,
+            food: 0,
+            obstacles: 1,
+            food_growers: 0,
+            ..default()
+        };
+        let mut world = WorldState::new(&config);
+        world.obstacles.x[0] = 0.0;
+        world.obstacles.y[0] = 0.0;
+        world.obstacles.radius[0] = 80.0;
+        world.cells.x[0] = 10.0;
+        world.cells.y[0] = 0.0;
+        world.cells.radius[0] = 8.0;
+
+        world.resolve_cell_obstacles(0);
+
+        let dist = Vec2::new(world.cells.x[0], world.cells.y[0]).length();
+        assert!(dist >= 88.0);
+    }
+
+    #[test]
+    fn liquid_current_moves_food() {
+        let config = SimConfig {
+            cells: 0,
+            food: 1,
+            width: 1_000.0,
+            height: 1_000.0,
+            ..default()
+        };
+        let mut world = WorldState::new(&config);
+        world.food.x[0] = 123.0;
+        world.food.y[0] = -77.0;
+        let before = Vec2::new(world.food.x[0], world.food.y[0]);
+
+        world.update(1.0 / 60.0);
+
+        let after = Vec2::new(world.food.x[0], world.food.y[0]);
+        assert!(after.distance_squared(before) > 0.0001);
     }
 
     #[test]

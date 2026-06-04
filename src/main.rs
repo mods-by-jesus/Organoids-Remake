@@ -1,15 +1,25 @@
+mod menu;
 mod rendering;
 mod simulation;
 
 use bevy::camera::ScalingMode;
 use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
-use bevy::input::mouse::{MouseMotion, MouseScrollUnit, MouseWheel};
+use bevy::input::mouse::{MouseScrollUnit, MouseWheel};
 use bevy::prelude::*;
 use bevy::render::view::NoIndirectDrawing;
 use bevy::window::{PresentMode, PrimaryWindow, WindowResolution};
-use rendering::{InstancedDiscPlugin, spawn_simulation_layers, sync_instance_data};
-use simulation::{ARENA_HEIGHT, ARENA_WIDTH, FrameStats, SimConfig, WorldState};
+use rendering::{
+    InstancedDiscPlugin, LiquidMediumMaterial, spawn_simulation_layers, sync_instance_data,
+};
+use simulation::{FrameStats, SimConfig, WorldState};
 use std::time::Instant;
+
+#[derive(States, Debug, Clone, Copy, Eq, PartialEq, Hash, Default)]
+pub enum AppState {
+    #[default]
+    Menu,
+    Running,
+}
 
 #[derive(Component)]
 struct StatsText;
@@ -24,13 +34,16 @@ const MIN_ZOOM_SCALE: f32 = 0.08;
 const MAX_ZOOM_SCALE: f32 = 12.0;
 
 fn main() {
-    let config = match SimConfig::from_args() {
-        Ok(config) => config,
-        Err(message) => {
-            eprintln!("{message}");
-            return;
+    let mut config = SimConfig::default();
+    if std::env::args().len() > 1 {
+        match SimConfig::from_args() {
+            Ok(c) => config = c,
+            Err(message) => {
+                eprintln!("{message}");
+                return;
+            }
         }
-    };
+    }
 
     let present_mode = if config.vsync {
         PresentMode::AutoVsync
@@ -40,7 +53,6 @@ fn main() {
 
     App::new()
         .insert_resource(ClearColor(Color::srgb(0.012, 0.015, 0.018)))
-        .insert_resource(WorldState::new(&config))
         .insert_resource(config.clone())
         .init_resource::<FrameStats>()
         .add_plugins((
@@ -51,7 +63,7 @@ fn main() {
                 })
                 .set(WindowPlugin {
                     primary_window: Some(Window {
-                        title: format!("Organoids - {} cells / {} food", config.cells, config.food),
+                        title: "Organoids".to_string(),
                         present_mode,
                         resolution: WindowResolution::new(1920, 1080)
                             .with_scale_factor_override(1.0),
@@ -60,9 +72,21 @@ fn main() {
                     ..default()
                 }),
             FrameTimeDiagnosticsPlugin::default(),
+            MaterialPlugin::<LiquidMediumMaterial>::default(),
             InstancedDiscPlugin,
+            menu::MenuPlugin,
         ))
-        .add_systems(Startup, (setup_camera, spawn_simulation_layers, setup_ui))
+        .init_state::<AppState>()
+        .add_systems(Startup, setup_camera)
+        .add_systems(
+            OnEnter(AppState::Running),
+            (
+                spawn_simulation_layers,
+                setup_ui,
+                initialize_world_state,
+                update_window_title,
+            ),
+        )
         .add_systems(
             Update,
             (
@@ -71,9 +95,23 @@ fn main() {
                 sync_instance_data,
                 update_ui,
             )
-                .chain(),
+                .chain()
+                .run_if(in_state(AppState::Running)),
         )
         .run();
+}
+
+fn initialize_world_state(mut commands: Commands, config: Res<SimConfig>) {
+    commands.insert_resource(WorldState::new(&config));
+}
+
+fn update_window_title(
+    mut windows: Query<&mut Window, With<PrimaryWindow>>,
+    config: Res<SimConfig>,
+) {
+    if let Some(mut window) = windows.iter_mut().next() {
+        window.title = format!("Organoids - {} cells / {} food", config.cells, config.food);
+    }
 }
 
 fn setup_camera(mut commands: Commands) {
@@ -134,10 +172,10 @@ fn camera_controls(
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
     mouse_buttons: Res<ButtonInput<MouseButton>>,
-    mut mouse_motion: MessageReader<MouseMotion>,
     mut mouse_wheel: MessageReader<MouseWheel>,
     windows: Query<(Entity, &Window), With<PrimaryWindow>>,
     mut camera: Query<(&mut Transform, &mut Projection), With<MainCamera>>,
+    mut last_cursor: Local<Option<Vec2>>,
 ) {
     let Ok((window_entity, window)) = windows.single() else {
         return;
@@ -170,19 +208,23 @@ fn camera_controls(
         transform.translation.y += movement.y;
     }
 
-    let view_size = visible_world_size(projection, window);
+    let current_cursor = window.cursor_position();
     if mouse_buttons.pressed(MouseButton::Middle) {
-        let mut drag_delta = Vec2::ZERO;
-        for event in mouse_motion.read() {
-            drag_delta += event.delta;
-        }
-
-        if drag_delta != Vec2::ZERO {
-            transform.translation.x -= drag_delta.x * view_size.x / window.width();
-            transform.translation.y += drag_delta.y * view_size.y / window.height();
+        if let Some(current) = current_cursor {
+            if let Some(last) = *last_cursor {
+                let delta = current - last;
+                if delta != Vec2::ZERO {
+                    let view_size = visible_world_size(projection, window);
+                    transform.translation.x -= delta.x * view_size.x / window.width();
+                    transform.translation.y += delta.y * view_size.y / window.height();
+                }
+            }
+            *last_cursor = Some(current);
+        } else {
+            *last_cursor = None;
         }
     } else {
-        mouse_motion.clear();
+        *last_cursor = None;
     }
 
     let mut scroll = 0.0;
@@ -216,8 +258,6 @@ fn camera_controls(
             transform.translation.y += correction.y;
         }
     }
-
-    clamp_camera_to_arena(&mut transform, projection, window);
 }
 
 fn cursor_to_world(
@@ -276,24 +316,12 @@ fn visible_world_size(projection: &OrthographicProjection, window: &Window) -> V
     size * projection.scale
 }
 
-fn clamp_camera_to_arena(
-    transform: &mut Transform,
-    projection: &OrthographicProjection,
-    window: &Window,
-) {
-    let view_size = visible_world_size(projection, window);
-    let max_x = (ARENA_WIDTH * 0.5 - view_size.x * 0.5).max(0.0);
-    let max_y = (ARENA_HEIGHT * 0.5 - view_size.y * 0.5).max(0.0);
-
-    transform.translation.x = transform.translation.x.clamp(-max_x, max_x);
-    transform.translation.y = transform.translation.y.clamp(-max_y, max_y);
-}
-
 fn update_ui(
     diagnostics: Res<DiagnosticsStore>,
     world: Res<WorldState>,
     stats: Res<FrameStats>,
     mut text: Query<&mut Text, With<StatsText>>,
+    config: Res<SimConfig>,
 ) {
     let fps = diagnostics
         .get(&FrameTimeDiagnosticsPlugin::FPS)
@@ -306,12 +334,14 @@ fn update_ui(
 
     let mut text = text.single_mut().expect("stats text exists");
     **text = format!(
-        "FPS {fps:>6.1} | frame {frame_ms:>5.2} ms\ncells {:>5} | food {:>5}\nsim {:>5.2} ms | upload {:>5.2} ms\narena {:.0} x {:.0}",
+        "FPS {fps:>6.1} | frame {frame_ms:>5.2} ms\ncells {:>5} | food {:>5}\nobstacles {:>4} | growers {:>4}\nsim {:>5.2} ms | upload {:>5.2} ms\narena {:.0} x {:.0}",
         world.cells.len(),
         world.food.len(),
+        world.obstacles.len(),
+        world.food_growers.len(),
         stats.sim_time.as_secs_f64() * 1_000.0,
         stats.upload_time.as_secs_f64() * 1_000.0,
-        ARENA_WIDTH,
-        ARENA_HEIGHT,
+        config.width,
+        config.height,
     );
 }
