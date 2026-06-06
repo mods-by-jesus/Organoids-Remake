@@ -61,6 +61,8 @@ pub struct InstanceData {
     pub nucleus: [f32; 4],
     pub motion: [f32; 4],
     pub shape: [f32; 4],
+    pub soft_radii_a: [f32; 4],
+    pub soft_radii_b: [f32; 4],
 }
 
 pub struct InstancedDiscPlugin;
@@ -176,41 +178,45 @@ pub fn sync_instance_data(
         let move_dir_x = heading.cos();
         let move_dir_y = heading.sin();
         let jelly = world.cells.jelly_intensity[i];
-        let dir_x = if jelly > 0.01 {
-            world.cells.jelly_dir_x[i]
-        } else {
-            move_dir_x
-        };
-        let dir_y = if jelly > 0.01 {
-            world.cells.jelly_dir_y[i]
-        } else {
-            move_dir_y
-        };
+        let visual_radius = world.cells.visual_radii[i]
+            .iter()
+            .copied()
+            .fold(world.cells.radius[i] * 0.25, f32::max)
+            .max(0.1);
+        let inv_visual_radius = visual_radius.recip();
+        let soft_radii = world.cells.visual_radii[i];
 
         particles.push(InstanceData {
-            pos_radius: [
-                world.cells.x[i],
-                world.cells.y[i],
-                2.0,
-                world.cells.radius[i],
-            ],
+            pos_radius: [world.cells.x[i], world.cells.y[i], 2.0, visual_radius],
             color: species_color(world.cells.species[i], world.cells.viability_ratio(i)),
             nucleus: [
                 (move_dir_x * world.cells.radius[i] * 0.24
                     + world.cells.nucleus_offset_x[i] * 0.25)
-                    / world.cells.radius[i],
+                    * inv_visual_radius,
                 (move_dir_y * world.cells.radius[i] * 0.24
                     + world.cells.nucleus_offset_y[i] * 0.25)
-                    / world.cells.radius[i],
-                world.cells.nucleus_radius[i] / world.cells.radius[i],
+                    * inv_visual_radius,
+                world.cells.nucleus_radius[i] * inv_visual_radius,
                 1.0,
             ],
-            motion: [dir_x, dir_y, jelly, world.cells.jelly_phase[i]],
+            motion: [move_dir_x, move_dir_y, jelly, world.cells.jelly_phase[i]],
             shape: [
                 world.cells.shape_wave_a[i],
                 world.cells.shape_wave_b[i],
                 world.cells.shape_phase[i],
                 world.cells.shape_softness[i],
+            ],
+            soft_radii_a: [
+                soft_radii[0] * inv_visual_radius,
+                soft_radii[1] * inv_visual_radius,
+                soft_radii[2] * inv_visual_radius,
+                soft_radii[3] * inv_visual_radius,
+            ],
+            soft_radii_b: [
+                soft_radii[4] * inv_visual_radius,
+                soft_radii[5] * inv_visual_radius,
+                soft_radii[6] * inv_visual_radius,
+                soft_radii[7] * inv_visual_radius,
             ],
         });
     }
@@ -220,7 +226,7 @@ pub fn sync_instance_data(
             continue;
         }
 
-        let color = match world.food.kind[i] {
+        let mut color = match world.food.kind[i] {
             FoodKind::Grass => GRASS_FOOD_COLOR,
             FoodKind::Meat => MEAT_FOOD_COLOR,
         };
@@ -233,40 +239,33 @@ pub fn sync_instance_data(
             FoodKind::Meat => 0.16,
         };
 
-        if world.food.feeder[i] >= 0
-            && let Some((stem_start, stem_end)) = world.feeder_food_stem_points(i)
-        {
-            let stem = stem_end - stem_start;
-            let stem_len = stem.length();
+        let z_layer = 3.0;
+        let render_x = world.food.x[i];
+        let render_y = world.food.y[i];
+        let mut z_layer_adjusted = z_layer;
+        if world.food.feeder[i] >= 0 {
+            let branch_index = world.food.anchor_branch[i];
+            if branch_index >= 0 {
+                let branch_index = branch_index as usize;
+                let layer = world.food_growers.branch_layer[branch_index];
+                z_layer_adjusted = 1.48 + layer * 0.20 + 0.05;
 
-            if stem_len > 0.75 {
-                let half_length = (stem_len * 0.5).max(0.5);
-                let stem_width =
-                    (FOOD_RADIUS * 0.34 * world.food.growth[i].clamp(0.55, 1.0)).max(0.9);
-                let instance_radius = half_length + stem_width * 2.0;
-                let stem_center = stem_start + stem * 0.5;
-                let stem_angle = stem.y.atan2(stem.x);
+                if !world.food_growers.branch_has_collision(branch_index) {
+                    color[0] *= 0.45;
+                    color[1] *= 0.45;
+                    color[2] *= 0.45;
+                    color[3] = 0.35;
+                }
 
-                particles.push(InstanceData {
-                    pos_radius: [stem_center.x, stem_center.y, 2.85, instance_radius],
-                    color: [0.34, 1.0, 0.36, 0.82],
-                    nucleus: [0.0, 0.0, 0.0, 4.0],
-                    motion: [0.0, 0.0, stem_angle, world.food.phase[i]],
-                    shape: [
-                        (stem_width / instance_radius).clamp(0.02, 0.22),
-                        0.0,
-                        (half_length / instance_radius).clamp(0.1, 0.98),
-                        0.0,
-                    ],
-                });
+                // Sway is already baked into food physics coordinates in advect_food, no manual rotation needed.
             }
         }
 
         particles.push(InstanceData {
             pos_radius: [
-                world.food.x[i],
-                world.food.y[i],
-                3.0,
+                render_x,
+                render_y,
+                z_layer_adjusted,
                 FOOD_RADIUS * world.food.growth[i].clamp(0.28, 1.0),
             ],
             color,
@@ -278,6 +277,8 @@ pub fn sync_instance_data(
                 world.food.spin[i],
                 world.food.shape[i].shader_shape(),
             ],
+            soft_radii_a: [1.0; 4],
+            soft_radii_b: [1.0; 4],
         });
     }
 
@@ -299,6 +300,8 @@ pub fn sync_instance_data(
                 radius,
                 0.0,
             ],
+            soft_radii_a: [1.0; 4],
+            soft_radii_b: [1.0; 4],
         });
     }
 
@@ -307,10 +310,24 @@ pub fn sync_instance_data(
         for branch_index in world.food_growers.branch_range(i) {
             let layer = world.food_growers.branch_layer[branch_index];
             let solid_branch = world.food_growers.branch_has_collision(branch_index);
+            let hue_shift = world.food_growers.branch_hue_shift[branch_index];
+            let light_shift = world.food_growers.branch_lightness_shift[branch_index];
+            let sat_shift = world.food_growers.branch_saturation_shift[branch_index];
+            let width_scale = world.food_growers.branch_width_scale[branch_index];
             let color = if solid_branch {
-                [0.25, 1.0, 0.42, 0.80]
+                [
+                    (0.25 + hue_shift).clamp(0.08, 0.42),
+                    (1.0 + light_shift).clamp(0.75, 1.0),
+                    (0.42 + sat_shift).clamp(0.15, 0.65),
+                    0.80,
+                ]
             } else {
-                [0.17, 0.78, 0.34, 0.48]
+                [
+                    (0.10 + hue_shift).clamp(0.01, 0.22),
+                    (0.45 + light_shift).clamp(0.25, 0.65),
+                    (0.20 + sat_shift).clamp(0.08, 0.38),
+                    0.35,
+                ]
             };
 
             for segment_index in 0..BRANCH_RENDER_SEGMENTS {
@@ -325,19 +342,18 @@ pub fn sync_instance_data(
                     continue;
                 }
 
-                let branch_width = world
-                    .food_growers
-                    .branch_collision_width_at(branch_index, tm);
+                let visual_width = world.food_growers.branch_width[branch_index] * width_scale;
                 let half_length = (segment_len * 0.5).max(1.0);
-                let instance_radius = half_length + branch_width * 2.0;
+                let instance_radius = half_length + visual_width * 2.0;
                 let center = a + segment * 0.5;
                 let angle = segment.y.atan2(segment.x);
+                let inv_segment_z = (BRANCH_RENDER_SEGMENTS - 1 - segment_index) as f32;
 
                 particles.push(InstanceData {
                     pos_radius: [
                         center.x,
                         center.y,
-                        1.48 + layer * 0.20 + segment_index as f32 * 0.002,
+                        1.48 + layer * 0.20 + inv_segment_z * 0.002,
                         instance_radius,
                     ],
                     color,
@@ -349,11 +365,13 @@ pub fn sync_instance_data(
                         world.food_growers.branch_phase[branch_index] + tm * 1.7,
                     ],
                     shape: [
-                        (branch_width / instance_radius).clamp(0.02, 0.28),
+                        (visual_width / instance_radius).clamp(0.02, 0.28),
                         0.0,
                         (half_length / instance_radius).clamp(0.1, 0.98),
                         0.0,
                     ],
+                    soft_radii_a: [1.0; 4],
+                    soft_radii_b: [1.0; 4],
                 });
             }
         }
@@ -379,7 +397,76 @@ pub fn sync_instance_data(
                 world.food_growers.timer[i],
                 1.08,
             ],
+            soft_radii_a: [1.0; 4],
+            soft_radii_b: [1.0; 4],
         });
+    }
+
+    // Render grower branchlets persistently
+    for branchlet_index in 0..world.food_growers.branchlet_branch_index.len() {
+        if let Some((stem_start, stem_end)) = world.branchlet_stem_points(branchlet_index) {
+            let branch_index = world.food_growers.branchlet_branch_index[branchlet_index];
+            let stem = stem_end - stem_start;
+            let stem_len = stem.length();
+
+            if stem_len > 0.75 {
+                let hue_shift = world.food_growers.branch_hue_shift[branch_index];
+                let light_shift = world.food_growers.branch_lightness_shift[branch_index];
+                let sat_shift = world.food_growers.branch_saturation_shift[branch_index];
+
+                let half_length = (stem_len * 0.5).max(0.5);
+
+                let mut growth = 0.55;
+                if let Some(food_idx) = world.food_growers.branchlet_food_index[branchlet_index] {
+                    if food_idx < world.food.len() && world.food.active[food_idx] {
+                        growth = world.food.growth[food_idx];
+                    }
+                }
+
+                let stem_width = (FOOD_RADIUS * 0.34 * growth.clamp(0.55, 1.0)).max(0.9);
+                let instance_radius = half_length + stem_width * 2.0;
+                let stem_center = stem_start + stem * 0.5;
+                let stem_angle = stem.y.atan2(stem.x);
+
+                let is_solid = world.food_growers.branch_has_collision(branch_index);
+                let branchlet_color = if is_solid {
+                    [
+                        (0.34 + hue_shift).clamp(0.1, 0.6),
+                        (1.0 + light_shift).clamp(0.7, 1.0),
+                        (0.36 + sat_shift).clamp(0.1, 0.6),
+                        0.82,
+                    ]
+                } else {
+                    [
+                        (0.15 + hue_shift).clamp(0.05, 0.35),
+                        (0.50 + light_shift).clamp(0.3, 0.7),
+                        (0.18 + sat_shift).clamp(0.05, 0.4),
+                        0.35,
+                    ]
+                };
+
+                let layer = world.food_growers.branch_layer[branch_index];
+                particles.push(InstanceData {
+                    pos_radius: [
+                        stem_center.x,
+                        stem_center.y,
+                        1.48 + layer * 0.20 + 0.04,
+                        instance_radius,
+                    ],
+                    color: branchlet_color,
+                    nucleus: [0.0, 0.0, 0.0, 4.0],
+                    motion: [0.0, 0.0, stem_angle, 0.0],
+                    shape: [
+                        (stem_width / instance_radius).clamp(0.02, 0.22),
+                        0.0,
+                        (half_length / instance_radius).clamp(0.1, 0.98),
+                        0.0,
+                    ],
+                    soft_radii_a: [1.0; 4],
+                    soft_radii_b: [1.0; 4],
+                });
+            }
+        }
     }
 
     stats.upload_time = started.elapsed();
@@ -672,6 +759,16 @@ impl SpecializedMeshPipeline for CustomPipeline {
                     format: VertexFormat::Float32x4,
                     offset: VertexFormat::Float32x4.size() * 4,
                     shader_location: 7,
+                },
+                VertexAttribute {
+                    format: VertexFormat::Float32x4,
+                    offset: VertexFormat::Float32x4.size() * 5,
+                    shader_location: 8,
+                },
+                VertexAttribute {
+                    format: VertexFormat::Float32x4,
+                    offset: VertexFormat::Float32x4.size() * 6,
+                    shader_location: 9,
                 },
             ],
         });

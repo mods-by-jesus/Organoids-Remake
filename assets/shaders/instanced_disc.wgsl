@@ -12,6 +12,8 @@ struct Vertex {
     @location(5) i_nucleus: vec4<f32>,
     @location(6) i_motion: vec4<f32>,
     @location(7) i_shape: vec4<f32>,
+    @location(8) i_soft_radii_a: vec4<f32>,
+    @location(9) i_soft_radii_b: vec4<f32>,
 };
 
 struct VertexOutput {
@@ -21,6 +23,8 @@ struct VertexOutput {
     @location(2) nucleus: vec4<f32>,
     @location(3) motion: vec4<f32>,
     @location(4) shape: vec4<f32>,
+    @location(5) soft_radii_a: vec4<f32>,
+    @location(6) soft_radii_b: vec4<f32>,
 };
 
 const TAU: f32 = 6.28318530718;
@@ -47,6 +51,29 @@ fn radial_shape_radius(angle: f32, shape: vec4<f32>) -> f32 {
     return clamp(radius, 0.55, 1.0);
 }
 
+fn soft_body_shape_radius(angle: f32, shape: vec4<f32>, soft_a: vec4<f32>, soft_b: vec4<f32>) -> f32 {
+    let sector = fract((angle + TAU) / TAU) * 8.0;
+    let i0 = u32(floor(sector)) % 8u;
+    let i1 = (i0 + 1u) % 8u;
+    let t = smoothstep(0.0, 1.0, fract(sector));
+    let rays = array<f32, 8>(
+        soft_a.x,
+        soft_a.y,
+        soft_a.z,
+        soft_a.w,
+        soft_b.x,
+        soft_b.y,
+        soft_b.z,
+        soft_b.w
+    );
+    let soft_radius = mix(rays[i0], rays[i1], t);
+    let wave =
+        1.0
+        + shape.x * 0.35 * sin(angle * 3.0 + shape.z)
+        + shape.y * 0.35 * sin(angle * 5.0 - shape.z * 0.7);
+    return clamp(soft_radius * wave, 0.25, 1.0);
+}
+
 @vertex
 fn vertex(vertex: Vertex) -> VertexOutput {
     let local = vertex.position.xy;
@@ -65,6 +92,8 @@ fn vertex(vertex: Vertex) -> VertexOutput {
     out.nucleus = vertex.i_nucleus;
     out.motion = vertex.i_motion;
     out.shape = vertex.i_shape;
+    out.soft_radii_a = vertex.i_soft_radii_a;
+    out.soft_radii_b = vertex.i_soft_radii_b;
     return out;
 }
 
@@ -253,7 +282,13 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     }
 
     let angle = atan2(local.y, local.x);
-    let shape_radius = radial_shape_radius(angle, in.shape);
+    let heading_angle = atan2(in.motion.y, in.motion.x);
+    let shape_radius = soft_body_shape_radius(
+        angle - heading_angle,
+        in.shape,
+        in.soft_radii_a,
+        in.soft_radii_b
+    );
     let effective_dist = dist / shape_radius;
 
     if (effective_dist > 1.0) {

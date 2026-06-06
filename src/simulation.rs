@@ -3,7 +3,7 @@ use rand::{Rng, SeedableRng, rngs::SmallRng};
 use std::time::Duration;
 
 pub const FOOD_RADIUS: f32 = 3.4;
-pub const FEEDER_FOOD_SURFACE_GAP: f32 = 2.2;
+pub const FEEDER_FOOD_SURFACE_GAP: f32 = -1.2;
 pub const LIQUID_FLOW_SCALE: f32 = 340.0;
 pub const LIQUID_FLOW_SPEED: f32 = 0.08;
 pub const LIQUID_CAUSTIC_STRENGTH: f32 = 0.16;
@@ -23,8 +23,36 @@ pub const CELL_MUTATION_DISPLAY_MAX: f32 = 100.0;
 pub const CELL_DIVISION_THRESHOLD_DISPLAY_MAX: f32 = 100.0;
 pub const ARENA_RECTANGLE_CODE: f32 = 0.0;
 pub const ARENA_CIRCLE_CODE: f32 = 1.0;
+pub const SOFT_BODY_POINTS: usize = 8;
+pub const SOFT_BODY_BASE_ANGLES: [f32; SOFT_BODY_POINTS] = [
+    0.0,
+    std::f32::consts::FRAC_PI_4,
+    std::f32::consts::FRAC_PI_2,
+    std::f32::consts::FRAC_PI_4 * 3.0,
+    std::f32::consts::PI,
+    std::f32::consts::FRAC_PI_4 * 5.0,
+    std::f32::consts::PI * 1.5,
+    std::f32::consts::FRAC_PI_4 * 7.0,
+];
+const SOFT_BODY_SECTOR_ANGLE: f32 = std::f32::consts::FRAC_PI_4;
 const VIABILITY_DECAY_BASE: f32 = 0.95;
 const VIABILITY_DECAY_SPEED: f32 = 0.45;
+const SOFT_BODY_ELASTICITY_SPEED: f32 = 8.0;
+const SOFT_BODY_VISUAL_FOLLOW_SPEED: f32 = 12.0;
+const SOFT_BODY_COMPRESSION_RESPONSE: f32 = 0.58;
+const SOFT_BODY_BIOMASS_DRAIN_RATE: f32 = 0.012;
+const SOFT_BODY_MIN_RADIUS_FACTOR: f32 = 0.25;
+const SOFT_BODY_BASE_MIN_FACTOR: f32 = 0.35;
+const SOFT_BODY_START_MIN_FACTOR: f32 = 0.45;
+const SOFT_BODY_MAX_ANGLE_OFFSET: f32 = 0.261_799_4;
+const SOFT_BODY_MUTATION_ANGLE_DELTA: f32 = 0.08;
+const SOFT_BODY_SHAPE_DRAG: f32 = 0.12;
+const SOFT_BODY_TURN_BONUS: f32 = 0.18;
+const SOFT_BODY_COMPRESSION_IMPULSE: f32 = 9.0;
+const SOFT_BODY_SOLID_PUSH_FACTOR: f32 = 0.62;
+const SOFT_BODY_SOLID_PUSH_MAX: f32 = 5.5;
+const SOFT_BODY_CELL_PUSH_MAX: f32 = 4.0;
+const MUTATION_FACTOR_DELTA_SCALE: f32 = 100.0 / (0.3 - 0.005);
 const FOOD_VIABILITY_GAIN: f32 = 18.0;
 const FEEDER_FOOD_VIABILITY_GAIN: f32 = 14.0;
 const MIN_VIABILITY_MOVE_FACTOR: f32 = 0.28;
@@ -34,8 +62,7 @@ const FOOD_CURRENT_SPEED: f32 = 42.0;
 const CELL_CURRENT_SPEED: f32 = 24.0;
 const OBSTACLE_CURRENT_SPEED: f32 = 22.0;
 const GROWER_CURRENT_SPEED: f32 = 10.0;
-const FOOD_PUSH_STRENGTH: f32 = 58.0;
-const GROWER_FOOD_PUSH_STRENGTH: f32 = 42.0;
+
 const FOOD_SOLID_SPAWN_MARGIN: f32 = 18.0;
 const FLOOR_FOOD_RATIO: f32 = 0.25;
 const EMPTY_WORLD_FEEDER_FOOD_PER_GROWER: usize = 120;
@@ -478,6 +505,30 @@ impl WorldState {
         world.relocate_world_food_away_from_solids();
         world.seed_feeder_food(feeder_food_capacity);
         world.grid.rebuild(&world.food);
+
+        // DEBUG: Log world creation stats
+        let solid_branches: usize = (0..world.food_growers.branch_total())
+            .filter(|&b| world.food_growers.branch_has_collision(b))
+            .count();
+        eprintln!(
+            "[DEBUG] World created: {} growers, {} total branches ({} solid), {} food (floor: {}, feeder cap: {})",
+            world.food_growers.len(),
+            world.food_growers.branch_total(),
+            solid_branches,
+            world.food.len(),
+            floor_food_count,
+            feeder_food_capacity,
+        );
+        for g in 0..world.food_growers.len() {
+            eprintln!(
+                "[DEBUG]   Grower {}: radius={:.1}, branches={}, extent={:.1}",
+                g,
+                world.food_growers.radius[g],
+                world.food_growers.branch_count[g],
+                world.food_growers.extent_radius(g),
+            );
+        }
+
         world
     }
 
@@ -495,12 +546,12 @@ impl WorldState {
         self.clamp_free_food_to_arena();
         self.grid.rebuild(&self.food);
         self.decay_visuals(dt);
+        self.cells.relax_soft_body(dt);
 
         for i in 0..self.cells.len() {
             let x = self.cells.x[i];
             let y = self.cells.y[i];
-            let viability_ratio = self.cells.viability_ratio(i);
-            let speed = self.cells.speed[i] * (MIN_VIABILITY_MOVE_FACTOR + viability_ratio * 0.72);
+            let speed = self.effective_cell_speed(i);
             let hungry = self.cells.viability[i] < self.cells.max_viability[i] - HUNGER_EPSILON;
 
             let mut target_food = None;
@@ -540,6 +591,7 @@ impl WorldState {
                     && self.cells.viability[i] < self.cells.max_viability[i] - HUNGER_EPSILON
                 {
                     if self.food.is_feeder_food(food_index) {
+                        self.clear_branchlet_food_association(food_index);
                         self.food.deactivate(food_index);
                         self.cells.add_viability(i, FEEDER_FOOD_VIABILITY_GAIN);
                     } else {
@@ -555,6 +607,12 @@ impl WorldState {
         self.process_cell_lifecycle();
     }
 
+    fn effective_cell_speed(&self, cell_index: usize) -> f32 {
+        self.cells.speed[cell_index]
+            * (MIN_VIABILITY_MOVE_FACTOR + self.cells.viability_ratio(cell_index) * 0.72)
+            * self.cells.shape_drag_factor(cell_index)
+    }
+
     fn drive_cell(&mut self, cell_index: usize, desired_velocity: Vec2, current: Vec2, dt: f32) {
         let current_heading = self.cells.heading[cell_index];
         let forward = Vec2::new(current_heading.cos(), current_heading.sin());
@@ -568,7 +626,9 @@ impl WorldState {
             desired_angle
         };
         let turn_delta = angle_delta(target_heading, current_heading);
-        let turn_step = self.cells.turn_speed[cell_index] * dt;
+        let turn_step = self.cells.turn_speed[cell_index]
+            * self.cells.turn_agility_factor(cell_index, turn_delta)
+            * dt;
         let new_heading = wrap_angle(current_heading + turn_delta.clamp(-turn_step, turn_step));
         self.cells.heading[cell_index] = new_heading;
 
@@ -581,8 +641,7 @@ impl WorldState {
         } else {
             1.0 - (abs_turn / TURN_IN_PLACE_ANGLE).clamp(0.0, 1.0) * 0.45
         };
-        let drive_speed = self.cells.speed[cell_index]
-            * (MIN_VIABILITY_MOVE_FACTOR + self.cells.viability_ratio(cell_index) * 0.72);
+        let drive_speed = self.effective_cell_speed(cell_index);
         let target_velocity = front * drive_speed * throttle + current;
         let steer = (STEER_GAIN * dt).clamp(0.0, 1.0);
         self.cells.vx[cell_index] = (self.cells.vx[cell_index]
@@ -643,7 +702,8 @@ impl WorldState {
             );
         }
 
-        self.food_growers.rebuild_branch_world_geometry();
+        self.food_growers
+            .rebuild_branch_world_geometry(self.elapsed);
     }
 
     fn resolve_obstacle_food_growers(&mut self) {
@@ -725,7 +785,8 @@ impl WorldState {
                     extent,
                 );
             }
-            self.food_growers.rebuild_branch_world_geometry();
+            self.food_growers
+                .rebuild_branch_world_geometry(self.elapsed);
         }
     }
 
@@ -823,52 +884,175 @@ impl WorldState {
             return false;
         }
 
-        let branch_range = self.food_growers.branch_range(grower_index);
-        if branch_range.is_empty() {
-            return false;
-        }
-
-        let mut spawn = None;
-        for _ in 0..12 {
-            let branch_index = self.rng.random_range(branch_range.clone());
-            let anchor_angle =
-                self.food_growers.branch_angle[branch_index] + self.rng.random_range(-0.01..0.01);
-            let branch_length = self.food_growers.branch_length[branch_index];
-            let branch_t = self.rng.random_range(0.36..0.96);
-            let distance = branch_length * branch_t;
-            let branch_width = self
-                .food_growers
-                .branch_collision_width_at(branch_index, branch_t);
-            let side = if self.rng.random_bool(0.5) { -1.0 } else { 1.0 };
-            let branchlet_length = self.rng.random_range(10.0..24.0) + branch_width * 0.35;
-            let lateral =
-                side * (branch_width + branchlet_length + FOOD_RADIUS + FEEDER_FOOD_SURFACE_GAP);
-            let base = self.food_growers.branch_center_at(branch_index, branch_t);
-            let normal = self.food_growers.branch_normal_at(branch_index, branch_t);
-            let x = base.x + normal.x * lateral;
-            let y = base.y + normal.y * lateral;
-            let point = Vec2::new(x, y);
-
-            if point_inside_arena(
-                point,
-                self.width,
-                self.height,
-                self.arena_shape,
-                FOOD_RADIUS,
-            ) && !self.point_overlaps_solid(point, FOOD_RADIUS)
-            {
-                spawn = Some((branch_index, x, y, anchor_angle, distance, lateral));
-                break;
+        let mut inactive_branchlet_indices = Vec::new();
+        for idx in 0..self.food_growers.branchlet_grower_index.len() {
+            if self.food_growers.branchlet_grower_index[idx] == grower_index {
+                let mut is_active = false;
+                if let Some(food_idx) = self.food_growers.branchlet_food_index[idx] {
+                    if food_idx < self.food.len() && self.food.active[food_idx] {
+                        is_active = true;
+                    }
+                }
+                if !is_active {
+                    inactive_branchlet_indices.push(idx);
+                }
             }
         }
 
-        if let Some((branch_index, x, y, anchor_angle, distance, lateral)) = spawn {
-            self.food.push_feeder_at(
+        let mut reuse_branchlet = false;
+        if !inactive_branchlet_indices.is_empty() && self.rng.random_bool(0.5) {
+            reuse_branchlet = true;
+        }
+
+        let mut spawn = None;
+        let mut chosen_branchlet_idx = None;
+
+        if reuse_branchlet {
+            for _ in 0..12 {
+                let branchlet_index = inactive_branchlet_indices
+                    [self.rng.random_range(0..inactive_branchlet_indices.len())];
+                let branch_index = self.food_growers.branchlet_branch_index[branchlet_index];
+                let branch_t = self.food_growers.branchlet_t[branchlet_index];
+                let side = self.food_growers.branchlet_side[branchlet_index];
+                let branchlet_length = self.food_growers.branchlet_length[branchlet_index];
+                let dev_angle = self.food_growers.branchlet_angle_dev[branchlet_index];
+
+                let branch_width = self
+                    .food_growers
+                    .branch_collision_width_at(branch_index, branch_t);
+                let base = self.food_growers.branch_center_at(branch_index, branch_t);
+                let normal = self.food_growers.branch_normal_at(branch_index, branch_t);
+
+                let (sin_dev, cos_dev) = dev_angle.sin_cos();
+                let stem_dir = Vec2::new(
+                    normal.x * cos_dev - normal.y * sin_dev,
+                    normal.x * sin_dev + normal.y * cos_dev,
+                );
+
+                let lateral = side
+                    * (branch_width / cos_dev
+                        + branchlet_length
+                        + FOOD_RADIUS
+                        + FEEDER_FOOD_SURFACE_GAP);
+                let x = base.x + stem_dir.x * lateral;
+                let y = base.y + stem_dir.y * lateral;
+                let point = Vec2::new(x, y);
+
+                let sway_margin = branch_t * self.food_growers.branch_length[branch_index] * 0.12;
+                let parent_overlaps = if self.food_growers.branch_has_collision(branch_index) {
+                    let (closest, t) = self
+                        .food_growers
+                        .closest_point_on_branch(branch_index, point);
+                    let min_dist =
+                        self.food_growers.branch_collision_width_at(branch_index, t) + FOOD_RADIUS;
+                    point.distance_squared(closest) < min_dist * min_dist
+                } else {
+                    false
+                };
+
+                if point_inside_arena(
+                    point,
+                    self.width,
+                    self.height,
+                    self.arena_shape,
+                    FOOD_RADIUS,
+                ) && !parent_overlaps
+                    && !self.point_overlaps_other_solids(
+                        point,
+                        FOOD_RADIUS + sway_margin,
+                        branch_index,
+                    )
+                {
+                    let distance = branch_t * self.food_growers.branch_length[branch_index];
+                    spawn = Some((branch_index, x, y, dev_angle, distance, lateral));
+                    chosen_branchlet_idx = Some(branchlet_index);
+                    break;
+                }
+            }
+        }
+
+        if spawn.is_none() {
+            let branch_range = self.food_growers.branch_range(grower_index);
+            if !branch_range.is_empty() {
+                for _ in 0..12 {
+                    let branch_index = self.rng.random_range(branch_range.clone());
+                    let branch_t = self.rng.random_range(0.36..0.92);
+                    let side = if self.rng.random_bool(0.5) { -1.0 } else { 1.0 };
+                    let branch_width = self
+                        .food_growers
+                        .branch_collision_width_at(branch_index, branch_t);
+                    let branchlet_length = self.rng.random_range(3.5..7.0) + branch_width * 0.15;
+                    let dev_angle = self.rng.random_range(-0.5_f32..0.5_f32);
+
+                    let base = self.food_growers.branch_center_at(branch_index, branch_t);
+                    let normal = self.food_growers.branch_normal_at(branch_index, branch_t);
+
+                    let (sin_dev, cos_dev) = dev_angle.sin_cos();
+                    let stem_dir = Vec2::new(
+                        normal.x * cos_dev - normal.y * sin_dev,
+                        normal.x * sin_dev + normal.y * cos_dev,
+                    );
+
+                    let lateral = side
+                        * (branch_width / cos_dev
+                            + branchlet_length
+                            + FOOD_RADIUS
+                            + FEEDER_FOOD_SURFACE_GAP);
+                    let x = base.x + stem_dir.x * lateral;
+                    let y = base.y + stem_dir.y * lateral;
+                    let point = Vec2::new(x, y);
+
+                    let sway_margin =
+                        branch_t * self.food_growers.branch_length[branch_index] * 0.12;
+                    let parent_overlaps = if self.food_growers.branch_has_collision(branch_index) {
+                        let (closest, t) = self
+                            .food_growers
+                            .closest_point_on_branch(branch_index, point);
+                        let min_dist = self.food_growers.branch_collision_width_at(branch_index, t)
+                            + FOOD_RADIUS;
+                        point.distance_squared(closest) < min_dist * min_dist
+                    } else {
+                        false
+                    };
+
+                    if point_inside_arena(
+                        point,
+                        self.width,
+                        self.height,
+                        self.arena_shape,
+                        FOOD_RADIUS,
+                    ) && !parent_overlaps
+                        && !self.point_overlaps_other_solids(
+                            point,
+                            FOOD_RADIUS + sway_margin,
+                            branch_index,
+                        )
+                    {
+                        self.food_growers.branchlet_grower_index.push(grower_index);
+                        self.food_growers.branchlet_branch_index.push(branch_index);
+                        self.food_growers.branchlet_t.push(branch_t);
+                        self.food_growers.branchlet_side.push(side);
+                        self.food_growers.branchlet_length.push(branchlet_length);
+                        self.food_growers.branchlet_angle_dev.push(dev_angle);
+                        self.food_growers.branchlet_food_index.push(None);
+
+                        let branchlet_index = self.food_growers.branchlet_branch_index.len() - 1;
+                        let distance = branch_t * self.food_growers.branch_length[branch_index];
+                        spawn = Some((branch_index, x, y, dev_angle, distance, lateral));
+                        chosen_branchlet_idx = Some(branchlet_index);
+                        break;
+                    }
+                }
+            }
+        }
+
+        if let Some((branch_index, x, y, dev_angle, distance, lateral)) = spawn {
+            let food_idx = self.food.push_feeder_at(
                 grower_index as i32,
                 branch_index as i32,
                 x,
                 y,
-                anchor_angle,
+                dev_angle,
                 distance,
                 lateral,
                 self.width,
@@ -876,6 +1060,9 @@ impl WorldState {
                 self.arena_shape,
                 &mut self.rng,
             );
+            if let Some(branchlet_index) = chosen_branchlet_idx {
+                self.food_growers.branchlet_food_index[branchlet_index] = Some(food_idx);
+            }
             return true;
         }
 
@@ -900,9 +1087,16 @@ impl WorldState {
                                 (self.food.anchor_distance[i] / branch_length).clamp(0.0, 1.0);
                             let base = self.food_growers.branch_center_at(branch_index, branch_t);
                             let normal = self.food_growers.branch_normal_at(branch_index, branch_t);
-                            self.food.x[i] = base.x + normal.x * self.food.anchor_lateral[i];
-                            self.food.y[i] = base.y + normal.y * self.food.anchor_lateral[i];
+                            let anchor_angle = self.food.anchor_angle[i];
+                            let (sin_dev, cos_dev) = anchor_angle.sin_cos();
+                            let stem_dir = Vec2::new(
+                                normal.x * cos_dev - normal.y * sin_dev,
+                                normal.x * sin_dev + normal.y * cos_dev,
+                            );
+                            self.food.x[i] = base.x + stem_dir.x * self.food.anchor_lateral[i];
+                            self.food.y[i] = base.y + stem_dir.y * self.food.anchor_lateral[i];
                         } else {
+                            self.clear_branchlet_food_association(i);
                             self.food.deactivate(i);
                             continue;
                         }
@@ -920,6 +1114,7 @@ impl WorldState {
                     self.food.growth[i] = (self.food.growth[i] + dt * 1.7).min(1.0);
                     self.food.rotation[i] += self.food.spin[i] * dt;
                 } else {
+                    self.clear_branchlet_food_association(i);
                     self.food.deactivate(i);
                 }
                 continue;
@@ -943,64 +1138,103 @@ impl WorldState {
         }
     }
 
-    fn push_food_from_obstacles(&mut self, dt: f32) {
+    fn push_food_from_obstacles(&mut self, _dt: f32) {
         for obstacle_index in 0..self.obstacles.len() {
             let center = Vec2::new(
                 self.obstacles.x[obstacle_index],
                 self.obstacles.y[obstacle_index],
             );
-            let radius = self.obstacles.radius[obstacle_index] + FOOD_RADIUS + 18.0;
+            let hard_radius = self.obstacles.radius[obstacle_index] + FOOD_RADIUS + 2.0;
 
             for food_index in 0..self.food.len() {
                 if !self.food.active[food_index] || self.food.is_feeder_food(food_index) {
                     continue;
                 }
 
-                let delta = Vec2::new(self.food.x[food_index], self.food.y[food_index]) - center;
+                let food_pos = Vec2::new(self.food.x[food_index], self.food.y[food_index]);
+                let delta = food_pos - center;
                 let dist_sq = delta.length_squared();
-                if dist_sq >= radius * radius {
+                if dist_sq >= hard_radius * hard_radius {
                     continue;
                 }
 
-                let dir = if dist_sq > 0.0001 {
-                    delta * dist_sq.sqrt().recip()
+                let (dir, dist) = if dist_sq > 0.0001 {
+                    let dist = dist_sq.sqrt();
+                    (delta / dist, dist)
                 } else {
-                    Vec2::X
+                    (Vec2::X, 0.001)
                 };
-                let push = (1.0 - dist_sq.sqrt() / radius).clamp(0.0, 1.0);
-                self.food.x[food_index] += dir.x * push * FOOD_PUSH_STRENGTH * dt;
-                self.food.y[food_index] += dir.y * push * FOOD_PUSH_STRENGTH * dt;
+                let push = hard_radius - dist;
+                self.food.x[food_index] += dir.x * push;
+                self.food.y[food_index] += dir.y * push;
             }
         }
     }
 
-    fn push_food_from_food_growers(&mut self, dt: f32) {
+    fn push_food_from_food_growers(&mut self, _dt: f32) {
         for grower_index in 0..self.food_growers.len() {
             let center = Vec2::new(
                 self.food_growers.x[grower_index],
                 self.food_growers.y[grower_index],
             );
-            let radius = self.food_growers.radius[grower_index] + FOOD_RADIUS + 20.0;
+            let hard_radius = self.food_growers.radius[grower_index] + FOOD_RADIUS + 2.0;
+            let extent = self.food_growers.extent_radius(grower_index) + FOOD_RADIUS + 20.0;
 
             for food_index in 0..self.food.len() {
                 if !self.food.active[food_index] || self.food.is_feeder_food(food_index) {
                     continue;
                 }
 
-                let delta = Vec2::new(self.food.x[food_index], self.food.y[food_index]) - center;
-                let dist_sq = delta.length_squared();
-                if dist_sq >= radius * radius {
+                let food_pos = Vec2::new(self.food.x[food_index], self.food.y[food_index]);
+                let delta_center = food_pos - center;
+                let dist_center_sq = delta_center.length_squared();
+
+                // Hard collision with grower core
+                if dist_center_sq < hard_radius * hard_radius {
+                    let (dir, dist) = if dist_center_sq > 0.0001 {
+                        let dist = dist_center_sq.sqrt();
+                        (delta_center / dist, dist)
+                    } else {
+                        (Vec2::X, 0.001)
+                    };
+                    let push = hard_radius - dist;
+                    self.food.x[food_index] += dir.x * push;
+                    self.food.y[food_index] += dir.y * push;
+                }
+
+                // Skip branch checks if food is far from this grower
+                if dist_center_sq >= extent * extent {
                     continue;
                 }
 
-                let dir = if dist_sq > 0.0001 {
-                    delta * dist_sq.sqrt().recip()
-                } else {
-                    Vec2::X
-                };
-                let push = (1.0 - dist_sq.sqrt() / radius).clamp(0.0, 1.0);
-                self.food.x[food_index] += dir.x * push * GROWER_FOOD_PUSH_STRENGTH * dt;
-                self.food.y[food_index] += dir.y * push * GROWER_FOOD_PUSH_STRENGTH * dt;
+                // Hard collision with solid branches
+                for branch_index in self.food_growers.branch_range(grower_index) {
+                    if !self.food_growers.branch_has_collision(branch_index) {
+                        continue;
+                    }
+
+                    let food_pos = Vec2::new(self.food.x[food_index], self.food.y[food_index]);
+                    let (closest, t) = self
+                        .food_growers
+                        .closest_point_on_branch(branch_index, food_pos);
+                    let delta = food_pos - closest;
+                    let branch_width = self.food_growers.branch_collision_width_at(branch_index, t);
+                    let min_dist = branch_width + FOOD_RADIUS + 1.0;
+                    let dist_sq = delta.length_squared();
+                    if dist_sq >= min_dist * min_dist {
+                        continue;
+                    }
+
+                    let (dir, dist) = if dist_sq > 0.0001 {
+                        let dist = dist_sq.sqrt();
+                        (delta / dist, dist)
+                    } else {
+                        (Vec2::X, 0.001)
+                    };
+                    let push = min_dist - dist;
+                    self.food.x[food_index] += dir.x * push;
+                    self.food.y[food_index] += dir.y * push;
+                }
             }
         }
     }
@@ -1027,10 +1261,10 @@ impl WorldState {
         for obstacle_index in 0..self.obstacles.len() {
             let dx = self.cells.x[cell_index] - self.obstacles.x[obstacle_index];
             let dy = self.cells.y[cell_index] - self.obstacles.y[obstacle_index];
-            let min_dist = self.cells.collision_bound_radius(cell_index)
-                + self.obstacles.radius[obstacle_index];
             let dist_sq = dx * dx + dy * dy;
-            if dist_sq >= min_dist * min_dist {
+            let obstacle_radius = self.obstacles.radius[obstacle_index];
+            let broad_min_dist = self.cells.collision_bound_radius(cell_index) + obstacle_radius;
+            if dist_sq >= broad_min_dist * broad_min_dist {
                 continue;
             }
 
@@ -1040,9 +1274,25 @@ impl WorldState {
             } else {
                 (1.0, 0.0, 0.001)
             };
-            let push = min_dist - dist;
+            let normal = Vec2::new(nx, ny);
+            let ray_index = self.cells.soft_ray_index_for_direction(cell_index, normal);
+            let cell_radius = self.cells.current_radii[cell_index][ray_index];
+            let min_dist = cell_radius + obstacle_radius;
+            if dist_sq >= min_dist * min_dist {
+                continue;
+            }
+
+            let compression =
+                self.cells
+                    .compress_ray(cell_index, ray_index, dist - obstacle_radius);
+            let push =
+                ((min_dist - dist) * SOFT_BODY_SOLID_PUSH_FACTOR).min(SOFT_BODY_SOLID_PUSH_MAX);
             self.cells.x[cell_index] += nx * push;
             self.cells.y[cell_index] += ny * push;
+            if compression > 0.0 {
+                self.cells.vx[cell_index] += nx * compression * SOFT_BODY_COMPRESSION_IMPULSE;
+                self.cells.vy[cell_index] += ny * compression * SOFT_BODY_COMPRESSION_IMPULSE;
+            }
 
             let into_obstacle = self.cells.vx[cell_index] * nx + self.cells.vy[cell_index] * ny;
             if into_obstacle < 0.0 {
@@ -1059,30 +1309,50 @@ impl WorldState {
     fn resolve_cell_food_growers(&mut self, cell_index: usize) {
         let mut cell_x = self.cells.x[cell_index];
         let mut cell_y = self.cells.y[cell_index];
-        let cell_radius = self.cells.collision_bound_radius(cell_index);
+        let broad_cell_radius = self.cells.collision_bound_radius(cell_index);
 
         for grower_index in 0..self.food_growers.len() {
             let grower_x = self.food_growers.x[grower_index];
             let grower_y = self.food_growers.y[grower_index];
             let dx = cell_x - grower_x;
             let dy = cell_y - grower_y;
-            let extent = self.food_growers.extent_radius(grower_index) + cell_radius;
+            let extent = self.food_growers.extent_radius(grower_index) + broad_cell_radius;
             let dist_sq = dx * dx + dy * dy;
             if dist_sq >= extent * extent {
                 continue;
             }
 
-            let min_dist = cell_radius + self.food_growers.radius[grower_index];
-            if dist_sq < min_dist * min_dist {
-                let (nx, ny, dist) = if dist_sq > 0.0001 {
-                    let dist = dist_sq.sqrt();
-                    (dx / dist, dy / dist, dist)
-                } else {
-                    (1.0, 0.0, 0.001)
-                };
-                self.push_cell_from_grower_surface(cell_index, nx, ny, dist, min_dist);
-                cell_x = self.cells.x[cell_index];
-                cell_y = self.cells.y[cell_index];
+            let core_normal = if dist_sq > 0.0001 {
+                Vec2::new(dx, dy) * dist_sq.sqrt().recip()
+            } else {
+                Vec2::X
+            };
+            let grower_radius = self.food_growers.radius[grower_index];
+            let broad_min_dist = broad_cell_radius + grower_radius;
+            if dist_sq < broad_min_dist * broad_min_dist {
+                let ray_index = self
+                    .cells
+                    .soft_ray_index_for_direction(cell_index, core_normal);
+                let cell_radius = self.cells.current_radii[cell_index][ray_index];
+                let min_dist = cell_radius + grower_radius;
+                if dist_sq < min_dist * min_dist {
+                    let (nx, ny, dist) = if dist_sq > 0.0001 {
+                        let dist = dist_sq.sqrt();
+                        (dx / dist, dy / dist, dist)
+                    } else {
+                        (1.0, 0.0, 0.001)
+                    };
+                    self.push_cell_from_grower_surface(
+                        cell_index,
+                        nx,
+                        ny,
+                        dist,
+                        min_dist,
+                        grower_radius,
+                    );
+                    cell_x = self.cells.x[cell_index];
+                    cell_y = self.cells.y[cell_index];
+                }
             }
 
             for branch_index in self.food_growers.branch_range(grower_index) {
@@ -1098,8 +1368,22 @@ impl WorldState {
                 let dx = delta.x;
                 let dy = delta.y;
                 let branch_width = self.food_growers.branch_collision_width_at(branch_index, t);
-                let min_dist = cell_radius + branch_width;
                 let dist_sq = dx * dx + dy * dy;
+                let broad_min_dist = broad_cell_radius + branch_width;
+                if dist_sq >= broad_min_dist * broad_min_dist {
+                    continue;
+                }
+
+                let branch_normal = if delta.length_squared() > 0.0001 {
+                    delta.normalize()
+                } else {
+                    Vec2::X
+                };
+                let ray_index = self
+                    .cells
+                    .soft_ray_index_for_direction(cell_index, branch_normal);
+                let cell_radius = self.cells.current_radii[cell_index][ray_index];
+                let min_dist = cell_radius + branch_width;
                 if dist_sq >= min_dist * min_dist {
                     continue;
                 }
@@ -1110,7 +1394,14 @@ impl WorldState {
                 } else {
                     (1.0, 0.0, 0.001)
                 };
-                self.push_cell_from_grower_surface(cell_index, nx, ny, dist, min_dist);
+                self.push_cell_from_grower_surface(
+                    cell_index,
+                    nx,
+                    ny,
+                    dist,
+                    min_dist,
+                    branch_width,
+                );
                 cell_x = self.cells.x[cell_index];
                 cell_y = self.cells.y[cell_index];
             }
@@ -1124,10 +1415,21 @@ impl WorldState {
         ny: f32,
         dist: f32,
         min_dist: f32,
+        solid_radius: f32,
     ) {
-        let push = min_dist - dist;
+        let push = ((min_dist - dist) * SOFT_BODY_SOLID_PUSH_FACTOR).min(SOFT_BODY_SOLID_PUSH_MAX);
+        let ray_index = self
+            .cells
+            .soft_ray_index_for_direction(cell_index, Vec2::new(nx, ny));
+        let compression = self
+            .cells
+            .compress_ray(cell_index, ray_index, dist - solid_radius);
         self.cells.x[cell_index] += nx * push;
         self.cells.y[cell_index] += ny * push;
+        if compression > 0.0 {
+            self.cells.vx[cell_index] += nx * compression * SOFT_BODY_COMPRESSION_IMPULSE;
+            self.cells.vy[cell_index] += ny * compression * SOFT_BODY_COMPRESSION_IMPULSE;
+        }
 
         let into_grower = self.cells.vx[cell_index] * nx + self.cells.vy[cell_index] * ny;
         if into_grower < 0.0 {
@@ -1137,6 +1439,18 @@ impl WorldState {
                 (self.cells.jelly_intensity[cell_index] + 0.35).min(1.0);
             self.cells.jelly_dir_x[cell_index] = nx;
             self.cells.jelly_dir_y[cell_index] = ny;
+
+            // Redirect heading along the branch surface tangent so cells slide instead of getting stuck
+            let tangent_x = -ny;
+            let tangent_y = nx;
+            let vel_along_tangent =
+                self.cells.vx[cell_index] * tangent_x + self.cells.vy[cell_index] * tangent_y;
+            if vel_along_tangent.abs() > 0.5 {
+                let slide_angle = tangent_y.atan2(tangent_x);
+                let heading_delta = wrap_angle(slide_angle - self.cells.heading[cell_index]);
+                self.cells.heading[cell_index] =
+                    wrap_angle(self.cells.heading[cell_index] + heading_delta * 0.35);
+            }
         }
     }
 
@@ -1197,6 +1511,10 @@ impl WorldState {
     }
 
     fn point_overlaps_solid(&self, point: Vec2, radius: f32) -> bool {
+        self.point_overlaps_other_solids(point, radius, usize::MAX)
+    }
+
+    fn point_overlaps_other_solids(&self, point: Vec2, radius: f32, ignore_branch: usize) -> bool {
         if !point_inside_arena(point, self.width, self.height, self.arena_shape, radius) {
             return true;
         }
@@ -1229,6 +1547,9 @@ impl WorldState {
             }
 
             for branch_index in self.food_growers.branch_range(grower_index) {
+                if branch_index == ignore_branch {
+                    continue;
+                }
                 if !self.food_growers.branch_has_collision(branch_index) {
                     continue;
                 }
@@ -1250,7 +1571,7 @@ impl WorldState {
     fn cell_avoidance_velocity(&self, cell_index: usize, desired_velocity: Vec2) -> Vec2 {
         let position = Vec2::new(self.cells.x[cell_index], self.cells.y[cell_index]);
         let cell_radius = self.cells.collision_bound_radius(cell_index);
-        let speed = self.cells.speed[cell_index];
+        let speed = self.effective_cell_speed(cell_index);
         let desired_dir = if desired_velocity.length_squared() > 0.0001 {
             desired_velocity.normalize()
         } else {
@@ -1302,7 +1623,7 @@ impl WorldState {
                     .closest_point_on_branch(branch_index, position);
                 let influence = self.food_growers.branch_collision_width_at(branch_index, t)
                     + cell_radius
-                    + CELL_AVOIDANCE_MARGIN * 0.72;
+                    + CELL_AVOIDANCE_MARGIN * 1.0;
                 add_avoidance(
                     &mut avoidance,
                     position - closest,
@@ -1328,7 +1649,9 @@ impl WorldState {
     fn decay_viability(&mut self, dt: f32) {
         for i in 0..self.cells.len() {
             let speed_cost = (self.cells.speed[i] / CELL_SPEED_DISPLAY_MAX).clamp(0.0, 1.5);
-            let drain = (VIABILITY_DECAY_BASE + speed_cost * VIABILITY_DECAY_SPEED) * dt;
+            let biomass_cost = self.cells.biomass_sum(i) * SOFT_BODY_BIOMASS_DRAIN_RATE;
+            let drain =
+                (VIABILITY_DECAY_BASE + speed_cost * VIABILITY_DECAY_SPEED + biomass_cost) * dt;
             self.cells.viability[i] = (self.cells.viability[i] - drain).max(0.0);
         }
     }
@@ -1402,50 +1725,51 @@ impl WorldState {
         self.cells.id.iter().position(|id| *id == cell_id)
     }
 
+    #[allow(dead_code)]
     pub fn feeder_food_stem_points(&self, food_index: usize) -> Option<(Vec2, Vec2)> {
         if food_index >= self.food.len() || !self.food.active[food_index] {
             return None;
         }
+        let branchlet_index = self
+            .food_growers
+            .branchlet_food_index
+            .iter()
+            .position(|idx| *idx == Some(food_index))?;
+        self.branchlet_stem_points(branchlet_index)
+    }
 
-        let grower_index = self.food.feeder_index(food_index)?;
-        if grower_index >= self.food_growers.len() {
+    pub fn branchlet_stem_points(&self, branchlet_index: usize) -> Option<(Vec2, Vec2)> {
+        if branchlet_index >= self.food_growers.branchlet_branch_index.len() {
             return None;
         }
-
-        let branch_index = self.food.anchor_branch[food_index];
-        if branch_index < 0 {
-            return None;
-        }
-
-        let branch_index = branch_index as usize;
-        if branch_index >= self.food_growers.branch_total() {
-            return None;
-        }
-
-        let branch_length = self.food_growers.branch_length[branch_index].max(1.0);
-        let branch_t = (self.food.anchor_distance[food_index] / branch_length).clamp(0.0, 1.0);
+        let branch_index = self.food_growers.branchlet_branch_index[branchlet_index];
+        let branch_t = self.food_growers.branchlet_t[branchlet_index];
         let base = self.food_growers.branch_center_at(branch_index, branch_t);
         let normal = self.food_growers.branch_normal_at(branch_index, branch_t);
-        let side = if self.food.anchor_lateral[food_index] < 0.0 {
-            -1.0
-        } else {
-            1.0
-        };
+        let side = self.food_growers.branchlet_side[branchlet_index];
         let branch_width = self
             .food_growers
             .branch_collision_width_at(branch_index, branch_t);
-        let stem_end_lateral =
-            (self.food.anchor_lateral[food_index].abs() - FOOD_RADIUS - FEEDER_FOOD_SURFACE_GAP)
-                .max(branch_width + 1.0);
-        let start = base + normal * side * branch_width;
-        let mut end = base + normal * side * stem_end_lateral;
-        let stem = end - start;
-        let max_len = 92.0;
-        if stem.length_squared() > max_len * max_len {
-            end = start + stem.normalize() * max_len;
-        }
 
+        let anchor_angle = self.food_growers.branchlet_angle_dev[branchlet_index];
+        let (sin_dev, cos_dev) = anchor_angle.sin_cos();
+        let stem_dir = Vec2::new(
+            normal.x * cos_dev - normal.y * sin_dev,
+            normal.x * sin_dev + normal.y * cos_dev,
+        );
+
+        let branchlet_length = self.food_growers.branchlet_length[branchlet_index];
+        let start = base + stem_dir * side * (branch_width / cos_dev);
+        let end = base + stem_dir * side * ((branch_width + branchlet_length) / cos_dev);
         Some((start, end))
+    }
+
+    pub fn clear_branchlet_food_association(&mut self, food_index: usize) {
+        for idx in 0..self.food_growers.branchlet_food_index.len() {
+            if self.food_growers.branchlet_food_index[idx] == Some(food_index) {
+                self.food_growers.branchlet_food_index[idx] = None;
+            }
+        }
     }
 
     fn solve_cell_collisions(&mut self) {
@@ -1500,6 +1824,11 @@ impl WorldState {
         let dx = self.cells.x[b] - self.cells.x[a];
         let dy = self.cells.y[b] - self.cells.y[a];
         let dist_sq = dx * dx + dy * dy;
+        let broad_min_dist =
+            self.cells.collision_bound_radius(a) + self.cells.collision_bound_radius(b);
+        if dist_sq >= broad_min_dist * broad_min_dist {
+            return;
+        }
 
         let (nx, ny, dist) = if dist_sq > 0.0001 {
             let dist = dist_sq.sqrt();
@@ -1509,10 +1838,11 @@ impl WorldState {
             let (ny, nx) = angle.sin_cos();
             (nx, ny, 0.001)
         };
-        let angle = ny.atan2(nx);
-        let radius_a = self.cells.radius[a] * self.cells.shape_radius_at(a, angle);
-        let radius_b =
-            self.cells.radius[b] * self.cells.shape_radius_at(b, angle + std::f32::consts::PI);
+        let normal = Vec2::new(nx, ny);
+        let ray_a = self.cells.soft_ray_index_for_direction(a, normal);
+        let ray_b = self.cells.soft_ray_index_for_direction(b, -normal);
+        let radius_a = self.cells.current_radii[a][ray_a];
+        let radius_b = self.cells.current_radii[b][ray_b];
         let min_dist = radius_a + radius_b;
 
         if dist_sq >= min_dist * min_dist {
@@ -1520,11 +1850,21 @@ impl WorldState {
         }
 
         let overlap = min_dist - dist;
-        let push = overlap * COLLISION_PUSH;
+        let compression_a = self.cells.compress_ray(a, ray_a, dist - radius_b);
+        let compression_b = self.cells.compress_ray(b, ray_b, dist - radius_a);
+        let push = (overlap * COLLISION_PUSH).min(SOFT_BODY_CELL_PUSH_MAX);
         self.cells.x[a] -= nx * push;
         self.cells.y[a] -= ny * push;
         self.cells.x[b] += nx * push;
         self.cells.y[b] += ny * push;
+        if compression_a > 0.0 {
+            self.cells.vx[a] -= nx * compression_a * SOFT_BODY_COMPRESSION_IMPULSE;
+            self.cells.vy[a] -= ny * compression_a * SOFT_BODY_COMPRESSION_IMPULSE;
+        }
+        if compression_b > 0.0 {
+            self.cells.vx[b] += nx * compression_b * SOFT_BODY_COMPRESSION_IMPULSE;
+            self.cells.vy[b] += ny * compression_b * SOFT_BODY_COMPRESSION_IMPULSE;
+        }
 
         let rvx = self.cells.vx[b] - self.cells.vx[a];
         let rvy = self.cells.vy[b] - self.cells.vy[a];
@@ -1634,6 +1974,58 @@ fn mutate_gene(value: f32, min: f32, max: f32, susceptibility: f32, rng: &mut Sm
     mutated.clamp(min, max)
 }
 
+fn random_soft_body_radii(radius: f32, rng: &mut SmallRng) -> [f32; SOFT_BODY_POINTS] {
+    let mut radii = [radius; SOFT_BODY_POINTS];
+    for ray in &mut radii {
+        *ray = (radius * rng.random_range(0.56..1.0))
+            .clamp(radius * SOFT_BODY_START_MIN_FACTOR, radius);
+    }
+    radii
+}
+
+fn random_soft_body_angle_offsets(rng: &mut SmallRng) -> [f32; SOFT_BODY_POINTS] {
+    let mut offsets = [0.0; SOFT_BODY_POINTS];
+    for offset in &mut offsets {
+        *offset = rng
+            .random_range(-0.025_f32..0.025_f32)
+            .clamp(-SOFT_BODY_MAX_ANGLE_OFFSET, SOFT_BODY_MAX_ANGLE_OFFSET);
+    }
+    offsets
+}
+
+fn mutate_child_soft_body(
+    parent_base: [f32; SOFT_BODY_POINTS],
+    parent_current: [f32; SOFT_BODY_POINTS],
+    parent_offsets: [f32; SOFT_BODY_POINTS],
+    size: f32,
+    susceptibility: f32,
+    rng: &mut SmallRng,
+) -> (
+    [f32; SOFT_BODY_POINTS],
+    [f32; SOFT_BODY_POINTS],
+    [f32; SOFT_BODY_POINTS],
+) {
+    let mut base = parent_base;
+    let mut current = parent_current;
+    let mut offsets = parent_offsets;
+
+    for ray_index in 0..SOFT_BODY_POINTS {
+        if rng.random_bool(mutation_chance(susceptibility) as f64) {
+            base[ray_index] += rng.random_range(-1.0..1.0) * size;
+            offsets[ray_index] +=
+                rng.random_range(-SOFT_BODY_MUTATION_ANGLE_DELTA..SOFT_BODY_MUTATION_ANGLE_DELTA);
+        }
+
+        base[ray_index] = base[ray_index].clamp(size * SOFT_BODY_BASE_MIN_FACTOR, size);
+        current[ray_index] =
+            current[ray_index].clamp(size * SOFT_BODY_MIN_RADIUS_FACTOR, base[ray_index]);
+        offsets[ray_index] =
+            offsets[ray_index].clamp(-SOFT_BODY_MAX_ANGLE_OFFSET, SOFT_BODY_MAX_ANGLE_OFFSET);
+    }
+
+    (base, current, offsets)
+}
+
 pub struct CellStore {
     pub id: Vec<u64>,
     next_id: u64,
@@ -1650,6 +2042,17 @@ pub struct CellStore {
     pub max_viability: Vec<f32>,
     pub mutation_susceptibility: Vec<f32>,
     pub division_threshold: Vec<f32>,
+    pub base_radii: Vec<[f32; SOFT_BODY_POINTS]>,
+    pub current_radii: Vec<[f32; SOFT_BODY_POINTS]>,
+    pub visual_radii: Vec<[f32; SOFT_BODY_POINTS]>,
+    pub angle_offsets: Vec<[f32; SOFT_BODY_POINTS]>,
+    collision_radius: Vec<f32>,
+    biomass: Vec<f32>,
+    asymmetry_x: Vec<f32>,
+    asymmetry_y: Vec<f32>,
+    shape_drag: Vec<f32>,
+    ray_dir_x: Vec<[f32; SOFT_BODY_POINTS]>,
+    ray_dir_y: Vec<[f32; SOFT_BODY_POINTS]>,
     pub shape_wave_a: Vec<f32>,
     pub shape_wave_b: Vec<f32>,
     pub shape_phase: Vec<f32>,
@@ -1687,6 +2090,17 @@ impl CellStore {
             max_viability: Vec::with_capacity(count),
             mutation_susceptibility: Vec::with_capacity(count),
             division_threshold: Vec::with_capacity(count),
+            base_radii: Vec::with_capacity(count),
+            current_radii: Vec::with_capacity(count),
+            visual_radii: Vec::with_capacity(count),
+            angle_offsets: Vec::with_capacity(count),
+            collision_radius: Vec::with_capacity(count),
+            biomass: Vec::with_capacity(count),
+            asymmetry_x: Vec::with_capacity(count),
+            asymmetry_y: Vec::with_capacity(count),
+            shape_drag: Vec::with_capacity(count),
+            ray_dir_x: Vec::with_capacity(count),
+            ray_dir_y: Vec::with_capacity(count),
             shape_wave_a: Vec::with_capacity(count),
             shape_wave_b: Vec::with_capacity(count),
             shape_phase: Vec::with_capacity(count),
@@ -1728,6 +2142,21 @@ impl CellStore {
                 .mutation_susceptibility
                 .push(rng.random_range(35.0..65.0));
             store.division_threshold.push(rng.random_range(72.0..88.0));
+            let base_radii = random_soft_body_radii(radius, rng);
+            store.base_radii.push(base_radii);
+            store.current_radii.push(base_radii);
+            store.visual_radii.push(base_radii);
+            store
+                .angle_offsets
+                .push(random_soft_body_angle_offsets(rng));
+            store.collision_radius.push(radius);
+            store.biomass.push(0.0);
+            store.asymmetry_x.push(0.0);
+            store.asymmetry_y.push(0.0);
+            store.shape_drag.push(1.0);
+            store.ray_dir_x.push([0.0; SOFT_BODY_POINTS]);
+            store.ray_dir_y.push([0.0; SOFT_BODY_POINTS]);
+            store.rebuild_soft_body_cache(store.len() - 1);
             store.shape_wave_a.push(0.0);
             store.shape_wave_b.push(0.0);
             store
@@ -1817,13 +2246,18 @@ impl CellStore {
         self.viability
             .push(viability.clamp(0.0, self.max_viability[parent_index]));
         self.max_viability.push(self.max_viability[parent_index]);
-        self.mutation_susceptibility.push(mutate_gene(
+        let mut child_mutation_susceptibility = mutate_gene(
             self.mutation_susceptibility[parent_index],
             MUTATION_GENE_MIN,
             MUTATION_GENE_MAX,
             susceptibility,
             rng,
-        ));
+        );
+        child_mutation_susceptibility = (child_mutation_susceptibility
+            + rng.random_range(-0.01..0.01) * MUTATION_FACTOR_DELTA_SCALE)
+            .clamp(MUTATION_GENE_MIN, MUTATION_GENE_MAX);
+        self.mutation_susceptibility
+            .push(child_mutation_susceptibility);
         self.division_threshold.push(mutate_gene(
             self.division_threshold[parent_index],
             DIVISION_THRESHOLD_MIN,
@@ -1831,6 +2265,26 @@ impl CellStore {
             susceptibility,
             rng,
         ));
+        let (child_base_radii, child_current_radii, child_angle_offsets) = mutate_child_soft_body(
+            self.base_radii[parent_index],
+            self.current_radii[parent_index],
+            self.angle_offsets[parent_index],
+            radius,
+            susceptibility,
+            rng,
+        );
+        self.base_radii.push(child_base_radii);
+        self.current_radii.push(child_current_radii);
+        self.visual_radii.push(child_current_radii);
+        self.angle_offsets.push(child_angle_offsets);
+        self.collision_radius.push(radius);
+        self.biomass.push(0.0);
+        self.asymmetry_x.push(0.0);
+        self.asymmetry_y.push(0.0);
+        self.shape_drag.push(1.0);
+        self.ray_dir_x.push([0.0; SOFT_BODY_POINTS]);
+        self.ray_dir_y.push([0.0; SOFT_BODY_POINTS]);
+        self.rebuild_soft_body_cache(self.len() - 1);
         self.shape_wave_a.push(self.shape_wave_a[parent_index]);
         self.shape_wave_b.push(self.shape_wave_b[parent_index]);
         self.shape_phase
@@ -1863,6 +2317,17 @@ impl CellStore {
         self.max_viability.swap_remove(index);
         self.mutation_susceptibility.swap_remove(index);
         self.division_threshold.swap_remove(index);
+        self.base_radii.swap_remove(index);
+        self.current_radii.swap_remove(index);
+        self.visual_radii.swap_remove(index);
+        self.angle_offsets.swap_remove(index);
+        self.collision_radius.swap_remove(index);
+        self.biomass.swap_remove(index);
+        self.asymmetry_x.swap_remove(index);
+        self.asymmetry_y.swap_remove(index);
+        self.shape_drag.swap_remove(index);
+        self.ray_dir_x.swap_remove(index);
+        self.ray_dir_y.swap_remove(index);
         self.shape_wave_a.swap_remove(index);
         self.shape_wave_b.swap_remove(index);
         self.shape_phase.swap_remove(index);
@@ -1876,6 +2341,7 @@ impl CellStore {
         self.jelly_dir_y.swap_remove(index);
     }
 
+    #[allow(dead_code)]
     pub fn shape_radius_at(&self, index: usize, angle: f32) -> f32 {
         let wave_a = self.shape_wave_a[index];
         let wave_b = self.shape_wave_b[index];
@@ -1886,8 +2352,136 @@ impl CellStore {
         radius.clamp(0.55, 1.0)
     }
 
-    fn collision_bound_radius(&self, index: usize) -> f32 {
-        self.radius[index] * (1.0 + self.shape_wave_a[index].abs() + self.shape_wave_b[index].abs())
+    pub fn collision_bound_radius(&self, index: usize) -> f32 {
+        self.collision_radius[index]
+    }
+
+    pub fn max_base_radius(&self, index: usize) -> f32 {
+        self.base_radii[index]
+            .iter()
+            .copied()
+            .fold(self.radius[index] * SOFT_BODY_BASE_MIN_FACTOR, f32::max)
+    }
+
+    fn biomass_sum(&self, index: usize) -> f32 {
+        self.biomass[index]
+    }
+
+    fn soft_ray_index_for_direction(&self, index: usize, dir: Vec2) -> usize {
+        let (heading_s, heading_c) = self.heading[index].sin_cos();
+        let local_dir_x = dir.x * heading_c + dir.y * heading_s;
+        let local_dir_y = -dir.x * heading_s + dir.y * heading_c;
+        let approx = (local_dir_y.atan2(local_dir_x) / SOFT_BODY_SECTOR_ANGLE).round() as i32;
+        let mut best_index = 0;
+        let mut best_dot = f32::NEG_INFINITY;
+
+        for ray_index in [
+            approx.rem_euclid(SOFT_BODY_POINTS as i32) as usize,
+            (approx - 1).rem_euclid(SOFT_BODY_POINTS as i32) as usize,
+            (approx + 1).rem_euclid(SOFT_BODY_POINTS as i32) as usize,
+        ] {
+            let dot = self.ray_dir_x[index][ray_index] * local_dir_x
+                + self.ray_dir_y[index][ray_index] * local_dir_y;
+            if dot > best_dot {
+                best_dot = dot;
+                best_index = ray_index;
+            }
+        }
+
+        best_index
+    }
+
+    fn compress_ray(&mut self, index: usize, ray_index: usize, target_radius: f32) -> f32 {
+        let base = self.base_radii[index][ray_index];
+        let min_radius = (base * SOFT_BODY_MIN_RADIUS_FACTOR).max(0.1);
+        let target = target_radius.clamp(min_radius, base);
+        let old = self.current_radii[index][ray_index];
+        if target < old {
+            self.current_radii[index][ray_index] =
+                old + (target - old) * SOFT_BODY_COMPRESSION_RESPONSE;
+            self.refresh_current_radius_cache(index);
+            old - self.current_radii[index][ray_index]
+        } else {
+            0.0
+        }
+    }
+
+    fn relax_soft_body(&mut self, dt: f32) {
+        for index in 0..self.len() {
+            let elasticity =
+                (SOFT_BODY_ELASTICITY_SPEED * self.viability_ratio(index) * dt).clamp(0.0, 1.0);
+            let visual_follow = (SOFT_BODY_VISUAL_FOLLOW_SPEED * dt).clamp(0.0, 1.0);
+            let mut max_current = self.radius[index] * SOFT_BODY_MIN_RADIUS_FACTOR;
+            let mut biomass = 0.0;
+            for ray_index in 0..SOFT_BODY_POINTS {
+                let base = self.base_radii[index][ray_index].min(self.radius[index]);
+                self.base_radii[index][ray_index] = base;
+                let current = self.current_radii[index][ray_index].min(base);
+                let relaxed = current + (base - current) * elasticity;
+                self.current_radii[index][ray_index] = relaxed;
+                let visual = self.visual_radii[index][ray_index].min(self.radius[index]);
+                self.visual_radii[index][ray_index] = visual + (relaxed - visual) * visual_follow;
+                max_current = max_current.max(relaxed);
+                biomass += base;
+            }
+            self.collision_radius[index] = max_current;
+            self.biomass[index] = biomass;
+        }
+    }
+
+    fn rebuild_soft_body_cache(&mut self, index: usize) {
+        self.refresh_current_radius_cache(index);
+        self.visual_radii[index] = self.current_radii[index];
+
+        let mut biomass = 0.0;
+        let mut vector = Vec2::ZERO;
+        for ray_index in 0..SOFT_BODY_POINTS {
+            biomass += self.base_radii[index][ray_index];
+            let offset = self.angle_offsets[index][ray_index];
+            let angle = SOFT_BODY_BASE_ANGLES[ray_index];
+            let (ray_s, ray_c) = (angle + offset).sin_cos();
+            self.ray_dir_x[index][ray_index] = ray_c;
+            self.ray_dir_y[index][ray_index] = ray_s;
+            let (s, c) = angle.sin_cos();
+            vector += Vec2::new(c, s) * offset;
+        }
+        let normalized = vector / (SOFT_BODY_POINTS as f32 * SOFT_BODY_MAX_ANGLE_OFFSET);
+        self.biomass[index] = biomass;
+        self.asymmetry_x[index] = normalized.x;
+        self.asymmetry_y[index] = normalized.y;
+        let asymmetry = normalized.length().clamp(0.0, 1.0);
+        self.shape_drag[index] = (1.0 - asymmetry * SOFT_BODY_SHAPE_DRAG).clamp(0.82, 1.0);
+    }
+
+    fn refresh_current_radius_cache(&mut self, index: usize) {
+        self.collision_radius[index] = self.current_radii[index]
+            .iter()
+            .copied()
+            .fold(self.radius[index] * SOFT_BODY_MIN_RADIUS_FACTOR, f32::max);
+    }
+
+    fn asymmetry_vector(&self, index: usize) -> Vec2 {
+        Vec2::new(self.asymmetry_x[index], self.asymmetry_y[index])
+    }
+
+    fn shape_drag_factor(&self, index: usize) -> f32 {
+        self.shape_drag[index]
+    }
+
+    fn turn_agility_factor(&self, index: usize, turn_delta: f32) -> f32 {
+        let asymmetry = self.asymmetry_vector(index);
+        let amount = asymmetry.length().clamp(0.0, 1.0);
+        if amount <= 0.001 || turn_delta.abs() <= 0.001 {
+            return 1.0;
+        }
+
+        let bend_angle = asymmetry.y.atan2(asymmetry.x);
+        let bend_side = angle_delta(bend_angle, 0.0).signum();
+        if bend_side == turn_delta.signum() {
+            1.0 + amount * SOFT_BODY_TURN_BONUS
+        } else {
+            1.0
+        }
     }
 }
 
@@ -2036,7 +2630,7 @@ impl FoodStore {
         arena_h: f32,
         arena_shape: ArenaShape,
         rng: &mut SmallRng,
-    ) {
+    ) -> usize {
         let point =
             clamp_point_to_arena(Vec2::new(x, y), arena_w, arena_h, arena_shape, FOOD_RADIUS);
         let x = point.x;
@@ -2057,7 +2651,7 @@ impl FoodStore {
             self.anchor_angle[index] = anchor_angle;
             self.anchor_distance[index] = anchor_distance;
             self.anchor_lateral[index] = anchor_lateral;
-            return;
+            return index;
         }
 
         self.x.push(x);
@@ -2075,6 +2669,7 @@ impl FoodStore {
         self.anchor_angle.push(anchor_angle);
         self.anchor_distance.push(anchor_distance);
         self.anchor_lateral.push(anchor_lateral);
+        self.x.len() - 1
     }
 
     fn push_meat_at(
@@ -2272,9 +2867,23 @@ pub struct FoodGrowerStore {
     pub branch_start_y: Vec<f32>,
     pub branch_end_x: Vec<f32>,
     pub branch_end_y: Vec<f32>,
+    pub branch_hue_shift: Vec<f32>,
+    pub branch_lightness_shift: Vec<f32>,
+    pub branch_saturation_shift: Vec<f32>,
+    pub branch_width_scale: Vec<f32>,
+    pub branch_sway_speed: Vec<f32>,
     pub extent: Vec<f32>,
     pub timer: Vec<f32>,
     pub interval: Vec<f32>,
+
+    // Branchlets
+    pub branchlet_grower_index: Vec<usize>,
+    pub branchlet_branch_index: Vec<usize>,
+    pub branchlet_t: Vec<f32>,
+    pub branchlet_side: Vec<f32>,
+    pub branchlet_length: Vec<f32>,
+    pub branchlet_angle_dev: Vec<f32>,
+    pub branchlet_food_index: Vec<Option<usize>>,
 }
 
 impl FoodGrowerStore {
@@ -2309,9 +2918,22 @@ impl FoodGrowerStore {
             branch_start_y: Vec::with_capacity(count.saturating_mul(10)),
             branch_end_x: Vec::with_capacity(count.saturating_mul(10)),
             branch_end_y: Vec::with_capacity(count.saturating_mul(10)),
+            branch_hue_shift: Vec::with_capacity(count.saturating_mul(10)),
+            branch_lightness_shift: Vec::with_capacity(count.saturating_mul(10)),
+            branch_saturation_shift: Vec::with_capacity(count.saturating_mul(10)),
+            branch_width_scale: Vec::with_capacity(count.saturating_mul(10)),
+            branch_sway_speed: Vec::with_capacity(count.saturating_mul(10)),
             extent: Vec::with_capacity(count),
             timer: Vec::with_capacity(count),
             interval: Vec::with_capacity(count),
+
+            branchlet_grower_index: Vec::with_capacity(count.saturating_mul(20)),
+            branchlet_branch_index: Vec::with_capacity(count.saturating_mul(20)),
+            branchlet_t: Vec::with_capacity(count.saturating_mul(20)),
+            branchlet_side: Vec::with_capacity(count.saturating_mul(20)),
+            branchlet_length: Vec::with_capacity(count.saturating_mul(20)),
+            branchlet_angle_dev: Vec::with_capacity(count.saturating_mul(20)),
+            branchlet_food_index: Vec::with_capacity(count.saturating_mul(20)),
         };
 
         let arena_scale = arena_w.min(arena_h).max(1_000.0);
@@ -2406,7 +3028,17 @@ impl FoodGrowerStore {
                 store.branch_start_y.push(0.0);
                 store.branch_end_x.push(0.0);
                 store.branch_end_y.push(0.0);
+                store.branch_hue_shift.push(rng.random_range(-0.08..0.08));
+                store
+                    .branch_lightness_shift
+                    .push(rng.random_range(-0.12..0.12));
+                store
+                    .branch_saturation_shift
+                    .push(rng.random_range(-0.10..0.10));
+                store.branch_width_scale.push(rng.random_range(0.85..1.15));
+                store.branch_sway_speed.push(rng.random_range(0.18..0.44));
             }
+
             store.extent.push(max_extent);
             store.timer.push(if titanic {
                 rng.random_range(0.05..0.9)
@@ -2422,7 +3054,7 @@ impl FoodGrowerStore {
             });
         }
 
-        store.rebuild_branch_world_geometry();
+        store.rebuild_branch_world_geometry(0.0);
         store
     }
 
@@ -2445,7 +3077,9 @@ impl FoodGrowerStore {
 
     pub fn branch_collision_width_at(&self, branch_index: usize, t: f32) -> f32 {
         let t = t.clamp(0.0, 1.0);
-        self.branch_width[branch_index] * (1.28 + (0.58 - 1.28) * t)
+        self.branch_width[branch_index]
+            * (1.28 + (0.58 - 1.28) * t)
+            * self.branch_width_scale[branch_index]
     }
 
     pub fn branch_has_collision(&self, branch_index: usize) -> bool {
@@ -2513,7 +3147,7 @@ impl FoodGrowerStore {
         self.branch_angle.len()
     }
 
-    pub fn rebuild_branch_world_geometry(&mut self) {
+    pub fn rebuild_branch_world_geometry(&mut self, elapsed: f32) {
         for grower_index in 0..self.len() {
             let center_x = self.x[grower_index];
             let center_y = self.y[grower_index];
@@ -2522,7 +3156,11 @@ impl FoodGrowerStore {
             let end = start + self.branch_count[grower_index];
 
             for branch_index in start..end {
-                let angle = self.rotation[grower_index] + self.branch_angle[branch_index];
+                let sway = (self.branch_phase[branch_index]
+                    + elapsed * self.branch_sway_speed[branch_index])
+                    .sin()
+                    * 0.06;
+                let angle = self.rotation[grower_index] + self.branch_angle[branch_index] + sway;
                 let (s, c) = angle.sin_cos();
                 let end_distance = self.branch_length[branch_index];
 
@@ -2643,6 +3281,15 @@ pub fn species_color(_species: u8, _viability_ratio: f32) -> [f32; 4] {
 mod tests {
     use super::*;
 
+    fn set_test_cell_soft_radius(world: &mut WorldState, index: usize, radius: f32) {
+        world.cells.radius[index] = radius;
+        world.cells.base_radii[index] = [radius; SOFT_BODY_POINTS];
+        world.cells.current_radii[index] = [radius; SOFT_BODY_POINTS];
+        world.cells.visual_radii[index] = [radius; SOFT_BODY_POINTS];
+        world.cells.angle_offsets[index] = [0.0; SOFT_BODY_POINTS];
+        world.cells.rebuild_soft_body_cache(index);
+    }
+
     #[test]
     fn keeps_cells_inside_arena() {
         let config = SimConfig {
@@ -2657,7 +3304,7 @@ mod tests {
         }
 
         for i in 0..world.cells.len() {
-            let r = world.cells.radius[i];
+            let r = world.cells.collision_bound_radius(i);
             assert!(world.cells.x[i] >= -world.width * 0.5 + r);
             assert!(world.cells.x[i] <= world.width * 0.5 - r);
             assert!(world.cells.y[i] >= -world.height * 0.5 + r);
@@ -2831,6 +3478,156 @@ mod tests {
     }
 
     #[test]
+    fn soft_body_radii_start_with_eight_clamped_points() {
+        let config = SimConfig {
+            cells: 16,
+            food: 0,
+            obstacles: 0,
+            food_growers: 0,
+            ..default()
+        };
+        let world = WorldState::new(&config);
+
+        for cell_index in 0..world.cells.len() {
+            let size = world.cells.radius[cell_index];
+            for ray_index in 0..SOFT_BODY_POINTS {
+                let base = world.cells.base_radii[cell_index][ray_index];
+                let current = world.cells.current_radii[cell_index][ray_index];
+                let offset = world.cells.angle_offsets[cell_index][ray_index];
+                assert!((size * SOFT_BODY_START_MIN_FACTOR..=size).contains(&base));
+                assert_eq!(base, current);
+                assert!(
+                    (-SOFT_BODY_MAX_ANGLE_OFFSET..=SOFT_BODY_MAX_ANGLE_OFFSET).contains(&offset)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn soft_body_relaxes_faster_with_high_energy() {
+        let config = SimConfig {
+            cells: 2,
+            food: 0,
+            obstacles: 0,
+            food_growers: 0,
+            ..default()
+        };
+        let mut world = WorldState::new(&config);
+        for index in 0..2 {
+            set_test_cell_soft_radius(&mut world, index, 8.0);
+            world.cells.current_radii[index] = [4.0; SOFT_BODY_POINTS];
+            world.cells.max_viability[index] = 100.0;
+        }
+        world.cells.viability[0] = 100.0;
+        world.cells.viability[1] = 10.0;
+
+        world.cells.relax_soft_body(1.0 / 60.0);
+
+        assert!(world.cells.current_radii[0][0] > world.cells.current_radii[1][0]);
+    }
+
+    #[test]
+    fn soft_body_visual_radii_follow_physics_without_snapping() {
+        let config = SimConfig {
+            cells: 1,
+            food: 0,
+            obstacles: 0,
+            food_growers: 0,
+            ..default()
+        };
+        let mut world = WorldState::new(&config);
+        set_test_cell_soft_radius(&mut world, 0, 8.0);
+        world.cells.current_radii[0] = [4.0; SOFT_BODY_POINTS];
+        world.cells.visual_radii[0] = [8.0; SOFT_BODY_POINTS];
+        world.cells.viability[0] = 100.0;
+
+        world.cells.relax_soft_body(1.0 / 60.0);
+
+        assert!(world.cells.visual_radii[0][0] < 8.0);
+        assert!(world.cells.visual_radii[0][0] > world.cells.current_radii[0][0]);
+    }
+
+    #[test]
+    fn obstacle_collision_compresses_nearest_soft_ray() {
+        let config = SimConfig {
+            cells: 1,
+            food: 0,
+            obstacles: 1,
+            food_growers: 0,
+            ..default()
+        };
+        let mut world = WorldState::new(&config);
+        set_test_cell_soft_radius(&mut world, 0, 8.0);
+        world.obstacles.x[0] = 0.0;
+        world.obstacles.y[0] = 0.0;
+        world.obstacles.radius[0] = 80.0;
+        world.cells.x[0] = 85.0;
+        world.cells.y[0] = 0.0;
+        world.cells.vx[0] = -20.0;
+        world.cells.vy[0] = 0.0;
+
+        world.resolve_cell_obstacles(0);
+
+        assert!(
+            world.cells.current_radii[0]
+                .iter()
+                .any(|radius| *radius < 8.0)
+        );
+        assert!(world.cells.vx[0] > -20.0);
+    }
+
+    #[test]
+    fn cell_pair_collision_compresses_both_soft_rays() {
+        let config = SimConfig {
+            cells: 2,
+            food: 0,
+            obstacles: 0,
+            food_growers: 0,
+            ..default()
+        };
+        let mut world = WorldState::new(&config);
+        set_test_cell_soft_radius(&mut world, 0, 8.0);
+        set_test_cell_soft_radius(&mut world, 1, 8.0);
+        world.cells.x[0] = 0.0;
+        world.cells.y[0] = 0.0;
+        world.cells.x[1] = 14.0;
+        world.cells.y[1] = 0.0;
+        world.cells.vx[0] = 10.0;
+        world.cells.vx[1] = -10.0;
+
+        world.solve_cell_collisions();
+
+        let ray_a = world.cells.soft_ray_index_for_direction(0, Vec2::X);
+        let ray_b = world.cells.soft_ray_index_for_direction(1, -Vec2::X);
+        assert!(world.cells.current_radii[0][ray_a] < 8.0);
+        assert!(world.cells.current_radii[1][ray_b] < 8.0);
+    }
+
+    #[test]
+    fn biomass_energy_cost_scales_with_base_radii_sum() {
+        let config = SimConfig {
+            cells: 2,
+            food: 0,
+            obstacles: 0,
+            food_growers: 0,
+            ..default()
+        };
+        let mut world = WorldState::new(&config);
+        world.cells.viability[0] = 100.0;
+        world.cells.viability[1] = 100.0;
+        world.cells.speed[0] = 60.0;
+        world.cells.speed[1] = 60.0;
+        world.cells.base_radii[0] = [4.0; SOFT_BODY_POINTS];
+        world.cells.base_radii[1] = [8.0; SOFT_BODY_POINTS];
+        world.cells.rebuild_soft_body_cache(0);
+        world.cells.rebuild_soft_body_cache(1);
+
+        world.decay_viability(1.0);
+
+        assert!(world.cells.viability[1] < world.cells.viability[0]);
+    }
+
+    #[test]
     fn obstacles_and_food_growers_spawn() {
         let config = SimConfig {
             cells: 0,
@@ -2969,7 +3766,78 @@ mod tests {
         assert!(world.food.len() > 0);
         for i in 0..world.food.len() {
             let point = Vec2::new(world.food.x[i], world.food.y[i]);
-            assert!(!world.point_overlaps_solid(point, FOOD_RADIUS));
+            if world.point_overlaps_solid(point, FOOD_RADIUS) {
+                let grower_idx = world.food.feeder[i] as usize;
+                let parent_branch = world.food.anchor_branch[i];
+                println!(
+                    "[DEBUG] Food index {} (parent branch: {}) overlaps solid!",
+                    i, parent_branch
+                );
+                println!(
+                    "  Grower center: x: {:.3}, y: {:.3}",
+                    world.food_growers.x[grower_idx], world.food_growers.y[grower_idx]
+                );
+                println!("  Food pos: x: {:.3}, y: {:.3}", point.x, point.y);
+
+                if parent_branch >= 0 {
+                    let pb = parent_branch as usize;
+                    println!(
+                        "  Parent branch {} info: start: ({:.3}, {:.3}), end: ({:.3}, {:.3}), len: {:.3}",
+                        pb,
+                        world.food_growers.branch_start_x[pb],
+                        world.food_growers.branch_start_y[pb],
+                        world.food_growers.branch_end_x[pb],
+                        world.food_growers.branch_end_y[pb],
+                        world.food_growers.branch_length[pb]
+                    );
+                    let branch_t = world.food.anchor_distance[i]
+                        / world.food_growers.branch_length[pb].max(1.0);
+                    println!(
+                        "    food anchor_distance: {:.3}, branch_t: {:.3}, anchor_lateral: {:.3}",
+                        world.food.anchor_distance[i], branch_t, world.food.anchor_lateral[i]
+                    );
+                }
+
+                for branch_index in world.food_growers.branch_range(grower_idx) {
+                    if !world.food_growers.branch_has_collision(branch_index) {
+                        continue;
+                    }
+                    let (closest, t) = world
+                        .food_growers
+                        .closest_point_on_branch(branch_index, point);
+                    let min_dist = world
+                        .food_growers
+                        .branch_collision_width_at(branch_index, t)
+                        + FOOD_RADIUS;
+                    let dist = point.distance(closest);
+                    if dist < min_dist {
+                        println!(
+                            "  Overlaps branch {}! dist: {:.3}, min_dist: {:.3} (width: {:.3}, t: {:.3})",
+                            branch_index,
+                            dist,
+                            min_dist,
+                            world
+                                .food_growers
+                                .branch_collision_width_at(branch_index, t),
+                            t
+                        );
+                        println!(
+                            "    Branch {} info: start: ({:.3}, {:.3}), end: ({:.3}, {:.3}), len: {:.3}",
+                            branch_index,
+                            world.food_growers.branch_start_x[branch_index],
+                            world.food_growers.branch_start_y[branch_index],
+                            world.food_growers.branch_end_x[branch_index],
+                            world.food_growers.branch_end_y[branch_index],
+                            world.food_growers.branch_length[branch_index]
+                        );
+                        println!(
+                            "    Closest point on branch {}: ({:.3}, {:.3})",
+                            branch_index, closest.x, closest.y
+                        );
+                    }
+                }
+                panic!("feeder food overlaps solid");
+            }
         }
     }
 
@@ -3047,12 +3915,19 @@ mod tests {
         world.obstacles.radius[0] = 80.0;
         world.cells.x[0] = 10.0;
         world.cells.y[0] = 0.0;
-        world.cells.radius[0] = 8.0;
+        set_test_cell_soft_radius(&mut world, 0, 8.0);
 
+        let before = Vec2::new(world.cells.x[0], world.cells.y[0]).length();
         world.resolve_cell_obstacles(0);
 
         let dist = Vec2::new(world.cells.x[0], world.cells.y[0]).length();
-        assert!(dist >= 88.0);
+        assert!(dist > before);
+        assert!(dist - before <= SOFT_BODY_SOLID_PUSH_MAX + 0.001);
+        assert!(
+            world.cells.current_radii[0]
+                .iter()
+                .any(|radius| *radius < 8.0)
+        );
     }
 
     #[test]
@@ -3070,12 +3945,19 @@ mod tests {
         world.food_growers.radius[0] = 80.0;
         world.cells.x[0] = 10.0;
         world.cells.y[0] = 0.0;
-        world.cells.radius[0] = 8.0;
+        set_test_cell_soft_radius(&mut world, 0, 8.0);
 
+        let before = Vec2::new(world.cells.x[0], world.cells.y[0]).length();
         world.resolve_cell_food_growers(0);
 
         let dist = Vec2::new(world.cells.x[0], world.cells.y[0]).length();
-        assert!(dist >= 88.0);
+        assert!(dist > before);
+        assert!(dist - before <= SOFT_BODY_SOLID_PUSH_MAX + 0.001);
+        assert!(
+            world.cells.current_radii[0]
+                .iter()
+                .any(|radius| *radius < 8.0)
+        );
     }
 
     #[test]
@@ -3105,14 +3987,15 @@ mod tests {
         world.food_growers.extent[0] = 20_000.0;
         world.cells.x[0] = 60.0;
         world.cells.y[0] = 1.0;
-        world.cells.radius[0] = 8.0;
+        set_test_cell_soft_radius(&mut world, 0, 8.0);
 
         world.resolve_cell_food_growers(0);
         assert!((world.cells.y[0] - 1.0).abs() < 0.001);
 
         world.food_growers.branch_solid[branch] = true;
         world.resolve_cell_food_growers(0);
-        assert!(world.cells.y[0].abs() > 20.0);
+        assert!(world.cells.y[0].abs() > 1.0);
+        assert!(world.cells.y[0].abs() <= 1.0 + SOFT_BODY_SOLID_PUSH_MAX + 0.001);
     }
 
     #[test]
@@ -3251,9 +4134,68 @@ mod tests {
     }
 
     #[test]
+    fn child_soft_body_shape_stays_in_allowed_ranges() {
+        let config = SimConfig {
+            cells: 1,
+            food: 0,
+            obstacles: 0,
+            food_growers: 0,
+            ..default()
+        };
+        let mut world = WorldState::new(&config);
+        set_test_cell_soft_radius(&mut world, 0, 8.0);
+        world.cells.viability[0] = 90.0;
+        world.cells.division_threshold[0] = 80.0;
+        world.cells.mutation_susceptibility[0] = MUTATION_GENE_MAX;
+
+        world.process_cell_lifecycle();
+        let child = 1;
+
+        for ray_index in 0..SOFT_BODY_POINTS {
+            assert!(
+                (world.cells.radius[child] * SOFT_BODY_BASE_MIN_FACTOR..=world.cells.radius[child])
+                    .contains(&world.cells.base_radii[child][ray_index])
+            );
+            assert!(
+                world.cells.current_radii[child][ray_index]
+                    <= world.cells.base_radii[child][ray_index]
+            );
+            assert!(
+                (-SOFT_BODY_MAX_ANGLE_OFFSET..=SOFT_BODY_MAX_ANGLE_OFFSET)
+                    .contains(&world.cells.angle_offsets[child][ray_index])
+            );
+        }
+        assert!(
+            (MUTATION_GENE_MIN..=MUTATION_GENE_MAX)
+                .contains(&world.cells.mutation_susceptibility[child])
+        );
+    }
+
+    #[test]
     fn mutation_susceptibility_controls_mutation_parameters() {
         assert!(mutation_chance(100.0) > mutation_chance(0.0));
         assert!(mutation_power(100.0) > mutation_power(0.0));
+    }
+
+    #[test]
+    fn asymmetric_soft_body_shape_applies_drag_and_turn_bias() {
+        let config = SimConfig {
+            cells: 1,
+            food: 0,
+            obstacles: 0,
+            food_growers: 0,
+            ..default()
+        };
+        let mut world = WorldState::new(&config);
+        world.cells.angle_offsets[0] = [0.0; SOFT_BODY_POINTS];
+        world.cells.rebuild_soft_body_cache(0);
+        assert_eq!(world.cells.shape_drag_factor(0), 1.0);
+
+        world.cells.angle_offsets[0][2] = SOFT_BODY_MAX_ANGLE_OFFSET;
+        world.cells.rebuild_soft_body_cache(0);
+        assert!(world.cells.shape_drag_factor(0) < 1.0);
+        assert!(world.cells.turn_agility_factor(0, 0.5) > 1.0);
+        assert_eq!(world.cells.turn_agility_factor(0, -0.5), 1.0);
     }
 
     #[test]
@@ -3267,6 +4209,8 @@ mod tests {
         };
         let mut world = WorldState::new(&config);
         let selected_id = world.cells.id[1];
+        world.cells.base_radii[1] = [7.25; SOFT_BODY_POINTS];
+        world.cells.rebuild_soft_body_cache(1);
         world.cells.viability[0] = 0.0;
 
         world.remove_dead_cells();
@@ -3275,6 +4219,10 @@ mod tests {
             .cell_index_by_id(selected_id)
             .expect("selected id remains");
         assert_eq!(world.cells.id[selected_index], selected_id);
+        assert_eq!(
+            world.cells.base_radii[selected_index],
+            [7.25; SOFT_BODY_POINTS]
+        );
     }
 
     #[test]
@@ -3287,16 +4235,16 @@ mod tests {
             ..default()
         };
         let mut world = WorldState::new(&config);
-        world.cells.x[0] = 0.0;
-        world.cells.y[0] = 0.0;
+        world.cells.x[0] = 5000.0;
+        world.cells.y[0] = 5000.0;
         world.cells.viability[0] = 10.0;
 
         for i in 0..world.food.len() {
             world.food.active[i] = false;
         }
         world.food.active[0] = true;
-        world.food.x[0] = 0.0;
-        world.food.y[0] = 0.0;
+        world.food.x[0] = 5000.0;
+        world.food.y[0] = 5000.0;
         world.food.feeder[0] = -1;
 
         world.update(1.0 / 60.0);
@@ -3320,6 +4268,8 @@ mod tests {
         world.cells.vx[0] = 0.0;
         world.cells.vy[0] = 0.0;
         world.cells.turn_speed[0] = 0.6;
+        world.cells.angle_offsets[0] = [0.0; SOFT_BODY_POINTS];
+        world.cells.rebuild_soft_body_cache(0);
 
         for i in 0..world.food.len() {
             world.food.active[i] = false;
@@ -3367,8 +4317,8 @@ mod tests {
         world.cells.y[0] = 0.0;
         world.cells.x[1] = 4.0;
         world.cells.y[1] = 0.0;
-        world.cells.radius[0] = 8.0;
-        world.cells.radius[1] = 8.0;
+        set_test_cell_soft_radius(&mut world, 0, 8.0);
+        set_test_cell_soft_radius(&mut world, 1, 8.0);
         world.cells.vx[0] = 10.0;
         world.cells.vx[1] = -10.0;
 

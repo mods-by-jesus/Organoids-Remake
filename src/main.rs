@@ -1736,6 +1736,7 @@ fn stat_ui_value(world: &WorldState, cell_index: usize, id: GeneStatId) -> StatU
     let max_viability = cells.max_viability[cell_index].max(1.0);
     let viability_ratio = (viability / max_viability).clamp(0.0, 1.0);
     let radius = cells.radius[cell_index].max(0.1);
+    let membrane_size = cells.max_base_radius(cell_index).max(0.1);
 
     match id {
         GeneStatId::Viability => StatUiValue {
@@ -1768,8 +1769,8 @@ fn stat_ui_value(world: &WorldState, cell_index: usize, id: GeneStatId) -> StatU
             }
         }
         GeneStatId::Size => StatUiValue {
-            normalized: (radius / 10.0).clamp(0.0, 1.0),
-            display: format!("{radius:.1}"),
+            normalized: (membrane_size / 10.0).clamp(0.0, 1.0),
+            display: format!("{membrane_size:.1}/{radius:.1}"),
             range: "4-9".to_string(),
         },
     }
