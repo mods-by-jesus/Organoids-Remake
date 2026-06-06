@@ -40,11 +40,23 @@ struct SelectedCell {
     cell_id: Option<u64>,
 }
 
-#[derive(Resource, Default)]
+#[derive(Resource)]
 struct GameUiState {
     paused: bool,
     passport_open: bool,
     pause_menu_open: bool,
+    speed_multiplier: f32,
+}
+
+impl Default for GameUiState {
+    fn default() -> Self {
+        Self {
+            paused: false,
+            passport_open: false,
+            pause_menu_open: false,
+            speed_multiplier: 1.0,
+        }
+    }
 }
 
 #[derive(Component)]
@@ -110,6 +122,17 @@ enum PauseMenuAction {
     MainMenu,
     Exit,
 }
+
+#[derive(Component)]
+struct SpeedButton {
+    multiplier: f32,
+}
+
+#[derive(Component)]
+struct SpeedPanel;
+
+#[derive(Component)]
+struct SpeedButtonLabel;
 
 const START_VIEW_HEIGHT: f32 = 1_470.0;
 const CAMERA_MOVE_SPEED: f32 = 1_100.0;
@@ -190,6 +213,8 @@ fn main() {
                 passport_toggle_button_system,
                 pause_menu_button_system,
                 pause_menu_button_style_system,
+                speed_button_system,
+                update_speed_button_styles,
             )
                 .chain()
                 .run_if(in_state(AppState::Running)),
@@ -358,7 +383,8 @@ fn setup_biolab_ui_v2(mut commands: Commands, asset_server: Res<AssetServer>) {
     spawn_passport_panel(&mut commands, &asset_server, font.clone(), &stats);
     spawn_division_tooltip(&mut commands, font.clone());
     spawn_pause_indicator(&mut commands, font.clone());
-    spawn_pause_menu(&mut commands, font);
+    spawn_pause_menu(&mut commands, font.clone());
+    spawn_speed_panel(&mut commands, font);
 }
 
 fn spawn_compact_selection_panel(
@@ -912,6 +938,160 @@ fn spawn_pause_menu_button(
         ));
 }
 
+fn spawn_speed_panel(commands: &mut Commands, font: Handle<Font>) {
+    let speeds: &[(f32, &str)] = &[
+        (0.0, "⏸"),
+        (0.1, "0.1×"),
+        (0.5, "0.5×"),
+        (1.0, "1×"),
+        (2.0, "2×"),
+        (5.0, "5×"),
+        (10.0, "10×"),
+    ];
+
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                bottom: px(14),
+                left: percent(50),
+                margin: UiRect::new(px(-220), px(0), px(0), px(0)),
+                width: px(440),
+                padding: UiRect::axes(px(12), px(8)),
+                border: UiRect::all(px(2)),
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+                column_gap: px(6),
+                ..default()
+            },
+            BorderColor::all(Color::srgb(0.44, 0.74, 0.82)),
+            BackgroundColor(Color::srgb(0.018, 0.027, 0.034)),
+            GlobalZIndex(100),
+            SpeedPanel,
+            RunningUiEntity,
+        ))
+        .with_children(|panel| {
+            // Label
+            panel.spawn((
+                Text::new("СКОРОСТЬ"),
+                TextFont {
+                    font: font.clone(),
+                    font_size: 13.0,
+                    ..default()
+                },
+                TextColor(Color::srgb(0.55, 0.80, 0.76)),
+                Node {
+                    margin: UiRect::right(px(6)),
+                    ..default()
+                },
+            ));
+
+            for (mult, label) in speeds {
+                let is_active = *mult == 1.0;
+                let bg = if is_active {
+                    Color::srgb(0.14, 0.30, 0.34)
+                } else {
+                    Color::srgb(0.06, 0.10, 0.12)
+                };
+                let border_col = if is_active {
+                    Color::srgb(0.50, 0.88, 0.92)
+                } else {
+                    Color::srgb(0.34, 0.58, 0.64)
+                };
+
+                panel
+                    .spawn((
+                        Button,
+                        Node {
+                            width: px(48),
+                            height: px(30),
+                            border: UiRect::all(px(2)),
+                            justify_content: JustifyContent::Center,
+                            align_items: AlignItems::Center,
+                            ..default()
+                        },
+                        BorderColor::all(border_col),
+                        BackgroundColor(bg),
+                        SpeedButton { multiplier: *mult },
+                    ))
+                    .with_child((
+                        Text::new(*label),
+                        TextFont {
+                            font: font.clone(),
+                            font_size: 13.0,
+                            ..default()
+                        },
+                        TextColor(Color::srgb(0.82, 0.96, 0.94)),
+                        SpeedButtonLabel,
+                    ));
+            }
+        });
+
+    info!("[SpeedPanel] spawned speed control panel with {} buttons", speeds.len());
+}
+
+fn speed_button_system(
+    interactions: Query<(&Interaction, &SpeedButton), (Changed<Interaction>, With<Button>)>,
+    mut ui_state: ResMut<GameUiState>,
+) {
+    for (interaction, speed_btn) in &interactions {
+        if *interaction != Interaction::Pressed {
+            continue;
+        }
+
+        if speed_btn.multiplier == 0.0 {
+            // Pause toggle
+            ui_state.paused = !ui_state.paused;
+            if !ui_state.paused {
+                ui_state.pause_menu_open = false;
+            }
+            info!("[SpeedPanel] pause toggled -> {}", ui_state.paused);
+        } else {
+            ui_state.speed_multiplier = speed_btn.multiplier;
+            ui_state.paused = false;
+            ui_state.pause_menu_open = false;
+            info!("[SpeedPanel] speed set to {}x", speed_btn.multiplier);
+        }
+    }
+}
+
+fn update_speed_button_styles(
+    ui_state: Res<GameUiState>,
+    mut buttons: Query<(&SpeedButton, &Interaction, &mut BackgroundColor, &mut BorderColor)>,
+) {
+    for (speed_btn, interaction, mut bg, mut border) in &mut buttons {
+        let is_active = if speed_btn.multiplier == 0.0 {
+            ui_state.paused
+        } else {
+            !ui_state.paused && (speed_btn.multiplier - ui_state.speed_multiplier).abs() < 0.001
+        };
+
+        let base_bg = if is_active {
+            Color::srgb(0.14, 0.30, 0.34)
+        } else {
+            Color::srgb(0.06, 0.10, 0.12)
+        };
+
+        bg.0 = match *interaction {
+            Interaction::Pressed => Color::srgb(0.18, 0.38, 0.42),
+            Interaction::Hovered => {
+                if is_active {
+                    Color::srgb(0.17, 0.35, 0.39)
+                } else {
+                    Color::srgb(0.09, 0.17, 0.19)
+                }
+            }
+            Interaction::None => base_bg,
+        };
+
+        *border = if is_active {
+            BorderColor::all(Color::srgb(0.50, 0.88, 0.92))
+        } else {
+            BorderColor::all(Color::srgb(0.34, 0.58, 0.64))
+        };
+    }
+}
+
 #[allow(dead_code)]
 fn setup_biolab_selection_ui(mut commands: Commands, asset_server: Res<AssetServer>) {
     let font = asset_server.load(UI_FONT);
@@ -1261,7 +1441,8 @@ fn step_simulation(
     }
 
     let started = Instant::now();
-    world.update(time.delta_secs());
+    let dt = time.delta_secs() * ui_state.speed_multiplier;
+    world.update(dt);
     stats.sim_time = started.elapsed();
 }
 
@@ -1512,6 +1693,31 @@ fn game_ui_input_system(
         } else {
             ui_state.pause_menu_open = true;
             ui_state.paused = true;
+        }
+    }
+
+    // Speed control shortcuts: 1-7 keys
+    const SPEED_KEYS: [(KeyCode, f32); 7] = [
+        (KeyCode::Digit1, 0.0),
+        (KeyCode::Digit2, 0.1),
+        (KeyCode::Digit3, 0.5),
+        (KeyCode::Digit4, 1.0),
+        (KeyCode::Digit5, 2.0),
+        (KeyCode::Digit6, 5.0),
+        (KeyCode::Digit7, 10.0),
+    ];
+    for (key, speed) in SPEED_KEYS {
+        if keys.just_pressed(key) {
+            if speed == 0.0 {
+                ui_state.paused = !ui_state.paused;
+                if !ui_state.paused {
+                    ui_state.pause_menu_open = false;
+                }
+            } else {
+                ui_state.speed_multiplier = speed;
+                ui_state.paused = false;
+                ui_state.pause_menu_open = false;
+            }
         }
     }
 
