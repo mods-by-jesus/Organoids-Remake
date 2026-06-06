@@ -3,6 +3,7 @@ mod rendering;
 mod simulation;
 
 use bevy::app::AppExit;
+use bevy::audio::{PlaybackMode, Volume};
 use bevy::camera::ScalingMode;
 use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
 use bevy::input::mouse::{MouseScrollUnit, MouseWheel};
@@ -134,6 +135,22 @@ struct SpeedPanel;
 #[derive(Component)]
 struct SpeedButtonLabel;
 
+#[derive(Resource)]
+struct CellAudioLibrary {
+    effects: Vec<Handle<AudioSource>>,
+    ambient: Handle<AudioSource>,
+}
+
+#[derive(Resource, Default)]
+struct CellAudioState {
+    last_event_serial: u64,
+    next_effect: usize,
+    cooldown: f32,
+}
+
+#[derive(Component)]
+struct RunningAudioEntity;
+
 const START_VIEW_HEIGHT: f32 = 1_470.0;
 const CAMERA_MOVE_SPEED: f32 = 1_100.0;
 const ZOOM_FACTOR: f32 = 1.18;
@@ -165,6 +182,7 @@ fn main() {
         .init_resource::<SelectedCell>()
         .init_resource::<GameUiState>()
         .init_resource::<FrameStats>()
+        .init_resource::<CellAudioState>()
         .add_plugins((
             DefaultPlugins
                 .set(AssetPlugin {
@@ -187,7 +205,7 @@ fn main() {
             menu::MenuPlugin,
         ))
         .init_state::<AppState>()
-        .add_systems(Startup, setup_camera)
+        .add_systems(Startup, (setup_camera, load_cell_audio))
         .add_systems(
             OnEnter(AppState::Running),
             (
@@ -195,6 +213,7 @@ fn main() {
                 setup_game_stats_ui,
                 setup_biolab_ui_v2,
                 initialize_world_state,
+                start_running_audio,
                 update_window_title,
             ),
         )
@@ -206,6 +225,7 @@ fn main() {
                 camera_controls,
                 select_cell_system,
                 step_simulation,
+                play_cell_audio_events,
                 sync_instance_data,
                 update_stats_overlay,
                 update_selection_ui,
@@ -220,6 +240,81 @@ fn main() {
                 .run_if(in_state(AppState::Running)),
         )
         .run();
+}
+
+fn load_cell_audio(mut commands: Commands, asset_server: Res<AssetServer>) {
+    let effect_paths = [
+        "sounds/biotroph-death1.wav",
+        "sounds/biotroph-death2.wav",
+        "sounds/biotroph-eat1.wav",
+        "sounds/biotroph-eat2.wav",
+        "sounds/biotroph-eat3.wav",
+        "sounds/biotroph-eat4.wav",
+        "sounds/biotroph-fear1.wav",
+        "sounds/biotroph-fear2.wav",
+        "sounds/cell-spawn.wav",
+        "sounds/necrotroph-death1.wav",
+        "sounds/necrotroph-death2.wav",
+        "sounds/necrotroph-death3.wav",
+        "sounds/necrotroph-death4.wav",
+        "sounds/necrotroph-death5.wav",
+        "sounds/necrotroph-eat1.wav",
+        "sounds/necrotroph-eat2.wav",
+        "sounds/necrotroph-spotting1.wav",
+        "sounds/necrotroph-spotting2.wav",
+    ];
+    commands.insert_resource(CellAudioLibrary {
+        effects: effect_paths
+            .into_iter()
+            .map(|path| asset_server.load(path))
+            .collect(),
+        ambient: asset_server.load("sounds/underwater-ambient-loop.wav"),
+    });
+}
+
+fn start_running_audio(
+    mut commands: Commands,
+    library: Res<CellAudioLibrary>,
+    world: Res<WorldState>,
+    mut state: ResMut<CellAudioState>,
+) {
+    state.last_event_serial = world.cell_sound_event_serial;
+    state.cooldown = 0.0;
+    commands.spawn((
+        AudioPlayer(library.ambient.clone()),
+        PlaybackSettings {
+            mode: PlaybackMode::Loop,
+            volume: Volume::Linear(0.18),
+            ..default()
+        },
+        RunningAudioEntity,
+    ));
+}
+
+fn play_cell_audio_events(
+    time: Res<Time>,
+    world: Res<WorldState>,
+    library: Res<CellAudioLibrary>,
+    mut state: ResMut<CellAudioState>,
+    mut commands: Commands,
+) {
+    state.cooldown = (state.cooldown - time.delta_secs()).max(0.0);
+    if world.cell_sound_event_serial == state.last_event_serial || state.cooldown > 0.0 {
+        return;
+    }
+    state.last_event_serial = world.cell_sound_event_serial;
+    let effect = library.effects[state.next_effect % library.effects.len()].clone();
+    state.next_effect = state.next_effect.wrapping_add(1);
+    state.cooldown = 0.14;
+    commands.spawn((
+        AudioPlayer(effect),
+        PlaybackSettings {
+            mode: PlaybackMode::Despawn,
+            volume: Volume::Linear(0.24),
+            ..default()
+        },
+        RunningAudioEntity,
+    ));
 }
 
 fn initialize_world_state(
@@ -1027,7 +1122,10 @@ fn spawn_speed_panel(commands: &mut Commands, font: Handle<Font>) {
             }
         });
 
-    info!("[SpeedPanel] spawned speed control panel with {} buttons", speeds.len());
+    info!(
+        "[SpeedPanel] spawned speed control panel with {} buttons",
+        speeds.len()
+    );
 }
 
 fn speed_button_system(
@@ -1057,7 +1155,12 @@ fn speed_button_system(
 
 fn update_speed_button_styles(
     ui_state: Res<GameUiState>,
-    mut buttons: Query<(&SpeedButton, &Interaction, &mut BackgroundColor, &mut BorderColor)>,
+    mut buttons: Query<(
+        &SpeedButton,
+        &Interaction,
+        &mut BackgroundColor,
+        &mut BorderColor,
+    )>,
 ) {
     for (speed_btn, interaction, mut bg, mut border) in &mut buttons {
         let is_active = if speed_btn.multiplier == 0.0 {
@@ -1871,11 +1974,12 @@ fn update_selection_ui(
     };
 
     let cell_id = world.cells.id[cell_index];
+    let shape_name = world.cells.shape_name(cell_index);
     if let Ok(mut title) = compact_title.single_mut() {
-        **title = format!("КЛЕТКА #{cell_id}");
+        **title = format!("КЛЕТКА #{cell_id} · {shape_name}");
     }
     if let Ok(mut title) = passport_title.single_mut() {
-        **title = format!("ПАСПОРТ КЛЕТКИ #{cell_id}");
+        **title = format!("ПАСПОРТ КЛЕТКИ #{cell_id} · {shape_name}");
     }
 
     let division_threshold = world.cells.division_threshold[cell_index];
@@ -2078,6 +2182,7 @@ fn cleanup_running_game(
     mut commands: Commands,
     ui_entities: Query<Entity, With<RunningUiEntity>>,
     render_entities: Query<Entity, With<SimulationRenderEntity>>,
+    audio_entities: Query<Entity, With<RunningAudioEntity>>,
     mut selected: ResMut<SelectedCell>,
     mut ui_state: ResMut<GameUiState>,
 ) {
@@ -2085,6 +2190,9 @@ fn cleanup_running_game(
         commands.entity(entity).despawn();
     }
     for entity in &render_entities {
+        commands.entity(entity).despawn();
+    }
+    for entity in &audio_entities {
         commands.entity(entity).despawn();
     }
 
@@ -2186,7 +2294,10 @@ fn update_ui(
     };
 
     if let Ok(mut title) = title.single_mut() {
-        **title = format!("Клетка #{cell_index}");
+        **title = format!(
+            "Клетка #{cell_index} · {}",
+            world.cells.shape_name(cell_index)
+        );
     }
 
     let viability = world.cells.viability[cell_index];

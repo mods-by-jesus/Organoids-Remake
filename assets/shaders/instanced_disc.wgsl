@@ -254,7 +254,7 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         if (food.a < 0.01) {
             discard;
         }
-        return food;
+        return vec4<f32>(food.rgb, 1.0);
     }
 
     if (kind > 1.5 && kind < 2.5) {
@@ -262,7 +262,7 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         if (obstacle.a < 0.01) {
             discard;
         }
-        return obstacle;
+        return vec4<f32>(obstacle.rgb, 1.0);
     }
 
     if (kind > 2.5 && kind < 3.5) {
@@ -270,7 +270,7 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         if (feeder_core.a < 0.01) {
             discard;
         }
-        return feeder_core;
+        return vec4<f32>(feeder_core.rgb, 1.0);
     }
 
     if (kind > 3.5 && kind < 4.5) {
@@ -278,7 +278,7 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         if (feeder_branch.a < 0.01) {
             discard;
         }
-        return feeder_branch;
+        return vec4<f32>(feeder_branch.rgb, 1.0);
     }
 
     let angle = atan2(local.y, local.x);
@@ -289,37 +289,47 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         in.soft_radii_a,
         in.soft_radii_b
     );
-    let effective_dist = dist / shape_radius;
+    let contour_angle = angle - heading_angle;
+    let contour_fluctuation =
+        0.981
+        + 0.012 * sin(contour_angle * 7.0 + globals.time * 1.35 + in.motion.w)
+        + 0.007 * sin(contour_angle * 11.0 - globals.time * 0.82 + in.shape.z);
+    let effective_dist = dist / (shape_radius * contour_fluctuation);
 
     if (effective_dist > 1.0) {
         discard;
     }
 
-    let body = smoothstep(1.0, 0.78, effective_dist);
-    let membrane = ring_mask(effective_dist, 1.0, 0.83);
-    let inner_glow = smoothstep(0.92, 0.12, effective_dist);
-    let jelly_wave = sin(angle * 5.0 + in.motion.w * 3.2) * in.motion.z;
-    let cytoplasm_noise =
-        0.5 + 0.5 * sin(local.x * 13.0 + local.y * 17.0 + in.motion.w * 1.7 + jelly_wave * 3.0);
-    let cytoplasm = in.color.rgb * (0.68 + inner_glow * 0.34 + cytoplasm_noise * 0.08);
+    let membrane_gradient = smoothstep(0.72, 1.0, effective_dist);
+    let membrane_edge = smoothstep(0.94, 1.0, effective_dist);
 
-    let nucleus_shift = safe_dir(in.motion.xy) * sin(in.motion.w * 2.4) * in.motion.z * 0.055;
+    let forward = safe_dir(in.motion.xy);
+    let sideways = vec2<f32>(-forward.y, forward.x);
+    let orbit_phase = in.shape.z;
+    let nucleus_orbit = vec2<f32>(
+        sin(globals.time * 0.38 + orbit_phase),
+        sin(globals.time * 0.29 + orbit_phase * 1.71)
+    ) * 0.010;
+    let impact = clamp(in.motion.z / 0.35, 0.0, 1.0);
+    let collision_direction =
+        forward * cos(in.motion.w)
+        + sideways * sin(in.motion.w);
+    let collision_wobble = collision_direction * impact * 0.052;
+    let nucleus_shift = nucleus_orbit + collision_wobble;
     let nucleus_dist = length(local - in.nucleus.xy - nucleus_shift) / max(in.nucleus.z, 0.04);
-    let nucleus_mask = smoothstep(1.0, 0.72, nucleus_dist);
-    let nucleus_rim = ring_mask(nucleus_dist, 1.0, 0.64);
-    let nucleus_color = vec3<f32>(0.55, 0.78, 1.0) * (0.8 + 0.22 * sin(in.motion.w + nucleus_dist * 5.0));
+    let nucleus_mask = smoothstep(1.0, 0.82, nucleus_dist);
+    let nucleus_rim = ring_mask(nucleus_dist, 1.0, 0.72);
 
-    let highlight_pos = local - vec2<f32>(-0.28, 0.34);
-    let highlight = smoothstep(0.52, 0.0, length(highlight_pos)) * 0.22;
-    let collision_flash = in.motion.z * ring_mask(effective_dist, 0.78, 0.36) * 0.45;
+    let body_color = in.color.rgb;
+    let membrane_color = mix(body_color, vec3<f32>(1.0), 0.68);
+    let nucleus_color = mix(body_color, vec3<f32>(1.0), 0.48);
+    var rgb = mix(body_color, membrane_color, membrane_gradient);
+    rgb = mix(rgb, vec3<f32>(1.0), membrane_edge * 0.16);
+    rgb = mix(rgb, nucleus_color, nucleus_mask);
+    rgb = mix(rgb, vec3<f32>(1.0), nucleus_rim * 0.24);
 
-    var rgb = cytoplasm;
-    rgb += vec3<f32>(0.72, 0.95, 1.0) * membrane * (0.72 + in.motion.z * 0.2);
-    rgb += vec3<f32>(0.9, 1.0, 1.0) * highlight;
-    rgb = mix(rgb, nucleus_color, nucleus_mask * 0.72);
-    rgb += vec3<f32>(0.9, 1.0, 1.0) * nucleus_rim * 0.38;
-    rgb += vec3<f32>(0.8, 0.95, 1.0) * collision_flash;
-
-    let alpha = body * (0.24 + inner_glow * 0.18) + membrane * 0.5 + nucleus_mask * 0.24;
-    return vec4<f32>(rgb, clamp(alpha * in.color.a, 0.0, 0.96));
+    var alpha = mix(0.38, 0.84, membrane_gradient);
+    alpha = mix(alpha, 0.98, membrane_edge);
+    alpha = mix(alpha, 0.90, nucleus_mask);
+    return vec4<f32>(rgb, alpha * in.color.a);
 }

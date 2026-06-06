@@ -879,7 +879,8 @@ fn queue_custom(
         };
 
         let view_key = MeshPipelineKey::from_msaa_samples(msaa.samples())
-            | MeshPipelineKey::from_hdr(view.hdr);
+            | MeshPipelineKey::from_hdr(view.hdr)
+            | MeshPipelineKey::BLEND_ALPHA;
         let rangefinder = view.rangefinder3d();
 
         for (entity, main_entity) in &material_meshes {

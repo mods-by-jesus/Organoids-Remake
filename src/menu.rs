@@ -1,10 +1,11 @@
 use crate::{
     AppState,
-    simulation::{ArenaShape, SimConfig},
+    simulation::{ArenaShape, CELL_SHAPE_LABELS, SimConfig},
 };
 use bevy::input::ButtonState;
 use bevy::input::keyboard::{Key, KeyboardInput};
 use bevy::prelude::*;
+use bevy::ui::RelativeCursorPosition;
 
 pub struct MenuPlugin;
 
@@ -20,6 +21,8 @@ impl Plugin for MenuPlugin {
                     sync_menu_values_system,
                     menu_section_visibility_system,
                     menu_button_style_system,
+                    shape_weight_slider_system,
+                    sync_shape_weight_sliders,
                 )
                     .chain()
                     .run_if(in_state(AppState::Menu)),
@@ -31,6 +34,7 @@ impl Plugin for MenuPlugin {
 #[derive(Resource, Default)]
 struct MenuUiState {
     advanced_open: bool,
+    shapes_open: bool,
 }
 
 #[derive(Component)]
@@ -76,11 +80,13 @@ enum MenuTextValue {
     Vsync,
     Arena,
     ArenaShape,
+    RandomGeometry,
 }
 
 #[derive(Component, Clone, Copy, PartialEq, Eq)]
 enum MenuSection {
     Advanced,
+    Shapes,
 }
 
 #[derive(Component)]
@@ -99,6 +105,21 @@ struct VsyncToggle;
 #[derive(Component)]
 struct ArenaShapeToggle;
 
+#[derive(Component)]
+struct RandomizeSeedButton;
+
+#[derive(Component)]
+struct RandomGeometryToggle;
+
+#[derive(Component)]
+struct ShapeWeightSlider(usize);
+
+#[derive(Component)]
+struct ShapeWeightFill(usize);
+
+#[derive(Component)]
+struct ShapeWeightValue(usize);
+
 const NORMAL_BORDER: Color = Color::srgb(0.18, 0.30, 0.34);
 const FOCUSED_BORDER: Color = Color::srgb(0.46, 0.82, 0.90);
 const NORMAL_BG: Color = Color::srgb(0.045, 0.070, 0.080);
@@ -113,6 +134,7 @@ fn setup_menu(
     mut menu_state: ResMut<MenuUiState>,
 ) {
     menu_state.advanced_open = false;
+    menu_state.shapes_open = false;
     let font = asset_server.load(UI_FONT);
 
     commands
@@ -255,6 +277,33 @@ fn spawn_settings_column(
                 config.food_growers,
             );
 
+            spawn_shapes_toggle(column, font.clone());
+            column
+                .spawn((
+                    Node {
+                        width: percent(100),
+                        flex_direction: FlexDirection::Column,
+                        row_gap: px(5),
+                        ..default()
+                    },
+                    Visibility::Hidden,
+                    MenuSectionBody {
+                        section: MenuSection::Shapes,
+                    },
+                ))
+                .with_children(|shapes| {
+                    spawn_random_geometry_row(shapes, font.clone(), config.random_cell_geometry);
+                    for (index, label) in CELL_SHAPE_LABELS.iter().enumerate() {
+                        spawn_shape_weight_slider(
+                            shapes,
+                            font.clone(),
+                            index,
+                            label,
+                            config.cell_shape_weights[index],
+                        );
+                    }
+                });
+
             spawn_advanced_toggle(column, font.clone());
             column
                 .spawn((
@@ -277,8 +326,149 @@ fn spawn_settings_column(
                         MenuTextValue::Seed,
                         config.seed as usize,
                     );
+                    spawn_seed_randomize_button(advanced, font.clone());
                     spawn_vsync_row(advanced, font, config.vsync);
                 });
+        });
+}
+
+fn spawn_shapes_toggle(parent: &mut ChildSpawnerCommands, font: Handle<Font>) {
+    parent
+        .spawn((
+            Button,
+            Node {
+                width: percent(100),
+                height: px(36),
+                border: UiRect::all(px(1)),
+                justify_content: JustifyContent::Center,
+                align_items: AlignItems::Center,
+                ..default()
+            },
+            BorderColor::all(Color::srgb(0.28, 0.48, 0.54)),
+            BackgroundColor(NORMAL_BG),
+            MenuSectionToggle {
+                section: MenuSection::Shapes,
+            },
+        ))
+        .with_child((
+            Text::new("Геометрия клеток"),
+            TextFont {
+                font,
+                font_size: 14.0,
+                ..default()
+            },
+            TextColor(Color::srgb(0.72, 0.86, 0.88)),
+        ));
+}
+
+fn spawn_random_geometry_row(parent: &mut ChildSpawnerCommands, font: Handle<Font>, enabled: bool) {
+    parent
+        .spawn((
+            Button,
+            Node {
+                width: percent(100),
+                height: px(30),
+                border: UiRect::all(px(1)),
+                justify_content: JustifyContent::SpaceBetween,
+                align_items: AlignItems::Center,
+                padding: UiRect::horizontal(px(10)),
+                ..default()
+            },
+            BorderColor::all(Color::srgb(0.28, 0.50, 0.56)),
+            BackgroundColor(NORMAL_BG),
+            RandomGeometryToggle,
+        ))
+        .with_children(|row| {
+            row.spawn((
+                Text::new("Полный рандом геометрии"),
+                TextFont {
+                    font: font.clone(),
+                    font_size: 14.0,
+                    ..default()
+                },
+                TextColor(Color::srgb(0.78, 0.88, 0.90)),
+            ));
+            row.spawn((
+                Text::new(if enabled { "ВКЛ" } else { "ВЫКЛ" }),
+                TextFont {
+                    font,
+                    font_size: 14.0,
+                    ..default()
+                },
+                TextColor(Color::srgb(0.90, 0.96, 0.94)),
+                MenuValueLabel {
+                    value_type: MenuTextValue::RandomGeometry,
+                },
+            ));
+        });
+}
+
+fn spawn_shape_weight_slider(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    index: usize,
+    label: &str,
+    weight: f32,
+) {
+    parent
+        .spawn((Node {
+            width: percent(100),
+            height: px(24),
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            column_gap: px(8),
+            ..default()
+        },))
+        .with_children(|row| {
+            row.spawn((
+                Text::new(label),
+                TextFont {
+                    font: font.clone(),
+                    font_size: 12.0,
+                    ..default()
+                },
+                TextColor(Color::srgb(0.70, 0.78, 0.80)),
+                Node {
+                    width: px(155),
+                    ..default()
+                },
+            ));
+            row.spawn((
+                Button,
+                Node {
+                    width: px(330),
+                    height: px(14),
+                    position_type: PositionType::Relative,
+                    ..default()
+                },
+                BackgroundColor(Color::srgb(0.07, 0.11, 0.12)),
+                RelativeCursorPosition::default(),
+                ShapeWeightSlider(index),
+            ))
+            .with_child((
+                Node {
+                    width: percent(weight),
+                    height: percent(100),
+                    ..default()
+                },
+                BackgroundColor(Color::srgb(0.36, 0.72, 0.68)),
+                ShapeWeightFill(index),
+            ));
+            row.spawn((
+                Text::new(format!("{weight:.1}%")),
+                TextFont {
+                    font,
+                    font_size: 12.0,
+                    ..default()
+                },
+                TextColor(Color::srgb(0.82, 0.92, 0.92)),
+                Node {
+                    width: px(54),
+                    justify_content: JustifyContent::FlexEnd,
+                    ..default()
+                },
+                ShapeWeightValue(index),
+            ));
         });
 }
 
@@ -484,6 +674,33 @@ fn spawn_advanced_toggle(parent: &mut ChildSpawnerCommands, font: Handle<Font>) 
         ));
 }
 
+fn spawn_seed_randomize_button(parent: &mut ChildSpawnerCommands, font: Handle<Font>) {
+    parent
+        .spawn((
+            Button,
+            Node {
+                width: percent(100),
+                height: px(34),
+                border: UiRect::all(px(1)),
+                justify_content: JustifyContent::Center,
+                align_items: AlignItems::Center,
+                ..default()
+            },
+            BorderColor::all(Color::srgb(0.28, 0.50, 0.56)),
+            BackgroundColor(NORMAL_BG),
+            RandomizeSeedButton,
+        ))
+        .with_child((
+            Text::new("Случайный seed"),
+            TextFont {
+                font,
+                font_size: 14.0,
+                ..default()
+            },
+            TextColor(Color::srgb(0.72, 0.88, 0.90)),
+        ));
+}
+
 fn spawn_vsync_row(parent: &mut ChildSpawnerCommands, font: Handle<Font>, enabled: bool) {
     parent
         .spawn((Node {
@@ -686,6 +903,8 @@ fn menu_interaction_system(
             Option<&MenuSectionToggle>,
             Option<&VsyncToggle>,
             Option<&ArenaShapeToggle>,
+            Option<&RandomizeSeedButton>,
+            Option<&RandomGeometryToggle>,
         ),
         (Changed<Interaction>, With<Button>),
     >,
@@ -703,6 +922,8 @@ fn menu_interaction_system(
         section_toggle,
         vsync_toggle,
         arena_shape_toggle,
+        randomize_seed,
+        random_geometry,
     ) in &mut interaction_query
     {
         if *interaction != Interaction::Pressed {
@@ -715,13 +936,21 @@ fn menu_interaction_system(
         } else if let Some(preset) = preset {
             apply_preset(preset.0, &mut config);
         } else if let Some(toggle) = section_toggle {
-            if toggle.section == MenuSection::Advanced {
-                menu_state.advanced_open = !menu_state.advanced_open;
+            match toggle.section {
+                MenuSection::Advanced => menu_state.advanced_open = !menu_state.advanced_open,
+                MenuSection::Shapes => menu_state.shapes_open = !menu_state.shapes_open,
             }
         } else if vsync_toggle.is_some() {
             config.vsync = !config.vsync;
         } else if arena_shape_toggle.is_some() {
             config.arena_shape = config.arena_shape.next();
+        } else if randomize_seed.is_some() {
+            config.seed = rand::random::<u64>() % 1_000_000_000_000;
+            for focused_entity in &focused_query {
+                commands.entity(focused_entity).remove::<FocusedInput>();
+            }
+        } else if random_geometry.is_some() {
+            config.random_cell_geometry = !config.random_cell_geometry;
         } else if input_field.is_some() {
             for focused_entity in &focused_query {
                 commands.entity(focused_entity).remove::<FocusedInput>();
@@ -843,7 +1072,10 @@ fn keyboard_input_system(
         MenuTextValue::Obstacles => config.obstacles = val,
         MenuTextValue::FoodGrowers => config.food_growers = val,
         MenuTextValue::Seed => config.seed = val as u64,
-        MenuTextValue::Vsync | MenuTextValue::Arena | MenuTextValue::ArenaShape => {}
+        MenuTextValue::Vsync
+        | MenuTextValue::Arena
+        | MenuTextValue::ArenaShape
+        | MenuTextValue::RandomGeometry => {}
     }
 }
 
@@ -870,6 +1102,13 @@ fn sync_menu_values_system(
             MenuTextValue::Vsync => vsync_label(config.vsync),
             MenuTextValue::Arena => format!("{:.0} x {:.0}", config.width, config.height),
             MenuTextValue::ArenaShape => arena_shape_label(config.arena_shape),
+            MenuTextValue::RandomGeometry => {
+                if config.random_cell_geometry {
+                    "ВКЛ".to_string()
+                } else {
+                    "ВЫКЛ".to_string()
+                }
+            }
         };
     }
 }
@@ -882,6 +1121,52 @@ fn menu_section_visibility_system(
         *visibility = match section.section {
             MenuSection::Advanced if menu_state.advanced_open => Visibility::Visible,
             MenuSection::Advanced => Visibility::Hidden,
+            MenuSection::Shapes if menu_state.shapes_open => Visibility::Visible,
+            MenuSection::Shapes => Visibility::Hidden,
+        };
+    }
+}
+
+fn shape_weight_slider_system(
+    mouse: Res<ButtonInput<MouseButton>>,
+    sliders: Query<(&Interaction, &RelativeCursorPosition, &ShapeWeightSlider)>,
+    mut config: ResMut<SimConfig>,
+) {
+    if config.random_cell_geometry || !mouse.pressed(MouseButton::Left) {
+        return;
+    }
+    for (interaction, cursor, slider) in &sliders {
+        if *interaction != Interaction::Pressed {
+            continue;
+        }
+        if let Some(position) = cursor.normalized {
+            config.set_cell_shape_weight(slider.0, position.x.clamp(0.0, 1.0) * 100.0);
+        }
+    }
+}
+
+fn sync_shape_weight_sliders(
+    config: Res<SimConfig>,
+    mut fills: Query<(&ShapeWeightFill, &mut Node, &mut BackgroundColor)>,
+    mut values: Query<(&ShapeWeightValue, &mut Text, &mut TextColor)>,
+) {
+    if !config.is_changed() {
+        return;
+    }
+    for (fill, mut node, mut color) in &mut fills {
+        node.width = percent(config.cell_shape_weights[fill.0]);
+        color.0 = if config.random_cell_geometry {
+            Color::srgb(0.18, 0.25, 0.25)
+        } else {
+            Color::srgb(0.36, 0.72, 0.68)
+        };
+    }
+    for (value, mut text, mut color) in &mut values {
+        **text = format!("{:.1}%", config.cell_shape_weights[value.0]);
+        color.0 = if config.random_cell_geometry {
+            Color::srgb(0.42, 0.50, 0.50)
+        } else {
+            Color::srgb(0.82, 0.92, 0.92)
         };
     }
 }

@@ -13,8 +13,10 @@ pub const MEAT_FOOD_COLOR: [f32; 4] = [1.0, 0.23, 0.18, 0.95];
 const GRID_CELL_SIZE: f32 = 240.0;
 const CELL_GRID_SIZE: f32 = 96.0;
 const SEARCH_RING: i32 = 2;
-const STEER_GAIN: f32 = 9.5;
-const DRAG: f32 = 0.985;
+const CELL_ACCELERATION_GAIN: f32 = 2.15;
+const CELL_LINEAR_DRAG: f32 = 0.14;
+const CELL_LATERAL_GRIP: f32 = 0.72;
+const CELL_TURN_RATE_MULTIPLIER: f32 = 0.46;
 const WANDER_GAIN: f32 = 0.45;
 pub const CELL_VIABILITY_MAX: f32 = 100.0;
 pub const CELL_SPEED_DISPLAY_MAX: f32 = 120.0;
@@ -41,17 +43,17 @@ const SOFT_BODY_ELASTICITY_SPEED: f32 = 8.0;
 const SOFT_BODY_VISUAL_FOLLOW_SPEED: f32 = 12.0;
 const SOFT_BODY_COMPRESSION_RESPONSE: f32 = 0.58;
 const SOFT_BODY_BIOMASS_DRAIN_RATE: f32 = 0.012;
-const SOFT_BODY_MIN_RADIUS_FACTOR: f32 = 0.25;
-const SOFT_BODY_BASE_MIN_FACTOR: f32 = 0.35;
-const SOFT_BODY_START_MIN_FACTOR: f32 = 0.45;
+const CORE_RADIUS_FACTOR: f32 = 0.30;
+const HARD_CORE_STIFFNESS_MULTIPLIER: f32 = 10.0;
+const SOFT_BODY_BASE_MIN_FACTOR: f32 = CORE_RADIUS_FACTOR;
 const SOFT_BODY_MAX_ANGLE_OFFSET: f32 = 0.261_799_4;
 const SOFT_BODY_MUTATION_ANGLE_DELTA: f32 = 0.08;
+const SHAPE_MUTATION_LENGTH_SCALE: f32 = 0.22;
 const SOFT_BODY_SHAPE_DRAG: f32 = 0.12;
 const SOFT_BODY_TURN_BONUS: f32 = 0.18;
-const SOFT_BODY_COMPRESSION_IMPULSE: f32 = 2.8;
+const SOFT_BODY_COMPRESSION_IMPULSE: f32 = 0.45;
 const SOFT_BODY_SOLID_PUSH_FACTOR: f32 = 0.62;
 const SOFT_BODY_SOLID_PUSH_MAX: f32 = 5.5;
-const SOFT_BODY_CELL_PUSH_MAX: f32 = 4.0;
 const MUTATION_FACTOR_DELTA_SCALE: f32 = 100.0 / (0.3 - 0.005);
 const FOOD_VIABILITY_GAIN: f32 = 18.0;
 const FEEDER_FOOD_VIABILITY_GAIN: f32 = 14.0;
@@ -69,9 +71,7 @@ const EMPTY_WORLD_FEEDER_FOOD_PER_GROWER: usize = 120;
 const CELL_AVOIDANCE_MARGIN: f32 = 92.0;
 const CELL_AVOIDANCE_STRENGTH: f32 = 1.15;
 const CELL_OBSTACLE_RESTITUTION: f32 = 0.35;
-const COLLISION_RESTITUTION: f32 = 0.05;
-const COLLISION_PUSH: f32 = 0.18;
-const JELLY_DECAY: f32 = 2.8;
+const JELLY_DECAY: f32 = 1.4;
 const JELLY_HIT_GAIN: f32 = 0.42;
 const HUNGER_EPSILON: f32 = 0.25;
 const DIVISION_CHILD_OFFSET: f32 = 2.35;
@@ -138,9 +138,33 @@ pub struct SimConfig {
     pub arena_shape: ArenaShape,
     pub obstacles: usize,
     pub food_growers: usize,
+    pub collision_stiffness: f32,
+    pub collision_damping: f32,
     pub seed: u64,
     pub vsync: bool,
+    pub random_cell_geometry: bool,
+    pub cell_shape_weights: [f32; CELL_SHAPE_COUNT],
 }
+
+pub const CELL_SHAPE_COUNT: usize = 13;
+pub const CELL_SHAPE_LABELS: [&str; CELL_SHAPE_COUNT] = [
+    "Кокк",
+    "Бацилла",
+    "Филамент",
+    "Спирилла",
+    "Вибрион",
+    "Диплококк",
+    "Веретено",
+    "Кубоид",
+    "Триквитрум",
+    "Ставроморф",
+    "Ланцет",
+    "Плакоид",
+    "Амеба",
+];
+const DEFAULT_CELL_SHAPE_WEIGHTS: [f32; CELL_SHAPE_COUNT] = [
+    18.0, 15.0, 7.0, 6.0, 8.0, 6.0, 7.0, 7.0, 8.0, 6.0, 5.0, 6.0, 7.0,
+];
 
 impl Default for SimConfig {
     fn default() -> Self {
@@ -152,13 +176,44 @@ impl Default for SimConfig {
             arena_shape: ArenaShape::Rectangle,
             obstacles: 26,
             food_growers: 4,
+            collision_stiffness: 500.0,
+            collision_damping: 15.0,
             seed: 0xC011_CE11,
             vsync: false,
+            random_cell_geometry: false,
+            cell_shape_weights: DEFAULT_CELL_SHAPE_WEIGHTS,
         }
     }
 }
 
 impl SimConfig {
+    pub fn set_cell_shape_weight(&mut self, changed_index: usize, value: f32) {
+        if changed_index >= CELL_SHAPE_COUNT {
+            return;
+        }
+        let value = value.clamp(0.0, 100.0);
+        let remainder = 100.0 - value;
+        let other_total = self
+            .cell_shape_weights
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| *index != changed_index)
+            .map(|(_, weight)| *weight)
+            .sum::<f32>();
+
+        self.cell_shape_weights[changed_index] = value;
+        for (index, weight) in self.cell_shape_weights.iter_mut().enumerate() {
+            if index == changed_index {
+                continue;
+            }
+            *weight = if other_total > 0.0001 {
+                *weight / other_total * remainder
+            } else {
+                remainder / (CELL_SHAPE_COUNT - 1) as f32
+            };
+        }
+    }
+
     pub fn from_args() -> Result<Self, String> {
         let mut config = SimConfig::default();
         let mut args = std::env::args().skip(1);
@@ -188,6 +243,12 @@ impl SimConfig {
                 }
                 "--food-growers" => {
                     config.food_growers = parse_next(&mut args, "--food-growers")?;
+                }
+                "--collision-stiffness" => {
+                    config.collision_stiffness = parse_next(&mut args, "--collision-stiffness")?;
+                }
+                "--collision-damping" => {
+                    config.collision_damping = parse_next(&mut args, "--collision-damping")?;
                 }
                 "--seed" => {
                     config.seed = parse_next(&mut args, "--seed")?;
@@ -220,7 +281,7 @@ fn parse_next<T: std::str::FromStr>(
 }
 
 pub fn usage() -> String {
-    "Usage: organoids [--cells 10000] [--food 2000] [--width 24000] [--height 13500] [--shape rectangle|circle] [--obstacles 26] [--food-growers 4] [--seed 123] [--vsync]".to_string()
+    "Usage: organoids [--cells 10000] [--food 2000] [--width 24000] [--height 13500] [--shape rectangle|circle] [--obstacles 26] [--food-growers 4] [--collision-stiffness 500] [--collision-damping 15] [--seed 123] [--vsync]".to_string()
 }
 
 fn floor_food_count(total_food: usize) -> usize {
@@ -373,9 +434,13 @@ pub struct WorldState {
     pub arena_shape: ArenaShape,
     grid: SpatialGrid,
     cell_grid: CellGrid,
+    collision_pairs: Vec<(usize, usize)>,
     rng: SmallRng,
     elapsed: f32,
     max_food: usize,
+    collision_stiffness: f32,
+    collision_damping: f32,
+    pub cell_sound_event_serial: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -460,6 +525,8 @@ impl WorldState {
             config.width,
             config.height,
             config.arena_shape,
+            config.random_cell_geometry,
+            &config.cell_shape_weights,
             &mut rng,
         );
         let food = FoodStore::new(
@@ -498,36 +565,17 @@ impl WorldState {
             arena_shape: config.arena_shape,
             grid,
             cell_grid,
+            collision_pairs: Vec::with_capacity(config.cells.saturating_mul(4)),
             rng,
             elapsed: 0.0,
             max_food: floor_food_count.saturating_add(feeder_food_capacity),
+            collision_stiffness: config.collision_stiffness.max(0.0),
+            collision_damping: config.collision_damping.max(0.0),
+            cell_sound_event_serial: 0,
         };
         world.relocate_world_food_away_from_solids();
         world.seed_feeder_food(feeder_food_capacity);
         world.grid.rebuild(&world.food);
-
-        // DEBUG: Log world creation stats
-        let solid_branches: usize = (0..world.food_growers.branch_total())
-            .filter(|&b| world.food_growers.branch_has_collision(b))
-            .count();
-        eprintln!(
-            "[DEBUG] World created: {} growers, {} total branches ({} solid), {} food (floor: {}, feeder cap: {})",
-            world.food_growers.len(),
-            world.food_growers.branch_total(),
-            solid_branches,
-            world.food.len(),
-            floor_food_count,
-            feeder_food_capacity,
-        );
-        for g in 0..world.food_growers.len() {
-            eprintln!(
-                "[DEBUG]   Grower {}: radius={:.1}, branches={}, extent={:.1}",
-                g,
-                world.food_growers.radius[g],
-                world.food_growers.branch_count[g],
-                world.food_growers.extent_radius(g),
-            );
-        }
 
         world
     }
@@ -598,11 +646,12 @@ impl WorldState {
                         self.respawn_world_food(food_index);
                         self.cells.add_viability(i, FOOD_VIABILITY_GAIN);
                     }
+                    self.cell_sound_event_serial = self.cell_sound_event_serial.wrapping_add(1);
                 }
             }
         }
 
-        self.solve_cell_collisions();
+        self.solve_cell_collisions(dt);
         self.decay_viability(dt);
         self.process_cell_lifecycle();
     }
@@ -628,6 +677,7 @@ impl WorldState {
         let turn_delta = angle_delta(target_heading, current_heading);
         let turn_step = self.cells.turn_speed[cell_index]
             * self.cells.turn_agility_factor(cell_index, turn_delta)
+            * CELL_TURN_RATE_MULTIPLIER
             * dt;
         let new_heading = wrap_angle(current_heading + turn_delta.clamp(-turn_step, turn_step));
         self.cells.heading[cell_index] = new_heading;
@@ -643,13 +693,25 @@ impl WorldState {
         };
         let drive_speed = self.effective_cell_speed(cell_index);
         let target_velocity = front * drive_speed * throttle + current;
-        let steer = (STEER_GAIN * dt).clamp(0.0, 1.0);
-        self.cells.vx[cell_index] = (self.cells.vx[cell_index]
-            + (target_velocity.x - self.cells.vx[cell_index]) * steer)
-            * DRAG;
-        self.cells.vy[cell_index] = (self.cells.vy[cell_index]
-            + (target_velocity.y - self.cells.vy[cell_index]) * steer)
-            * DRAG;
+        let side = Vec2::new(-front.y, front.x);
+        let velocity = Vec2::new(self.cells.vx[cell_index], self.cells.vy[cell_index]);
+        let acceleration_response = 1.0 - (-CELL_ACCELERATION_GAIN * dt).exp();
+        let lateral_response = 1.0 - (-CELL_LATERAL_GRIP * dt).exp();
+        let linear_drag = (-CELL_LINEAR_DRAG * dt).exp();
+
+        let forward_speed = velocity.dot(front);
+        let target_forward_speed = target_velocity.dot(front);
+        let new_forward_speed =
+            forward_speed + (target_forward_speed - forward_speed) * acceleration_response;
+
+        let lateral_speed = velocity.dot(side);
+        let target_lateral_speed = current.dot(side);
+        let new_lateral_speed =
+            lateral_speed + (target_lateral_speed - lateral_speed) * lateral_response;
+
+        let new_velocity = (front * new_forward_speed + side * new_lateral_speed) * linear_drag;
+        self.cells.vx[cell_index] = new_velocity.x;
+        self.cells.vy[cell_index] = new_velocity.y;
     }
 
     fn advect_obstacles(&mut self, dt: f32) {
@@ -888,10 +950,11 @@ impl WorldState {
         for idx in 0..self.food_growers.branchlet_grower_index.len() {
             if self.food_growers.branchlet_grower_index[idx] == grower_index {
                 let mut is_active = false;
-                if let Some(food_idx) = self.food_growers.branchlet_food_index[idx] {
-                    if food_idx < self.food.len() && self.food.active[food_idx] {
-                        is_active = true;
-                    }
+                if let Some(food_idx) = self.food_growers.branchlet_food_index[idx]
+                    && food_idx < self.food.len()
+                    && self.food.active[food_idx]
+                {
+                    is_active = true;
                 }
                 if !is_active {
                     inactive_branchlet_indices.push(idx);
@@ -1641,7 +1704,7 @@ impl WorldState {
         let decay = (1.0 - JELLY_DECAY * dt).clamp(0.0, 1.0);
 
         for i in 0..self.cells.len() {
-            self.cells.jelly_phase[i] += dt * (8.0 + self.cells.jelly_intensity[i] * 8.0);
+            self.cells.jelly_phase[i] += dt * (12.0 + self.cells.jelly_intensity[i] * 6.0);
             self.cells.jelly_intensity[i] *= decay;
         }
     }
@@ -1698,9 +1761,11 @@ impl WorldState {
             self.arena_shape,
             &mut self.rng,
         );
+        self.cell_sound_event_serial = self.cell_sound_event_serial.wrapping_add(1);
     }
 
     fn spawn_meat_from_cell(&mut self, cell_index: usize) {
+        self.cell_sound_event_serial = self.cell_sound_event_serial.wrapping_add(1);
         let chunk_count = self.rng.random_range(MEAT_CHUNKS_MIN..=MEAT_CHUNKS_MAX);
         let origin = Vec2::new(self.cells.x[cell_index], self.cells.y[cell_index]);
         let spread = (self.cells.radius[cell_index] * 3.2).max(18.0);
@@ -1772,18 +1837,19 @@ impl WorldState {
         }
     }
 
-    fn solve_cell_collisions(&mut self) {
+    fn solve_cell_collisions(&mut self, dt: f32) {
         self.cell_grid.rebuild(&self.cells);
+        self.collision_pairs.clear();
 
         for bucket_index in 0..self.cell_grid.buckets.len() {
-            if self.cell_grid.buckets[bucket_index].is_empty() {
+            let bucket = &self.cell_grid.buckets[bucket_index];
+            if bucket.is_empty() {
                 continue;
             }
 
-            let bucket = self.cell_grid.buckets[bucket_index].clone();
             for a in 0..bucket.len() {
                 for b in (a + 1)..bucket.len() {
-                    self.resolve_cell_pair(bucket[a], bucket[b]);
+                    self.collision_pairs.push((bucket[a], bucket[b]));
                 }
             }
 
@@ -1805,14 +1871,19 @@ impl WorldState {
                     continue;
                 }
 
-                let other = self.cell_grid.buckets[other_index].clone();
+                let other = &self.cell_grid.buckets[other_index];
 
-                for &a in &bucket {
-                    for &b in &other {
-                        self.resolve_cell_pair(a, b);
+                for &a in bucket {
+                    for &b in other {
+                        self.collision_pairs.push((a, b));
                     }
                 }
             }
+        }
+
+        for pair_index in 0..self.collision_pairs.len() {
+            let (a, b) = self.collision_pairs[pair_index];
+            self.resolve_cell_pair(a, b, dt);
         }
 
         for i in 0..self.cells.len() {
@@ -1820,73 +1891,75 @@ impl WorldState {
         }
     }
 
-    fn resolve_cell_pair(&mut self, a: usize, b: usize) {
+    fn resolve_cell_pair(&mut self, a: usize, b: usize, dt: f32) {
         let dx = self.cells.x[b] - self.cells.x[a];
         let dy = self.cells.y[b] - self.cells.y[a];
         let dist_sq = dx * dx + dy * dy;
-        let broad_min_dist =
-            self.cells.collision_bound_radius(a) + self.cells.collision_bound_radius(b);
+        let radius_a = self.cells.collision_radius[a];
+        let radius_b = self.cells.collision_radius[b];
+        let broad_min_dist = radius_a + radius_b;
         if dist_sq >= broad_min_dist * broad_min_dist {
             return;
         }
 
-        let (nx, ny, dist) = if dist_sq > 0.0001 {
-            let dist = dist_sq.sqrt();
-            (dx / dist, dy / dist, dist)
+        let center_distance = dist_sq.sqrt();
+        let normal = if dist_sq > 0.0001 {
+            Vec2::new(dx, dy) * center_distance.recip()
         } else {
             let angle = ((a as f32 * 12.9898 + b as f32 * 78.233).sin()) * std::f32::consts::TAU;
             let (ny, nx) = angle.sin_cos();
-            (nx, ny, 0.001)
+            Vec2::new(nx, ny)
         };
-        let normal = Vec2::new(nx, ny);
-        let ray_a = self.cells.soft_ray_index_for_direction(a, normal);
-        let ray_b = self.cells.soft_ray_index_for_direction(b, -normal);
-        let radius_a = self.cells.current_radii[a][ray_a];
-        let radius_b = self.cells.current_radii[b][ray_b];
-        let min_dist = radius_a + radius_b;
 
-        if dist_sq >= min_dist * min_dist {
+        let contact_a = sample_membrane_contact(&self.cells, a, b, normal);
+        let contact_b = sample_membrane_contact(&self.cells, b, a, -normal);
+        let contact_count = contact_a.count + contact_b.count;
+        let core_distance = self.cells.core_radius[a] + self.cells.core_radius[b];
+        let core_penetration = (core_distance - center_distance).max(0.0);
+        if contact_count == 0 && core_penetration <= 0.0 {
             return;
         }
 
-        let overlap = min_dist - dist;
-        let compression_a = self.cells.compress_ray(a, ray_a, dist - radius_b);
-        let compression_b = self.cells.compress_ray(b, ray_b, dist - radius_a);
-        let push = (overlap * COLLISION_PUSH).min(SOFT_BODY_CELL_PUSH_MAX);
-        self.cells.x[a] -= nx * push;
-        self.cells.y[a] -= ny * push;
-        self.cells.x[b] += nx * push;
-        self.cells.y[b] += ny * push;
-        if compression_a > 0.0 {
-            self.cells.vx[a] -= nx * compression_a * SOFT_BODY_COMPRESSION_IMPULSE;
-            self.cells.vy[a] -= ny * compression_a * SOFT_BODY_COMPRESSION_IMPULSE;
-        }
-        if compression_b > 0.0 {
-            self.cells.vx[b] += nx * compression_b * SOFT_BODY_COMPRESSION_IMPULSE;
-            self.cells.vy[b] += ny * compression_b * SOFT_BODY_COMPRESSION_IMPULSE;
-        }
+        self.cells.compress_rays_by_depth(a, &contact_a.ray_depths);
+        self.cells.compress_rays_by_depth(b, &contact_b.ray_depths);
 
-        let rvx = self.cells.vx[b] - self.cells.vx[a];
-        let rvy = self.cells.vy[b] - self.cells.vy[a];
-        let rel_normal_speed = rvx * nx + rvy * ny;
+        let membrane_penetration = if contact_count > 0 {
+            (contact_a.depth_sum + contact_b.depth_sum) / contact_count as f32
+        } else {
+            0.0
+        };
+        let penetration = membrane_penetration.max(core_penetration);
+        let stiffness = if core_penetration > 0.0 {
+            self.collision_stiffness * HARD_CORE_STIFFNESS_MULTIPLIER
+        } else {
+            self.collision_stiffness
+        };
+        let relative_velocity = Vec2::new(
+            self.cells.vx[b] - self.cells.vx[a],
+            self.cells.vy[b] - self.cells.vy[a],
+        );
+        let relative_normal_speed = relative_velocity.dot(normal);
+        let force =
+            (stiffness * penetration - self.collision_damping * relative_normal_speed).max(0.0);
+        let force_step = normal * force * dt;
+        let inverse_mass_a = radius_a.powi(2).max(1.0).recip();
+        let inverse_mass_b = radius_b.powi(2).max(1.0).recip();
+        self.cells.vx[a] -= force_step.x * inverse_mass_a;
+        self.cells.vy[a] -= force_step.y * inverse_mass_a;
+        self.cells.vx[b] += force_step.x * inverse_mass_b;
+        self.cells.vy[b] += force_step.y * inverse_mass_b;
 
-        if rel_normal_speed < 0.0 {
-            let impulse = -(1.0 + COLLISION_RESTITUTION) * rel_normal_speed * 0.5;
-            self.cells.vx[a] -= impulse * nx;
-            self.cells.vy[a] -= impulse * ny;
-            self.cells.vx[b] += impulse * nx;
-            self.cells.vy[b] += impulse * ny;
-        }
-
-        let wobble = ((overlap / min_dist).clamp(0.0, 1.0) + rel_normal_speed.abs() / 160.0)
+        let contact_scale = broad_min_dist.max(0.001);
+        let wobble = ((penetration / contact_scale).clamp(0.0, 1.0)
+            + relative_normal_speed.abs() / 160.0)
             .min(1.0)
             * JELLY_HIT_GAIN;
         self.cells.jelly_intensity[a] = (self.cells.jelly_intensity[a] + wobble).min(1.0);
         self.cells.jelly_intensity[b] = (self.cells.jelly_intensity[b] + wobble).min(1.0);
-        self.cells.jelly_dir_x[a] = -nx;
-        self.cells.jelly_dir_y[a] = -ny;
-        self.cells.jelly_dir_x[b] = nx;
-        self.cells.jelly_dir_y[b] = ny;
+        self.cells.jelly_dir_x[a] = -normal.x;
+        self.cells.jelly_dir_y[a] = -normal.y;
+        self.cells.jelly_dir_x[b] = normal.x;
+        self.cells.jelly_dir_y[b] = normal.y;
     }
 
     fn bounce_cell(&mut self, i: usize) {
@@ -1908,6 +1981,63 @@ impl WorldState {
             self.cells.heading[i] = self.cells.vy[i].atan2(self.cells.vx[i]);
         }
     }
+}
+
+struct MembraneContact {
+    ray_depths: [f32; SOFT_BODY_POINTS],
+    depth_sum: f32,
+    count: usize,
+}
+
+fn sample_membrane_contact(
+    cells: &CellStore,
+    source: usize,
+    target: usize,
+    source_to_target: Vec2,
+) -> MembraneContact {
+    let source_center = Vec2::new(cells.x[source], cells.y[source]);
+    let target_center = Vec2::new(cells.x[target], cells.y[target]);
+    let (source_heading_s, source_heading_c) = cells.heading[source].sin_cos();
+    let target_heading = cells.heading[target];
+    let mut contact = MembraneContact {
+        ray_depths: [0.0; SOFT_BODY_POINTS],
+        depth_sum: 0.0,
+        count: 0,
+    };
+
+    for ray_index in 0..SOFT_BODY_POINTS {
+        let local_x = cells.ray_dir_x[source][ray_index];
+        let local_y = cells.ray_dir_y[source][ray_index];
+        let ray_direction = Vec2::new(
+            local_x * source_heading_c - local_y * source_heading_s,
+            local_x * source_heading_s + local_y * source_heading_c,
+        );
+        if ray_direction.dot(source_to_target) <= 0.0 {
+            continue;
+        }
+
+        let tip = source_center + ray_direction * cells.current_radii[source][ray_index];
+        let target_to_tip = tip - target_center;
+        let distance_sq = target_to_tip.length_squared();
+        let distance = distance_sq.sqrt();
+        let sample_direction = if distance_sq > 0.0001 {
+            target_to_tip / distance
+        } else {
+            -source_to_target
+        };
+        let local_angle = sample_direction.y.atan2(sample_direction.x) - target_heading;
+        let membrane_radius = cells.virtual_membrane_radius_local(target, local_angle);
+        let penetration = membrane_radius - distance;
+        if penetration <= 0.0 {
+            continue;
+        }
+
+        contact.ray_depths[ray_index] = penetration;
+        contact.depth_sum += penetration;
+        contact.count += 1;
+    }
+
+    contact
 }
 
 fn liquid_current_at(position: Vec2, time: f32) -> Vec2 {
@@ -1974,23 +2104,428 @@ fn mutate_gene(value: f32, min: f32, max: f32, susceptibility: f32, rng: &mut Sm
     mutated.clamp(min, max)
 }
 
-fn random_soft_body_radii(radius: f32, rng: &mut SmallRng) -> [f32; SOFT_BODY_POINTS] {
-    let mut radii = [radius; SOFT_BODY_POINTS];
-    for ray in &mut radii {
-        *ray = (radius * rng.random_range(0.56..1.0))
-            .clamp(radius * SOFT_BODY_START_MIN_FACTOR, radius);
-    }
-    radii
+#[derive(Clone, Copy, Debug)]
+enum SeedGeometryMode {
+    Uniform,
+    AxialStretch,
+    ExtremeAxis,
+    AlternatingBend,
+    OneSidedCurve,
+    CenterWaist,
+    AxisPinch,
+    DiagonalExpansion,
+    Triangular,
+    Cruciform,
+    Lancet,
+    PlacoidShield,
+    Chaotic,
 }
 
-fn random_soft_body_angle_offsets(rng: &mut SmallRng) -> [f32; SOFT_BODY_POINTS] {
-    let mut offsets = [0.0; SOFT_BODY_POINTS];
-    for offset in &mut offsets {
-        *offset = rng
-            .random_range(-0.025_f32..0.025_f32)
+const ALL_SEED_GEOMETRY_MODES: [SeedGeometryMode; 13] = [
+    SeedGeometryMode::Uniform,
+    SeedGeometryMode::AxialStretch,
+    SeedGeometryMode::ExtremeAxis,
+    SeedGeometryMode::AlternatingBend,
+    SeedGeometryMode::OneSidedCurve,
+    SeedGeometryMode::CenterWaist,
+    SeedGeometryMode::AxisPinch,
+    SeedGeometryMode::DiagonalExpansion,
+    SeedGeometryMode::Triangular,
+    SeedGeometryMode::Cruciform,
+    SeedGeometryMode::Lancet,
+    SeedGeometryMode::PlacoidShield,
+    SeedGeometryMode::Chaotic,
+];
+
+#[derive(Component, Clone, Debug)]
+pub struct SoftBodyCell {
+    pub speed: f32,
+    pub energy: f32,
+    pub agility: f32,
+    pub mutation_factor: f32,
+    pub size: f32,
+    pub base_radii: [f32; SOFT_BODY_POINTS],
+    pub current_radii: [f32; SOFT_BODY_POINTS],
+    pub angle_offsets: [f32; SOFT_BODY_POINTS],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShapeMutationEvent {
+    Single,
+    Axial,
+    Sector,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CellShapeClass {
+    Coccus,
+    Bacillus,
+    Filament,
+    Spirillum,
+    Vibrio,
+    Diplococcus,
+    Fusiform,
+    Cuboid,
+    Triquetrum,
+    Stauromorph,
+    Lancetiform,
+    Placoid,
+    Lobatum,
+}
+
+impl CellShapeClass {
+    pub const fn label_ru(self) -> &'static str {
+        match self {
+            Self::Triquetrum => "Триквитрум / Тригональная клетка",
+            Self::Stauromorph => "Ставроморф / Круциформ",
+            Self::Lancetiform => "Ланцетовидная клетка",
+            Self::Placoid => "Плакоид / Кутикулярный щит",
+            Self::Coccus => "Кокк",
+            Self::Bacillus => "Бацилла",
+            Self::Filament => "Филамент / Нематода",
+            Self::Spirillum => "Спирилла",
+            Self::Vibrio => "Вибрион",
+            Self::Diplococcus => "Диплококк",
+            Self::Fusiform => "Веретено",
+            Self::Cuboid => "Кубоид",
+            Self::Lobatum => "Лобатум / Амеба",
+        }
+    }
+}
+
+fn random_seed_shape(
+    size: f32,
+    required_mode: Option<SeedGeometryMode>,
+    weights: &[f32; CELL_SHAPE_COUNT],
+    rng: &mut SmallRng,
+) -> ([f32; SOFT_BODY_POINTS], [f32; SOFT_BODY_POINTS]) {
+    let mode = required_mode.unwrap_or_else(|| {
+        let total_weight = weights.iter().sum::<f32>().max(0.0001);
+        let mut roll = rng.random_range(0.0..total_weight);
+        for (index, weight) in weights.iter().copied().enumerate() {
+            if roll < weight {
+                return ALL_SEED_GEOMETRY_MODES[index];
+            }
+            roll -= weight;
+        }
+        SeedGeometryMode::Chaotic
+    });
+
+    let jitter = |rng: &mut SmallRng, scale: f32| rng.random_range(-scale..scale);
+    let scale_radii = |values: [f32; 8]| values.map(|value| value * size);
+    let (mut radii, mut offsets) = match mode {
+        SeedGeometryMode::Uniform => (
+            scale_radii([0.82, 0.83, 0.81, 0.84, 0.82, 0.83, 0.81, 0.84]),
+            [0.0; 8],
+        ),
+        SeedGeometryMode::AxialStretch => (
+            scale_radii([1.0, 0.53, 0.46, 0.53, 1.0, 0.53, 0.46, 0.53]),
+            [0.0; 8],
+        ),
+        SeedGeometryMode::ExtremeAxis => (
+            scale_radii([1.0, 0.31, 0.30, 0.31, 1.0, 0.31, 0.30, 0.31]),
+            [0.0; 8],
+        ),
+        SeedGeometryMode::AlternatingBend => (
+            scale_radii([1.0, 0.31, 0.30, 0.31, 1.0, 0.31, 0.30, 0.31]),
+            [0.08, -0.08, 0.08, -0.08, 0.08, -0.08, 0.08, -0.08],
+        ),
+        SeedGeometryMode::OneSidedCurve => (
+            scale_radii([0.95, 0.92, 0.62, 0.42, 0.40, 0.42, 0.62, 0.92]),
+            [0.0, -0.11, 0.0, 0.11, 0.0, -0.11, 0.0, 0.11],
+        ),
+        SeedGeometryMode::CenterWaist => (
+            scale_radii([1.0, 0.90, 0.31, 0.90, 1.0, 0.90, 0.31, 0.90]),
+            [0.0; 8],
+        ),
+        SeedGeometryMode::AxisPinch => (
+            scale_radii([1.0, 0.60, 0.50, 0.60, 1.0, 0.60, 0.50, 0.60]),
+            [0.0, 0.13, 0.0, -0.13, 0.0, 0.13, 0.0, -0.13],
+        ),
+        SeedGeometryMode::DiagonalExpansion => (
+            scale_radii([0.68, 0.95, 0.68, 0.95, 0.68, 0.95, 0.68, 0.95]),
+            [0.0; 8],
+        ),
+        SeedGeometryMode::Triangular => (
+            scale_radii([1.0, 0.72, 0.58, 0.95, 0.70, 0.95, 0.58, 0.72]),
+            [
+                0.0,
+                0.0,
+                0.0,
+                -SOFT_BODY_MAX_ANGLE_OFFSET,
+                0.0,
+                SOFT_BODY_MAX_ANGLE_OFFSET,
+                0.0,
+                0.0,
+            ],
+        ),
+        SeedGeometryMode::Cruciform => (
+            scale_radii([1.0, 0.42, 1.0, 0.42, 1.0, 0.42, 1.0, 0.42]),
+            [0.0; 8],
+        ),
+        SeedGeometryMode::Lancet => (
+            scale_radii([1.0, 0.62, 0.31, 0.62, 1.0, 0.62, 0.31, 0.62]),
+            [0.0, 0.15, 0.0, -0.15, 0.0, 0.15, 0.0, -0.15],
+        ),
+        SeedGeometryMode::PlacoidShield => (
+            scale_radii([1.0, 0.94, 0.76, 0.58, 0.54, 0.58, 0.76, 0.94]),
+            [0.0; 8],
+        ),
+        SeedGeometryMode::Chaotic => (
+            scale_radii([0.96, 0.43, 0.78, 0.54, 0.64, 0.91, 0.47, 0.82]),
+            [0.14, -0.03, 0.09, 0.02, -0.13, 0.05, -0.08, 0.11],
+        ),
+    };
+
+    let global_scale = 1.0 + jitter(rng, 0.025);
+    let broad_phase = rng.random_range(0.0..std::f32::consts::TAU);
+    let fine_phase = rng.random_range(0.0..std::f32::consts::TAU);
+    let broad_amplitude = rng.random_range(0.018..0.045);
+    let fine_amplitude = rng.random_range(0.008..0.022);
+
+    for (index, radius) in radii.iter_mut().enumerate() {
+        let angle = index as f32 * SOFT_BODY_SECTOR_ANGLE;
+        let organic_wave = (angle * 2.0 + broad_phase).sin() * broad_amplitude
+            + (angle * 3.0 + fine_phase).sin() * fine_amplitude;
+        let local_variation = jitter(rng, 0.014);
+        *radius = (*radius * (global_scale + organic_wave + local_variation))
+            .clamp(size * SOFT_BODY_BASE_MIN_FACTOR, size);
+    }
+
+    let angle_phase = rng.random_range(0.0..std::f32::consts::TAU);
+    for (index, offset) in offsets.iter_mut().enumerate() {
+        let angle = index as f32 * SOFT_BODY_SECTOR_ANGLE;
+        let organic_drift = (angle * 2.0 + angle_phase).sin() * 0.012;
+        *offset = (*offset + organic_drift + jitter(rng, 0.009))
             .clamp(-SOFT_BODY_MAX_ANGLE_OFFSET, SOFT_BODY_MAX_ANGLE_OFFSET);
     }
-    offsets
+
+    (radii, offsets)
+}
+
+fn random_free_shape(
+    size: f32,
+    rng: &mut SmallRng,
+) -> ([f32; SOFT_BODY_POINTS], [f32; SOFT_BODY_POINTS]) {
+    let mut raw = [0.0; SOFT_BODY_POINTS];
+    for radius in &mut raw {
+        *radius = rng.random_range(0.38..1.0);
+    }
+    let mut radii = [0.0; SOFT_BODY_POINTS];
+    for index in 0..SOFT_BODY_POINTS {
+        radii[index] =
+            ((raw[(index + 7) % 8] + raw[index] * 2.0 + raw[(index + 1) % 8]) * 0.25 * size)
+                .clamp(size * SOFT_BODY_BASE_MIN_FACTOR, size);
+    }
+    let offsets = std::array::from_fn(|_| {
+        rng.random_range(-SOFT_BODY_MAX_ANGLE_OFFSET..SOFT_BODY_MAX_ANGLE_OFFSET)
+    });
+    (radii, offsets)
+}
+
+pub fn mutate_soft_body_shape(
+    cell: &mut SoftBodyCell,
+    rng: &mut SmallRng,
+) -> Option<ShapeMutationEvent> {
+    if !rng.random_bool(mutation_chance(cell.mutation_factor) as f64) {
+        cell.current_radii = clamp_current_radii(cell.base_radii, cell.current_radii, cell.size);
+        return None;
+    }
+
+    let event = match rng.random_range(0.0..1.0) {
+        roll if roll < 0.60 => ShapeMutationEvent::Single,
+        roll if roll < 0.90 => ShapeMutationEvent::Axial,
+        _ => ShapeMutationEvent::Sector,
+    };
+    let anchor = rng.random_range(0..SOFT_BODY_POINTS);
+    let mutate_angle = rng.random_bool(0.5);
+    let power = mutation_power(cell.mutation_factor);
+    let length_delta =
+        rng.random_range(-1.0..1.0) * cell.size * SHAPE_MUTATION_LENGTH_SCALE * power;
+    let angle_delta =
+        rng.random_range(-SOFT_BODY_MUTATION_ANGLE_DELTA..SOFT_BODY_MUTATION_ANGLE_DELTA) * power;
+
+    let mut indices = [anchor; 3];
+    let count = match event {
+        ShapeMutationEvent::Single => 1,
+        ShapeMutationEvent::Axial => {
+            indices[1] = (anchor + SOFT_BODY_POINTS / 2) % SOFT_BODY_POINTS;
+            2
+        }
+        ShapeMutationEvent::Sector => {
+            indices[0] = (anchor + SOFT_BODY_POINTS - 1) % SOFT_BODY_POINTS;
+            indices[1] = anchor;
+            indices[2] = (anchor + 1) % SOFT_BODY_POINTS;
+            3
+        }
+    };
+
+    for &index in &indices[..count] {
+        if mutate_angle {
+            cell.angle_offsets[index] = (cell.angle_offsets[index] + angle_delta)
+                .clamp(-SOFT_BODY_MAX_ANGLE_OFFSET, SOFT_BODY_MAX_ANGLE_OFFSET);
+        } else {
+            cell.base_radii[index] = (cell.base_radii[index] + length_delta)
+                .clamp(cell.size * SOFT_BODY_BASE_MIN_FACTOR, cell.size);
+        }
+    }
+
+    cell.current_radii = clamp_current_radii(cell.base_radii, cell.current_radii, cell.size);
+    Some(event)
+}
+
+fn clamp_current_radii(
+    base_radii: [f32; SOFT_BODY_POINTS],
+    mut current_radii: [f32; SOFT_BODY_POINTS],
+    size: f32,
+) -> [f32; SOFT_BODY_POINTS] {
+    let core_radius = size * CORE_RADIUS_FACTOR;
+    for index in 0..SOFT_BODY_POINTS {
+        current_radii[index] = current_radii[index].clamp(core_radius, base_radii[index]);
+    }
+    current_radii
+}
+
+pub fn analyze_cell_shape(cell: &SoftBodyCell) -> String {
+    analyze_cell_shape_class(cell).label_ru().to_string()
+}
+
+pub fn analyze_cell_shape_class(cell: &SoftBodyCell) -> CellShapeClass {
+    debug_assert!(
+        cell.speed.is_finite()
+            && cell.energy.is_finite()
+            && cell.agility.is_finite()
+            && cell.mutation_factor.is_finite()
+            && cell.size.is_finite()
+    );
+    let radii = cell.base_radii;
+    let offsets = cell.angle_offsets;
+    let mean = radii.iter().sum::<f32>() / SOFT_BODY_POINTS as f32;
+    let min = radii.iter().copied().fold(f32::INFINITY, f32::min);
+    let max = radii.iter().copied().fold(0.0, f32::max);
+    let spread = (max - min) / mean.max(0.0001);
+    let mean_angle = offsets.iter().map(|value| value.abs()).sum::<f32>() / SOFT_BODY_POINTS as f32;
+
+    let mut best_axis = 0;
+    let mut best_axis_mean = 0.0;
+    for axis in 0..4 {
+        let pair_mean = (radii[axis] + radii[axis + 4]) * 0.5;
+        if pair_mean > best_axis_mean {
+            best_axis = axis;
+            best_axis_mean = pair_mean;
+        }
+    }
+
+    let mut other_sum = 0.0;
+    for (index, radius) in radii.iter().copied().enumerate() {
+        if index != best_axis && index != best_axis + 4 {
+            other_sum += radius;
+        }
+    }
+    let other_mean = other_sum / 6.0;
+    let elongation = best_axis_mean / other_mean.max(0.0001);
+    let perpendicular_mean = (radii[(best_axis + 2) % 8] + radii[(best_axis + 6) % 8]) * 0.5;
+    let perpendicular_ratio = perpendicular_mean / best_axis_mean.max(0.0001);
+
+    let alternating_signs = (0..SOFT_BODY_POINTS)
+        .filter(|&index| {
+            let next = (index + 1) % SOFT_BODY_POINTS;
+            offsets[index] * offsets[next] < 0.0
+                && offsets[index].abs().min(offsets[next].abs()) > 0.035
+        })
+        .count();
+
+    let axial_mean = (radii[0] + radii[2] + radii[4] + radii[6]) * 0.25;
+    let diagonal_mean = (radii[1] + radii[3] + radii[5] + radii[7]) * 0.25;
+    let axial_variation = [radii[0], radii[2], radii[4], radii[6]]
+        .into_iter()
+        .map(|radius| (radius - axial_mean).abs())
+        .sum::<f32>()
+        / (axial_mean * 4.0).max(0.0001);
+    let diagonal_variation = [radii[1], radii[3], radii[5], radii[7]]
+        .into_iter()
+        .map(|radius| (radius - diagonal_mean).abs())
+        .sum::<f32>()
+        / (diagonal_mean * 4.0).max(0.0001);
+    let square_ratio = diagonal_mean / axial_mean.max(0.0001);
+    if axial_mean / diagonal_mean.max(0.0001) > 1.65 && axial_variation < 0.12 {
+        return CellShapeClass::Stauromorph;
+    }
+
+    if elongation > 3.0 && perpendicular_ratio < 0.48 {
+        return if alternating_signs >= 5 {
+            CellShapeClass::Spirillum
+        } else {
+            CellShapeClass::Filament
+        };
+    }
+
+    let side_a = radii[7] + radii[0] + radii[1];
+    let side_b = radii[3] + radii[4] + radii[5];
+    let side_imbalance = (side_a - side_b).abs() / (side_a + side_b).max(0.0001);
+    let facing_angle_drift = offsets[7] - offsets[1] + offsets[3] - offsets[5];
+    if side_imbalance > 0.20 && facing_angle_drift.abs() < 0.055 && mean_angle < 0.045 {
+        return CellShapeClass::Placoid;
+    }
+    if side_imbalance > 0.22 && facing_angle_drift.abs() > 0.10 {
+        return CellShapeClass::Vibrio;
+    }
+
+    let opposite_lobes = (0..4).any(|axis| {
+        let lobes = (radii[axis] + radii[axis + 4]) * 0.5;
+        let waist = (radii[(axis + 2) % 8] + radii[(axis + 6) % 8]) * 0.5;
+        let shoulders = (radii[(axis + 1) % 8]
+            + radii[(axis + 3) % 8]
+            + radii[(axis + 5) % 8]
+            + radii[(axis + 7) % 8])
+            * 0.25;
+        lobes > mean * 1.18 && shoulders > mean * 1.05 && waist < mean * 0.72
+    });
+    if opposite_lobes {
+        return CellShapeClass::Diplococcus;
+    }
+
+    if (1.28..=1.52).contains(&square_ratio) && diagonal_variation < 0.12 {
+        return CellShapeClass::Cuboid;
+    }
+
+    let prominent_peaks = (0..SOFT_BODY_POINTS)
+        .filter(|&index| {
+            let previous = radii[(index + 7) % 8];
+            let next = radii[(index + 1) % 8];
+            radii[index] > mean * 1.14
+                && radii[index] > previous * 1.22
+                && radii[index] > next * 1.22
+        })
+        .count();
+    if prominent_peaks == 3 && mean_angle < 0.11 {
+        return CellShapeClass::Triquetrum;
+    }
+
+    let adjacent_left = (best_axis + 7) % 8;
+    let adjacent_right = (best_axis + 1) % 8;
+    let opposite_adjacent_left = (best_axis + 3) % 8;
+    let opposite_adjacent_right = (best_axis + 5) % 8;
+    let pinched_to_axis = offsets[adjacent_left] < -0.09
+        && offsets[adjacent_right] > 0.09
+        && offsets[opposite_adjacent_left] < -0.09
+        && offsets[opposite_adjacent_right] > 0.09;
+    if elongation > 1.65 && perpendicular_ratio < 0.38 && pinched_to_axis {
+        return CellShapeClass::Lancetiform;
+    }
+    if elongation > 1.45 && pinched_to_axis {
+        return CellShapeClass::Fusiform;
+    }
+
+    if elongation > 1.55 && mean_angle < 0.055 {
+        return CellShapeClass::Bacillus;
+    }
+
+    if spread < 0.15 && mean_angle < 0.06 {
+        return CellShapeClass::Coccus;
+    }
+
+    CellShapeClass::Lobatum
 }
 
 fn mutate_child_soft_body(
@@ -2005,25 +2540,18 @@ fn mutate_child_soft_body(
     [f32; SOFT_BODY_POINTS],
     [f32; SOFT_BODY_POINTS],
 ) {
-    let mut base = parent_base;
-    let mut current = parent_current;
-    let mut offsets = parent_offsets;
-
-    for ray_index in 0..SOFT_BODY_POINTS {
-        if rng.random_bool(mutation_chance(susceptibility) as f64) {
-            base[ray_index] += rng.random_range(-1.0..1.0) * size;
-            offsets[ray_index] +=
-                rng.random_range(-SOFT_BODY_MUTATION_ANGLE_DELTA..SOFT_BODY_MUTATION_ANGLE_DELTA);
-        }
-
-        base[ray_index] = base[ray_index].clamp(size * SOFT_BODY_BASE_MIN_FACTOR, size);
-        current[ray_index] =
-            current[ray_index].clamp(size * SOFT_BODY_MIN_RADIUS_FACTOR, base[ray_index]);
-        offsets[ray_index] =
-            offsets[ray_index].clamp(-SOFT_BODY_MAX_ANGLE_OFFSET, SOFT_BODY_MAX_ANGLE_OFFSET);
-    }
-
-    (base, current, offsets)
+    let mut cell = SoftBodyCell {
+        speed: 0.0,
+        energy: 0.0,
+        agility: 0.0,
+        mutation_factor: susceptibility,
+        size,
+        base_radii: parent_base,
+        current_radii: parent_current,
+        angle_offsets: parent_offsets,
+    };
+    mutate_soft_body_shape(&mut cell, rng);
+    (cell.base_radii, cell.current_radii, cell.angle_offsets)
 }
 
 pub struct CellStore {
@@ -2035,6 +2563,7 @@ pub struct CellStore {
     pub vy: Vec<f32>,
     pub heading: Vec<f32>,
     pub radius: Vec<f32>,
+    pub core_radius: Vec<f32>,
     pub speed: Vec<f32>,
     pub turn_speed: Vec<f32>,
     pub species: Vec<u8>,
@@ -2072,6 +2601,8 @@ impl CellStore {
         arena_w: f32,
         arena_h: f32,
         arena_shape: ArenaShape,
+        random_geometry: bool,
+        shape_weights: &[f32; CELL_SHAPE_COUNT],
         rng: &mut SmallRng,
     ) -> Self {
         let mut store = Self {
@@ -2083,6 +2614,7 @@ impl CellStore {
             vy: Vec::with_capacity(count),
             heading: Vec::with_capacity(count),
             radius: Vec::with_capacity(count),
+            core_radius: Vec::with_capacity(count),
             speed: Vec::with_capacity(count),
             turn_speed: Vec::with_capacity(count),
             species: Vec::with_capacity(count),
@@ -2114,7 +2646,7 @@ impl CellStore {
             jelly_dir_y: Vec::with_capacity(count),
         };
 
-        for _ in 0..count {
+        for _cell_index in 0..count {
             let radius = rng.random_range(4.0..8.5);
             let angle = rng.random_range(0.0..std::f32::consts::TAU);
             let speed = rng.random_range(48.0..92.0);
@@ -2131,9 +2663,10 @@ impl CellStore {
             store.vy.push(s * speed);
             store.heading.push(angle);
             store.radius.push(radius);
+            store.core_radius.push(radius * CORE_RADIUS_FACTOR);
             store.speed.push(speed);
             store.turn_speed.push(turn_speed);
-            store.species.push(rng.random_range(0..6));
+            store.species.push(rng.random_range(0..12));
             store.max_viability.push(CELL_VIABILITY_MAX);
             store
                 .viability
@@ -2142,13 +2675,15 @@ impl CellStore {
                 .mutation_susceptibility
                 .push(rng.random_range(35.0..65.0));
             store.division_threshold.push(rng.random_range(72.0..88.0));
-            let base_radii = random_soft_body_radii(radius, rng);
+            let (base_radii, angle_offsets) = if random_geometry {
+                random_free_shape(radius, rng)
+            } else {
+                random_seed_shape(radius, None, shape_weights, rng)
+            };
             store.base_radii.push(base_radii);
             store.current_radii.push(base_radii);
             store.visual_radii.push(base_radii);
-            store
-                .angle_offsets
-                .push(random_soft_body_angle_offsets(rng));
+            store.angle_offsets.push(angle_offsets);
             store.collision_radius.push(radius);
             store.biomass.push(0.0);
             store.asymmetry_x.push(0.0);
@@ -2193,6 +2728,23 @@ impl CellStore {
         self.viability[index] = (self.viability[index] + amount).min(self.max_viability[index]);
     }
 
+    pub fn soft_body_profile(&self, index: usize) -> SoftBodyCell {
+        SoftBodyCell {
+            speed: self.speed[index],
+            energy: self.viability[index],
+            agility: self.turn_speed[index],
+            mutation_factor: self.mutation_susceptibility[index],
+            size: self.radius[index],
+            base_radii: self.base_radii[index],
+            current_radii: self.current_radii[index],
+            angle_offsets: self.angle_offsets[index],
+        }
+    }
+
+    pub fn shape_name(&self, index: usize) -> String {
+        analyze_cell_shape(&self.soft_body_profile(index))
+    }
+
     fn push_child_from(
         &mut self,
         parent_index: usize,
@@ -2228,6 +2780,7 @@ impl CellStore {
         self.vy.push(self.vy[parent_index] * 0.35 + offset_s * 8.0);
         self.heading.push(wrap_angle(parent_heading + side * 0.28));
         self.radius.push(radius);
+        self.core_radius.push(radius * CORE_RADIUS_FACTOR);
         self.speed.push(mutate_gene(
             self.speed[parent_index],
             SPEED_GENE_MIN,
@@ -2310,6 +2863,7 @@ impl CellStore {
         self.vy.swap_remove(index);
         self.heading.swap_remove(index);
         self.radius.swap_remove(index);
+        self.core_radius.swap_remove(index);
         self.speed.swap_remove(index);
         self.turn_speed.swap_remove(index);
         self.species.swap_remove(index);
@@ -2367,6 +2921,54 @@ impl CellStore {
         self.biomass[index]
     }
 
+    #[cfg(test)]
+    fn virtual_membrane_radius(&self, index: usize, world_angle: f32) -> f32 {
+        self.virtual_membrane_radius_local(index, world_angle - self.heading[index])
+    }
+
+    fn virtual_membrane_radius_local(&self, index: usize, local_angle: f32) -> f32 {
+        let first_angle = SOFT_BODY_BASE_ANGLES[0] + self.angle_offsets[index][0];
+        let local_angle =
+            first_angle + (local_angle - first_angle).rem_euclid(std::f32::consts::TAU);
+
+        for (left, base_angle) in SOFT_BODY_BASE_ANGLES.iter().copied().enumerate() {
+            let right = (left + 1) % SOFT_BODY_POINTS;
+            let left_angle = base_angle + self.angle_offsets[index][left];
+            let right_angle = if right == 0 {
+                first_angle + std::f32::consts::TAU
+            } else {
+                SOFT_BODY_BASE_ANGLES[right] + self.angle_offsets[index][right]
+            };
+
+            if local_angle <= right_angle {
+                let span = (right_angle - left_angle).max(0.0001);
+                let t = ((local_angle - left_angle) / span).clamp(0.0, 1.0);
+                return self.current_radii[index][left]
+                    + (self.current_radii[index][right] - self.current_radii[index][left]) * t;
+            }
+        }
+
+        self.current_radii[index][0]
+    }
+
+    fn compress_rays_by_depth(&mut self, index: usize, ray_depths: &[f32; SOFT_BODY_POINTS]) {
+        let mut changed = false;
+        for (ray_index, depth) in ray_depths.iter().copied().enumerate() {
+            if depth <= 0.0 {
+                continue;
+            }
+
+            let min_radius = self.core_radius[index];
+            let old_radius = self.current_radii[index][ray_index];
+            self.current_radii[index][ray_index] = (old_radius - depth).max(min_radius);
+            changed |= self.current_radii[index][ray_index] < old_radius;
+        }
+
+        if changed {
+            self.refresh_current_radius_cache(index);
+        }
+    }
+
     fn soft_ray_index_for_direction(&self, index: usize, dir: Vec2) -> usize {
         let (heading_s, heading_c) = self.heading[index].sin_cos();
         let local_dir_x = dir.x * heading_c + dir.y * heading_s;
@@ -2393,7 +2995,7 @@ impl CellStore {
 
     fn compress_ray(&mut self, index: usize, ray_index: usize, target_radius: f32) -> f32 {
         let base = self.base_radii[index][ray_index];
-        let min_radius = (base * SOFT_BODY_MIN_RADIUS_FACTOR).max(0.1);
+        let min_radius = self.core_radius[index];
         let target = target_radius.clamp(min_radius, base);
         let old = self.current_radii[index][ray_index];
         if target < old {
@@ -2411,12 +3013,13 @@ impl CellStore {
             let elasticity =
                 (SOFT_BODY_ELASTICITY_SPEED * self.viability_ratio(index) * dt).clamp(0.0, 1.0);
             let visual_follow = (SOFT_BODY_VISUAL_FOLLOW_SPEED * dt).clamp(0.0, 1.0);
-            let mut max_current = self.radius[index] * SOFT_BODY_MIN_RADIUS_FACTOR;
+            let mut max_current = self.core_radius[index];
             let mut biomass = 0.0;
             for ray_index in 0..SOFT_BODY_POINTS {
                 let base = self.base_radii[index][ray_index].min(self.radius[index]);
                 self.base_radii[index][ray_index] = base;
-                let current = self.current_radii[index][ray_index].min(base);
+                let current =
+                    self.current_radii[index][ray_index].clamp(self.core_radius[index], base);
                 let relaxed = current + (base - current) * elasticity;
                 self.current_radii[index][ray_index] = relaxed;
                 let visual = self.visual_radii[index][ray_index].min(self.radius[index]);
@@ -2435,14 +3038,13 @@ impl CellStore {
 
         let mut biomass = 0.0;
         let mut vector = Vec2::ZERO;
-        for ray_index in 0..SOFT_BODY_POINTS {
+        for (ray_index, base_angle) in SOFT_BODY_BASE_ANGLES.iter().copied().enumerate() {
             biomass += self.base_radii[index][ray_index];
             let offset = self.angle_offsets[index][ray_index];
-            let angle = SOFT_BODY_BASE_ANGLES[ray_index];
-            let (ray_s, ray_c) = (angle + offset).sin_cos();
+            let (ray_s, ray_c) = (base_angle + offset).sin_cos();
             self.ray_dir_x[index][ray_index] = ray_c;
             self.ray_dir_y[index][ray_index] = ray_s;
-            let (s, c) = angle.sin_cos();
+            let (s, c) = base_angle.sin_cos();
             vector += Vec2::new(c, s) * offset;
         }
         let normalized = vector / (SOFT_BODY_POINTS as f32 * SOFT_BODY_MAX_ANGLE_OFFSET);
@@ -2457,7 +3059,7 @@ impl CellStore {
         self.collision_radius[index] = self.current_radii[index]
             .iter()
             .copied()
-            .fold(self.radius[index] * SOFT_BODY_MIN_RADIUS_FACTOR, f32::max);
+            .fold(self.core_radius[index], f32::max);
     }
 
     fn asymmetry_vector(&self, index: usize) -> Vec2 {
@@ -3273,16 +3875,54 @@ pub struct FrameStats {
     pub upload_time: Duration,
 }
 
-pub fn species_color(_species: u8, _viability_ratio: f32) -> [f32; 4] {
-    [0.74, 0.88, 1.0, 0.95]
+pub fn species_color(species: u8, viability_ratio: f32) -> [f32; 4] {
+    const PALETTE: [[f32; 3]; 12] = [
+        [0.82, 0.90, 0.98],
+        [0.97, 0.84, 0.90],
+        [0.84, 0.96, 0.87],
+        [0.98, 0.93, 0.81],
+        [0.90, 0.84, 0.98],
+        [0.81, 0.95, 0.95],
+        [0.98, 0.86, 0.81],
+        [0.90, 0.97, 0.82],
+        [0.84, 0.88, 0.98],
+        [0.98, 0.85, 0.96],
+        [0.93, 0.98, 0.84],
+        [0.83, 0.98, 0.91],
+    ];
+    let tint = PALETTE[species as usize % PALETTE.len()];
+    let brightness = 0.92 + viability_ratio.clamp(0.0, 1.0) * 0.08;
+    [
+        tint[0] * brightness,
+        tint[1] * brightness,
+        tint[2] * brightness,
+        1.0,
+    ]
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn test_soft_body(
+        base_radii: [f32; SOFT_BODY_POINTS],
+        angle_offsets: [f32; SOFT_BODY_POINTS],
+    ) -> SoftBodyCell {
+        SoftBodyCell {
+            speed: 60.0,
+            energy: 50.0,
+            agility: 3.0,
+            mutation_factor: 50.0,
+            size: 10.0,
+            base_radii,
+            current_radii: base_radii,
+            angle_offsets,
+        }
+    }
+
     fn set_test_cell_soft_radius(world: &mut WorldState, index: usize, radius: f32) {
         world.cells.radius[index] = radius;
+        world.cells.core_radius[index] = radius * CORE_RADIUS_FACTOR;
         world.cells.base_radii[index] = [radius; SOFT_BODY_POINTS];
         world.cells.current_radii[index] = [radius; SOFT_BODY_POINTS];
         world.cells.visual_radii[index] = [radius; SOFT_BODY_POINTS];
@@ -3460,8 +4100,8 @@ mod tests {
         };
         let world = WorldState::new(&config);
 
-        assert!(world.food.kind.iter().any(|kind| *kind == FoodKind::Grass));
-        assert!(world.food.kind.iter().any(|kind| *kind == FoodKind::Meat));
+        assert!(world.food.kind.contains(&FoodKind::Grass));
+        assert!(world.food.kind.contains(&FoodKind::Meat));
     }
 
     #[test]
@@ -3494,7 +4134,7 @@ mod tests {
                 let base = world.cells.base_radii[cell_index][ray_index];
                 let current = world.cells.current_radii[cell_index][ray_index];
                 let offset = world.cells.angle_offsets[cell_index][ray_index];
-                assert!((size * SOFT_BODY_START_MIN_FACTOR..=size).contains(&base));
+                assert!((size * SOFT_BODY_BASE_MIN_FACTOR..=size).contains(&base));
                 assert_eq!(base, current);
                 assert!(
                     (-SOFT_BODY_MAX_ANGLE_OFFSET..=SOFT_BODY_MAX_ANGLE_OFFSET).contains(&offset)
@@ -3595,12 +4235,400 @@ mod tests {
         world.cells.vx[0] = 10.0;
         world.cells.vx[1] = -10.0;
 
-        world.solve_cell_collisions();
+        world.solve_cell_collisions(1.0 / 60.0);
 
         let ray_a = world.cells.soft_ray_index_for_direction(0, Vec2::X);
         let ray_b = world.cells.soft_ray_index_for_direction(1, -Vec2::X);
         assert!(world.cells.current_radii[0][ray_a] < 8.0);
         assert!(world.cells.current_radii[1][ray_b] < 8.0);
+    }
+
+    #[test]
+    fn cell_core_radius_is_thirty_percent_of_size() {
+        let config = SimConfig {
+            cells: 1,
+            food: 0,
+            obstacles: 0,
+            food_growers: 0,
+            ..default()
+        };
+        let mut world = WorldState::new(&config);
+        set_test_cell_soft_radius(&mut world, 0, 10.0);
+
+        assert!((world.cells.core_radius[0] - 3.0).abs() < 0.0001);
+    }
+
+    #[test]
+    fn shape_analyzer_recognizes_reference_profiles() {
+        let cases = [
+            (CellShapeClass::Coccus, test_soft_body([8.0; 8], [0.0; 8])),
+            (
+                CellShapeClass::Bacillus,
+                test_soft_body([10.0, 5.0, 4.5, 5.0, 10.0, 5.0, 4.5, 5.0], [0.0; 8]),
+            ),
+            (
+                CellShapeClass::Filament,
+                test_soft_body([10.0, 3.0, 3.0, 3.0, 10.0, 3.0, 3.0, 3.0], [0.0; 8]),
+            ),
+            (
+                CellShapeClass::Spirillum,
+                test_soft_body(
+                    [10.0, 3.0, 3.0, 3.0, 10.0, 3.0, 3.0, 3.0],
+                    [0.08, -0.08, 0.08, -0.08, 0.08, -0.08, 0.08, -0.08],
+                ),
+            ),
+            (
+                CellShapeClass::Vibrio,
+                test_soft_body(
+                    [9.0, 9.0, 6.0, 4.0, 4.0, 4.0, 6.0, 9.0],
+                    [0.0, -0.10, 0.0, 0.10, 0.0, -0.10, 0.0, 0.10],
+                ),
+            ),
+            (
+                CellShapeClass::Diplococcus,
+                test_soft_body([10.0, 9.0, 3.0, 9.0, 10.0, 9.0, 3.0, 9.0], [0.0; 8]),
+            ),
+            (
+                CellShapeClass::Fusiform,
+                test_soft_body(
+                    [10.0, 6.0, 5.0, 6.0, 10.0, 6.0, 5.0, 6.0],
+                    [0.0, 0.12, 0.0, -0.12, 0.0, 0.12, 0.0, -0.12],
+                ),
+            ),
+            (
+                CellShapeClass::Cuboid,
+                test_soft_body([6.0, 8.4, 6.0, 8.4, 6.0, 8.4, 6.0, 8.4], [0.0; 8]),
+            ),
+            (
+                CellShapeClass::Triquetrum,
+                test_soft_body(
+                    [10.0, 7.2, 5.8, 9.5, 7.0, 9.5, 5.8, 7.2],
+                    [
+                        0.0,
+                        0.0,
+                        0.0,
+                        -SOFT_BODY_MAX_ANGLE_OFFSET,
+                        0.0,
+                        SOFT_BODY_MAX_ANGLE_OFFSET,
+                        0.0,
+                        0.0,
+                    ],
+                ),
+            ),
+            (
+                CellShapeClass::Stauromorph,
+                test_soft_body([10.0, 4.2, 10.0, 4.2, 10.0, 4.2, 10.0, 4.2], [0.0; 8]),
+            ),
+            (
+                CellShapeClass::Lancetiform,
+                test_soft_body(
+                    [10.0, 6.2, 3.1, 6.2, 10.0, 6.2, 3.1, 6.2],
+                    [0.0, 0.15, 0.0, -0.15, 0.0, 0.15, 0.0, -0.15],
+                ),
+            ),
+            (
+                CellShapeClass::Placoid,
+                test_soft_body([10.0, 9.4, 7.6, 5.8, 5.4, 5.8, 7.6, 9.4], [0.0; 8]),
+            ),
+            (
+                CellShapeClass::Lobatum,
+                test_soft_body(
+                    [9.5, 4.0, 7.5, 5.0, 6.0, 9.0, 4.5, 8.0],
+                    [0.14, -0.03, 0.09, 0.02, -0.13, 0.05, -0.08, 0.11],
+                ),
+            ),
+        ];
+
+        for (expected, cell) in cases {
+            assert_eq!(
+                analyze_cell_shape_class(&cell),
+                expected,
+                "profile should be recognized as {}",
+                expected.label_ru()
+            );
+        }
+    }
+
+    #[test]
+    fn seed_shapes_keep_identity_with_individual_variation() {
+        let cases = [
+            (SeedGeometryMode::Uniform, CellShapeClass::Coccus),
+            (SeedGeometryMode::AxialStretch, CellShapeClass::Bacillus),
+            (SeedGeometryMode::ExtremeAxis, CellShapeClass::Filament),
+            (SeedGeometryMode::AlternatingBend, CellShapeClass::Spirillum),
+            (SeedGeometryMode::OneSidedCurve, CellShapeClass::Vibrio),
+            (SeedGeometryMode::CenterWaist, CellShapeClass::Diplococcus),
+            (SeedGeometryMode::AxisPinch, CellShapeClass::Fusiform),
+            (SeedGeometryMode::DiagonalExpansion, CellShapeClass::Cuboid),
+            (SeedGeometryMode::Triangular, CellShapeClass::Triquetrum),
+            (SeedGeometryMode::Cruciform, CellShapeClass::Stauromorph),
+            (SeedGeometryMode::Lancet, CellShapeClass::Lancetiform),
+            (SeedGeometryMode::PlacoidShield, CellShapeClass::Placoid),
+            (SeedGeometryMode::Chaotic, CellShapeClass::Lobatum),
+        ];
+        let mut rng = SmallRng::seed_from_u64(0x0B6A_2026);
+
+        for (mode, expected) in cases {
+            let (first_radii, _) =
+                random_seed_shape(10.0, Some(mode), &DEFAULT_CELL_SHAPE_WEIGHTS, &mut rng);
+            let mut differs_from_first = false;
+
+            for _ in 0..8 {
+                let (radii, offsets) =
+                    random_seed_shape(10.0, Some(mode), &DEFAULT_CELL_SHAPE_WEIGHTS, &mut rng);
+                differs_from_first |= radii
+                    .iter()
+                    .zip(first_radii)
+                    .any(|(radius, first)| (radius - first).abs() > 0.05);
+                assert_eq!(
+                    analyze_cell_shape_class(&test_soft_body(radii, offsets)),
+                    expected,
+                    "mode profile radii={radii:?}, offsets={offsets:?}"
+                );
+            }
+
+            assert!(differs_from_first);
+        }
+    }
+
+    #[test]
+    fn shape_weight_edit_keeps_total_at_one_hundred() {
+        let mut config = SimConfig::default();
+        config.set_cell_shape_weight(0, 42.0);
+        assert!((config.cell_shape_weights.iter().sum::<f32>() - 100.0).abs() < 0.001);
+        assert!((config.cell_shape_weights[0] - 42.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn full_random_geometry_is_classified_after_generation() {
+        let config = SimConfig {
+            cells: 256,
+            food: 0,
+            obstacles: 0,
+            food_growers: 0,
+            random_cell_geometry: true,
+            ..default()
+        };
+        let world = WorldState::new(&config);
+        let unique_names = (0..world.cells.len())
+            .map(|index| world.cells.shape_name(index))
+            .collect::<std::collections::HashSet<_>>();
+        assert!(unique_names.len() >= 2);
+    }
+
+    #[test]
+    fn initial_population_contains_every_analyzed_shape_without_stored_types() {
+        let config = SimConfig {
+            cells: 128,
+            food: 0,
+            obstacles: 0,
+            food_growers: 0,
+            ..default()
+        };
+        let world = WorldState::new(&config);
+        let mut found = [false; 13];
+        let classes = [
+            CellShapeClass::Coccus,
+            CellShapeClass::Bacillus,
+            CellShapeClass::Filament,
+            CellShapeClass::Spirillum,
+            CellShapeClass::Vibrio,
+            CellShapeClass::Diplococcus,
+            CellShapeClass::Fusiform,
+            CellShapeClass::Cuboid,
+            CellShapeClass::Triquetrum,
+            CellShapeClass::Stauromorph,
+            CellShapeClass::Lancetiform,
+            CellShapeClass::Placoid,
+            CellShapeClass::Lobatum,
+        ];
+
+        for index in 0..world.cells.len() {
+            let class = analyze_cell_shape_class(&world.cells.soft_body_profile(index));
+            found[classes
+                .iter()
+                .position(|candidate| *candidate == class)
+                .unwrap()] = true;
+        }
+
+        assert!(found.into_iter().all(|present| present));
+    }
+
+    #[test]
+    fn weighted_initial_geometry_produces_a_mixed_population() {
+        let config = SimConfig {
+            cells: 2_000,
+            food: 0,
+            obstacles: 0,
+            food_growers: 0,
+            seed: 0x5EED_2026,
+            ..default()
+        };
+        let world = WorldState::new(&config);
+        let lobatum_count = (0..world.cells.len())
+            .filter(|&index| {
+                analyze_cell_shape_class(&world.cells.soft_body_profile(index))
+                    == CellShapeClass::Lobatum
+            })
+            .count();
+
+        assert!(lobatum_count < world.cells.len() / 3);
+    }
+
+    #[test]
+    fn grouped_shape_mutations_follow_expected_distribution_and_bounds() {
+        let mut rng = SmallRng::seed_from_u64(0x5A4E_2026);
+        let mut counts = [0usize; 3];
+        let mut mutations = 0usize;
+
+        for _ in 0..20_000 {
+            let mut cell = test_soft_body([8.0; 8], [0.0; 8]);
+            cell.mutation_factor = 100.0;
+            if let Some(event) = mutate_soft_body_shape(&mut cell, &mut rng) {
+                mutations += 1;
+                counts[match event {
+                    ShapeMutationEvent::Single => 0,
+                    ShapeMutationEvent::Axial => 1,
+                    ShapeMutationEvent::Sector => 2,
+                }] += 1;
+            }
+            assert!(cell.angle_offsets.iter().all(|offset| {
+                (-SOFT_BODY_MAX_ANGLE_OFFSET..=SOFT_BODY_MAX_ANGLE_OFFSET).contains(offset)
+            }));
+            assert!(cell.base_radii.iter().all(|radius| {
+                (cell.size * SOFT_BODY_BASE_MIN_FACTOR..=cell.size).contains(radius)
+            }));
+        }
+
+        let ratios = counts.map(|count| count as f32 / mutations as f32);
+        assert!((ratios[0] - 0.60).abs() < 0.025);
+        assert!((ratios[1] - 0.30).abs() < 0.025);
+        assert!((ratios[2] - 0.10).abs() < 0.02);
+    }
+
+    #[test]
+    fn collision_compression_never_crosses_hard_core() {
+        let config = SimConfig {
+            cells: 1,
+            food: 0,
+            obstacles: 0,
+            food_growers: 0,
+            ..default()
+        };
+        let mut world = WorldState::new(&config);
+        set_test_cell_soft_radius(&mut world, 0, 10.0);
+        world
+            .cells
+            .compress_rays_by_depth(0, &[100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0]);
+
+        assert!(
+            world.cells.current_radii[0]
+                .iter()
+                .all(|radius| (*radius - 3.0).abs() < 0.0001)
+        );
+    }
+
+    #[test]
+    fn overlapping_hard_cores_use_strong_repulsion() {
+        let config = SimConfig {
+            cells: 2,
+            food: 0,
+            obstacles: 0,
+            food_growers: 0,
+            collision_damping: 0.0,
+            ..default()
+        };
+        let mut world = WorldState::new(&config);
+        set_test_cell_soft_radius(&mut world, 0, 10.0);
+        set_test_cell_soft_radius(&mut world, 1, 10.0);
+        world.cells.x[0] = 0.0;
+        world.cells.y[0] = 0.0;
+        world.cells.x[1] = 0.0;
+        world.cells.y[1] = 0.0;
+        world.cells.vx[0] = 0.0;
+        world.cells.vy[0] = 0.0;
+        world.cells.vx[1] = 0.0;
+        world.cells.vy[1] = 0.0;
+
+        world.solve_cell_collisions(1.0 / 60.0);
+
+        let speed_a = Vec2::new(world.cells.vx[0], world.cells.vy[0]).length();
+        let speed_b = Vec2::new(world.cells.vx[1], world.cells.vy[1]).length();
+        assert!(speed_a > 4.0);
+        assert!(speed_b > 4.0);
+    }
+
+    #[test]
+    fn virtual_membrane_interpolates_between_neighboring_rays() {
+        let config = SimConfig {
+            cells: 1,
+            food: 0,
+            obstacles: 0,
+            food_growers: 0,
+            ..default()
+        };
+        let mut world = WorldState::new(&config);
+        set_test_cell_soft_radius(&mut world, 0, 8.0);
+        world.cells.heading[0] = 0.0;
+        world.cells.current_radii[0][0] = 4.0;
+        world.cells.current_radii[0][1] = 8.0;
+
+        let radius = world
+            .cells
+            .virtual_membrane_radius(0, std::f32::consts::FRAC_PI_8);
+
+        assert!((radius - 6.0).abs() < 0.0001);
+    }
+
+    #[test]
+    fn virtual_membrane_detects_contact_between_ray_directions() {
+        let config = SimConfig {
+            cells: 2,
+            food: 0,
+            obstacles: 0,
+            food_growers: 0,
+            ..default()
+        };
+        let mut world = WorldState::new(&config);
+        set_test_cell_soft_radius(&mut world, 0, 8.0);
+        set_test_cell_soft_radius(&mut world, 1, 8.0);
+        world.cells.heading[0] = 0.0;
+        world.cells.heading[1] = 0.0;
+        world.cells.x[0] = 0.0;
+        world.cells.y[0] = 0.0;
+        world.cells.x[1] = 12.0;
+        world.cells.y[1] = 5.0;
+        let normal = Vec2::new(12.0, 5.0).normalize();
+
+        let contact = sample_membrane_contact(&world.cells, 0, 1, normal);
+
+        assert!(contact.count > 0);
+        assert!(contact.depth_sum > 0.0);
+    }
+
+    #[test]
+    fn collision_damping_does_not_pull_separating_cells_together() {
+        let config = SimConfig {
+            cells: 2,
+            food: 0,
+            obstacles: 0,
+            food_growers: 0,
+            ..default()
+        };
+        let mut world = WorldState::new(&config);
+        set_test_cell_soft_radius(&mut world, 0, 8.0);
+        set_test_cell_soft_radius(&mut world, 1, 8.0);
+        world.cells.x[0] = 0.0;
+        world.cells.y[0] = 0.0;
+        world.cells.x[1] = 14.0;
+        world.cells.y[1] = 0.0;
+        world.cells.vx[0] = -100.0;
+        world.cells.vx[1] = 100.0;
+
+        world.solve_cell_collisions(1.0 / 60.0);
+
+        assert_eq!(world.cells.vx[0], -100.0);
+        assert_eq!(world.cells.vx[1], 100.0);
     }
 
     #[test]
@@ -4286,6 +5314,54 @@ mod tests {
     }
 
     #[test]
+    fn cell_acceleration_is_gradual() {
+        let config = SimConfig {
+            cells: 1,
+            food: 0,
+            obstacles: 0,
+            food_growers: 0,
+            ..default()
+        };
+        let mut world = WorldState::new(&config);
+        world.cells.heading[0] = 0.0;
+        world.cells.vx[0] = 0.0;
+        world.cells.vy[0] = 0.0;
+        world.cells.speed[0] = 100.0;
+        world.cells.viability[0] = world.cells.max_viability[0];
+
+        world.drive_cell(0, Vec2::X * 100.0, Vec2::ZERO, 1.0 / 60.0);
+
+        assert!(world.cells.vx[0] > 0.0);
+        assert!(world.cells.vx[0] < 5.0);
+    }
+
+    #[test]
+    fn velocity_lags_behind_heading_during_turns() {
+        let config = SimConfig {
+            cells: 1,
+            food: 0,
+            obstacles: 0,
+            food_growers: 0,
+            ..default()
+        };
+        let mut world = WorldState::new(&config);
+        world.cells.heading[0] = 0.0;
+        world.cells.vx[0] = 80.0;
+        world.cells.vy[0] = 0.0;
+        world.cells.speed[0] = 80.0;
+        world.cells.turn_speed[0] = TURN_GENE_MAX;
+        world.cells.angle_offsets[0] = [0.0; SOFT_BODY_POINTS];
+        world.cells.rebuild_soft_body_cache(0);
+
+        world.drive_cell(0, Vec2::Y * 80.0, Vec2::ZERO, 1.0 / 60.0);
+
+        let velocity_angle = world.cells.vy[0].atan2(world.cells.vx[0]);
+        assert!(world.cells.heading[0] > 0.0);
+        assert!(velocity_angle < world.cells.heading[0] * 0.5);
+        assert!(world.cells.vx[0] > 75.0);
+    }
+
+    #[test]
     fn liquid_current_moves_food() {
         let config = SimConfig {
             cells: 0,
@@ -4306,7 +5382,7 @@ mod tests {
     }
 
     #[test]
-    fn overlapping_cells_are_separated() {
+    fn overlapping_cells_are_separated_without_position_teleport() {
         let config = SimConfig {
             cells: 2,
             food: 0,
@@ -4322,12 +5398,14 @@ mod tests {
         world.cells.vx[0] = 10.0;
         world.cells.vx[1] = -10.0;
 
-        world.solve_cell_collisions();
+        world.solve_cell_collisions(1.0 / 60.0);
 
-        let dx = world.cells.x[1] - world.cells.x[0];
-        let dy = world.cells.y[1] - world.cells.y[0];
-        let dist = (dx * dx + dy * dy).sqrt();
-        assert!(dist > 4.0);
+        assert_eq!(world.cells.x[0], 0.0);
+        assert_eq!(world.cells.y[0], 0.0);
+        assert_eq!(world.cells.x[1], 4.0);
+        assert_eq!(world.cells.y[1], 0.0);
+        assert!(world.cells.vx[0] < 10.0);
+        assert!(world.cells.vx[1] > -10.0);
         assert!(world.cells.jelly_intensity[0] > 0.0);
         assert!(world.cells.jelly_intensity[1] > 0.0);
     }
