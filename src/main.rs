@@ -3,13 +3,15 @@ mod rendering;
 mod simulation;
 
 use bevy::app::AppExit;
-use bevy::audio::{PlaybackMode, Volume};
+use bevy::audio::{AudioSink, AudioSinkPlayback, PlaybackMode, Volume};
 use bevy::camera::ScalingMode;
 use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
 use bevy::input::mouse::{MouseScrollUnit, MouseWheel};
 use bevy::prelude::*;
 use bevy::render::view::NoIndirectDrawing;
+use bevy::ui::RelativeCursorPosition;
 use bevy::window::{PresentMode, PrimaryWindow, WindowResolution};
+use rand::Rng;
 use rendering::{
     InstancedDiscPlugin, LiquidMediumMaterial, SimulationRenderEntity, spawn_simulation_layers,
     sync_instance_data,
@@ -143,13 +145,35 @@ struct CellAudioLibrary {
 
 #[derive(Resource, Default)]
 struct CellAudioState {
-    last_event_serial: u64,
-    next_effect: usize,
-    cooldown: f32,
+    last_effect: Option<usize>,
 }
 
 #[derive(Component)]
 struct RunningAudioEntity;
+
+#[derive(Component)]
+struct CellEffectAudio;
+
+const MAX_CELL_SOUNDS_PER_FRAME: usize = 3;
+const MAX_ACTIVE_CELL_SOUNDS: usize = 8;
+
+#[derive(Component)]
+struct AmbientAudio;
+
+#[derive(Clone, Copy)]
+enum AudioVolumeKind {
+    Effects,
+    Ambient,
+}
+
+#[derive(Component)]
+struct PauseAudioSlider(AudioVolumeKind);
+
+#[derive(Component)]
+struct PauseAudioFill(AudioVolumeKind);
+
+#[derive(Component)]
+struct PauseAudioValue(AudioVolumeKind);
 
 const START_VIEW_HEIGHT: f32 = 1_470.0;
 const CAMERA_MOVE_SPEED: f32 = 1_100.0;
@@ -209,13 +233,14 @@ fn main() {
         .add_systems(
             OnEnter(AppState::Running),
             (
+                initialize_world_state,
                 spawn_simulation_layers,
                 setup_game_stats_ui,
                 setup_biolab_ui_v2,
-                initialize_world_state,
                 start_running_audio,
                 update_window_title,
-            ),
+            )
+                .chain(),
         )
         .add_systems(OnExit(AppState::Running), cleanup_running_game)
         .add_systems(
@@ -226,6 +251,10 @@ fn main() {
                 select_cell_system,
                 step_simulation,
                 play_cell_audio_events,
+                update_cell_effect_volume,
+                pause_audio_slider_system,
+                sync_pause_audio_sliders,
+                update_ambient_volume,
                 sync_instance_data,
                 update_stats_overlay,
                 update_selection_ui,
@@ -275,46 +304,163 @@ fn load_cell_audio(mut commands: Commands, asset_server: Res<AssetServer>) {
 fn start_running_audio(
     mut commands: Commands,
     library: Res<CellAudioLibrary>,
-    world: Res<WorldState>,
     mut state: ResMut<CellAudioState>,
+    config: Res<SimConfig>,
 ) {
-    state.last_event_serial = world.cell_sound_event_serial;
-    state.cooldown = 0.0;
+    state.last_effect = None;
     commands.spawn((
         AudioPlayer(library.ambient.clone()),
         PlaybackSettings {
             mode: PlaybackMode::Loop,
-            volume: Volume::Linear(0.18),
+            volume: Volume::Linear(0.30 * config.ambient_volume),
             ..default()
         },
         RunningAudioEntity,
+        AmbientAudio,
     ));
 }
 
 fn play_cell_audio_events(
-    time: Res<Time>,
-    world: Res<WorldState>,
+    mut world: ResMut<WorldState>,
     library: Res<CellAudioLibrary>,
+    config: Res<SimConfig>,
     mut state: ResMut<CellAudioState>,
     mut commands: Commands,
+    camera: Query<(&Transform, &Projection), With<MainCamera>>,
+    windows: Query<&Window, With<PrimaryWindow>>,
+    active_effects: Query<(), With<CellEffectAudio>>,
 ) {
-    state.cooldown = (state.cooldown - time.delta_secs()).max(0.0);
-    if world.cell_sound_event_serial == state.last_event_serial || state.cooldown > 0.0 {
+    let events = std::mem::take(&mut world.cell_sound_events);
+    if events.is_empty() {
         return;
     }
-    state.last_event_serial = world.cell_sound_event_serial;
-    let effect = library.effects[state.next_effect % library.effects.len()].clone();
-    state.next_effect = state.next_effect.wrapping_add(1);
-    state.cooldown = 0.14;
-    commands.spawn((
-        AudioPlayer(effect),
-        PlaybackSettings {
-            mode: PlaybackMode::Despawn,
-            volume: Volume::Linear(0.24),
-            ..default()
-        },
-        RunningAudioEntity,
-    ));
+    let Ok((camera_transform, projection)) = camera.single() else {
+        return;
+    };
+    let Ok(window) = windows.single() else {
+        return;
+    };
+    let volume = cell_effect_zoom_volume(projection) * config.sound_volume;
+    if volume <= 0.001 {
+        return;
+    }
+    let Projection::Orthographic(orthographic) = projection else {
+        return;
+    };
+    let half_view = visible_world_size(orthographic, window) * 0.5;
+    let camera_center = camera_transform.translation.truncate();
+    let available_slots = MAX_ACTIVE_CELL_SOUNDS.saturating_sub(active_effects.iter().count());
+    let spawn_budget = available_slots.min(MAX_CELL_SOUNDS_PER_FRAME);
+    if spawn_budget == 0 {
+        return;
+    }
+    let mut rng = rand::rng();
+    let mut visible_events: Vec<Vec2> = events
+        .into_iter()
+        .filter(|position| sound_event_is_visible(*position, camera_center, half_view))
+        .collect();
+
+    for _ in 0..spawn_budget.min(visible_events.len()) {
+        let event_index = rng.random_range(0..visible_events.len());
+        visible_events.swap_remove(event_index);
+        let mut effect_index = rng.random_range(0..library.effects.len());
+        if library.effects.len() > 1 && state.last_effect == Some(effect_index) {
+            effect_index =
+                (effect_index + rng.random_range(1..library.effects.len())) % library.effects.len();
+        }
+        state.last_effect = Some(effect_index);
+        commands.spawn((
+            AudioPlayer(library.effects[effect_index].clone()),
+            PlaybackSettings {
+                mode: PlaybackMode::Despawn,
+                volume: Volume::Linear(volume),
+                ..default()
+            },
+            RunningAudioEntity,
+            CellEffectAudio,
+        ));
+    }
+}
+
+fn sound_event_is_visible(position: Vec2, camera_center: Vec2, half_view: Vec2) -> bool {
+    let offset = position - camera_center;
+    offset.x.abs() <= half_view.x && offset.y.abs() <= half_view.y
+}
+
+fn cell_effect_zoom_volume(projection: &Projection) -> f32 {
+    let Projection::Orthographic(projection) = projection else {
+        return 0.0;
+    };
+    const FULL_VOLUME_SCALE: f32 = 0.18;
+    const SILENT_SCALE: f32 = 3.0;
+    let proximity =
+        ((SILENT_SCALE - projection.scale) / (SILENT_SCALE - FULL_VOLUME_SCALE)).clamp(0.0, 1.0);
+    proximity * 0.30
+}
+
+#[cfg(test)]
+fn orthographic_projection_at_scale(scale: f32) -> Projection {
+    let mut projection = OrthographicProjection::default_3d();
+    projection.scale = scale;
+    Projection::Orthographic(projection)
+}
+
+fn update_cell_effect_volume(
+    camera: Query<&Projection, With<MainCamera>>,
+    config: Res<SimConfig>,
+    mut effects: Query<&mut AudioSink, With<CellEffectAudio>>,
+) {
+    let Ok(projection) = camera.single() else {
+        return;
+    };
+    let volume = Volume::Linear(cell_effect_zoom_volume(projection) * config.sound_volume);
+    for mut sink in &mut effects {
+        sink.set_volume(volume);
+    }
+}
+
+fn update_ambient_volume(
+    config: Res<SimConfig>,
+    mut ambient: Query<&mut AudioSink, With<AmbientAudio>>,
+) {
+    if !config.is_changed() {
+        return;
+    }
+    for mut sink in &mut ambient {
+        sink.set_volume(Volume::Linear(0.30 * config.ambient_volume));
+    }
+}
+
+#[cfg(test)]
+mod audio_tests {
+    use super::*;
+
+    #[test]
+    fn cell_audio_gets_louder_when_zooming_in_and_silent_when_far() {
+        let close = cell_effect_zoom_volume(&orthographic_projection_at_scale(0.2));
+        let medium = cell_effect_zoom_volume(&orthographic_projection_at_scale(1.0));
+        let far = cell_effect_zoom_volume(&orthographic_projection_at_scale(3.0));
+
+        assert!(close > medium);
+        assert!(medium > far);
+        assert_eq!(far, 0.0);
+    }
+
+    #[test]
+    fn cell_audio_events_only_play_inside_camera_bounds() {
+        let center = Vec2::new(100.0, -50.0);
+        let half_view = Vec2::new(500.0, 300.0);
+        assert!(sound_event_is_visible(
+            Vec2::new(590.0, 240.0),
+            center,
+            half_view
+        ));
+        assert!(!sound_event_is_visible(
+            Vec2::new(601.0, 0.0),
+            center,
+            half_view
+        ));
+    }
 }
 
 fn initialize_world_state(
@@ -965,7 +1111,7 @@ fn spawn_pause_menu(commands: &mut Commands, font: Handle<Font>) {
                 top: percent(50),
                 left: percent(50),
                 width: px(360),
-                margin: UiRect::new(px(-180), px(0), px(-140), px(0)),
+                margin: UiRect::new(px(-180), px(0), px(-190), px(0)),
                 padding: UiRect::all(px(20)),
                 border: UiRect::all(px(2)),
                 flex_direction: FlexDirection::Column,
@@ -990,6 +1136,14 @@ fn spawn_pause_menu(commands: &mut Commands, font: Handle<Font>) {
                 TextColor(Color::srgb(0.80, 0.98, 0.94)),
             ));
 
+            spawn_pause_audio_slider(
+                menu,
+                font.clone(),
+                "Звуки клеток",
+                AudioVolumeKind::Effects,
+                0.8,
+            );
+            spawn_pause_audio_slider(menu, font.clone(), "Эмбиент", AudioVolumeKind::Ambient, 0.6);
             spawn_pause_menu_button(menu, font.clone(), PauseMenuAction::Resume, "Продолжить");
             spawn_pause_menu_button(
                 menu,
@@ -999,6 +1153,122 @@ fn spawn_pause_menu(commands: &mut Commands, font: Handle<Font>) {
             );
             spawn_pause_menu_button(menu, font, PauseMenuAction::Exit, "Выход");
         });
+}
+
+fn spawn_pause_audio_slider(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    label: &str,
+    kind: AudioVolumeKind,
+    value: f32,
+) {
+    parent
+        .spawn((Node {
+            width: percent(100),
+            height: px(34),
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            column_gap: px(8),
+            ..default()
+        },))
+        .with_children(|row| {
+            row.spawn((
+                Text::new(label),
+                TextFont {
+                    font: font.clone(),
+                    font_size: 13.0,
+                    ..default()
+                },
+                TextColor(Color::srgb(0.72, 0.84, 0.86)),
+                Node {
+                    width: px(98),
+                    ..default()
+                },
+            ));
+            row.spawn((
+                Button,
+                Node {
+                    width: px(180),
+                    height: px(14),
+                    ..default()
+                },
+                BackgroundColor(Color::srgb(0.07, 0.11, 0.12)),
+                RelativeCursorPosition::default(),
+                PauseAudioSlider(kind),
+            ))
+            .with_child((
+                Node {
+                    width: percent(value * 100.0),
+                    height: percent(100),
+                    ..default()
+                },
+                BackgroundColor(Color::srgb(0.38, 0.76, 0.70)),
+                PauseAudioFill(kind),
+            ));
+            row.spawn((
+                Text::new(format!("{:.0}%", value * 100.0)),
+                TextFont {
+                    font,
+                    font_size: 12.0,
+                    ..default()
+                },
+                TextColor(Color::srgb(0.84, 0.94, 0.94)),
+                Node {
+                    width: px(42),
+                    justify_content: JustifyContent::FlexEnd,
+                    ..default()
+                },
+                PauseAudioValue(kind),
+            ));
+        });
+}
+
+fn audio_volume(config: &SimConfig, kind: AudioVolumeKind) -> f32 {
+    match kind {
+        AudioVolumeKind::Effects => config.sound_volume,
+        AudioVolumeKind::Ambient => config.ambient_volume,
+    }
+}
+
+fn set_audio_volume(config: &mut SimConfig, kind: AudioVolumeKind, value: f32) {
+    match kind {
+        AudioVolumeKind::Effects => config.sound_volume = value,
+        AudioVolumeKind::Ambient => config.ambient_volume = value,
+    }
+}
+
+fn pause_audio_slider_system(
+    mouse: Res<ButtonInput<MouseButton>>,
+    ui_state: Res<GameUiState>,
+    sliders: Query<(&Interaction, &RelativeCursorPosition, &PauseAudioSlider)>,
+    mut config: ResMut<SimConfig>,
+) {
+    if !ui_state.pause_menu_open || !mouse.pressed(MouseButton::Left) {
+        return;
+    }
+    for (interaction, cursor, slider) in &sliders {
+        if *interaction == Interaction::Pressed
+            && let Some(position) = cursor.normalized
+        {
+            set_audio_volume(&mut config, slider.0, position.x.clamp(0.0, 1.0));
+        }
+    }
+}
+
+fn sync_pause_audio_sliders(
+    config: Res<SimConfig>,
+    mut fills: Query<(&PauseAudioFill, &mut Node)>,
+    mut values: Query<(&PauseAudioValue, &mut Text)>,
+) {
+    if !config.is_changed() {
+        return;
+    }
+    for (fill, mut node) in &mut fills {
+        node.width = percent(audio_volume(&config, fill.0) * 100.0);
+    }
+    for (value, mut text) in &mut values {
+        **text = format!("{:.0}%", audio_volume(&config, value.0) * 100.0);
+    }
 }
 
 fn spawn_pause_menu_button(
@@ -1035,7 +1305,7 @@ fn spawn_pause_menu_button(
 
 fn spawn_speed_panel(commands: &mut Commands, font: Handle<Font>) {
     let speeds: &[(f32, &str)] = &[
-        (0.0, "⏸"),
+        (0.0, "II"),
         (0.1, "0.1×"),
         (0.5, "0.5×"),
         (1.0, "1×"),

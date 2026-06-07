@@ -144,6 +144,8 @@ pub struct SimConfig {
     pub vsync: bool,
     pub random_cell_geometry: bool,
     pub cell_shape_weights: [f32; CELL_SHAPE_COUNT],
+    pub sound_volume: f32,
+    pub ambient_volume: f32,
 }
 
 pub const CELL_SHAPE_COUNT: usize = 13;
@@ -182,6 +184,8 @@ impl Default for SimConfig {
             vsync: false,
             random_cell_geometry: false,
             cell_shape_weights: DEFAULT_CELL_SHAPE_WEIGHTS,
+            sound_volume: 0.8,
+            ambient_volume: 0.6,
         }
     }
 }
@@ -440,7 +444,7 @@ pub struct WorldState {
     max_food: usize,
     collision_stiffness: f32,
     collision_damping: f32,
-    pub cell_sound_event_serial: u64,
+    pub cell_sound_events: Vec<Vec2>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -571,7 +575,7 @@ impl WorldState {
             max_food: floor_food_count.saturating_add(feeder_food_capacity),
             collision_stiffness: config.collision_stiffness.max(0.0),
             collision_damping: config.collision_damping.max(0.0),
-            cell_sound_event_serial: 0,
+            cell_sound_events: Vec::new(),
         };
         world.relocate_world_food_away_from_solids();
         world.seed_feeder_food(feeder_food_capacity);
@@ -646,7 +650,8 @@ impl WorldState {
                         self.respawn_world_food(food_index);
                         self.cells.add_viability(i, FOOD_VIABILITY_GAIN);
                     }
-                    self.cell_sound_event_serial = self.cell_sound_event_serial.wrapping_add(1);
+                    self.cell_sound_events
+                        .push(Vec2::new(self.cells.x[i], self.cells.y[i]));
                 }
             }
         }
@@ -1704,7 +1709,7 @@ impl WorldState {
         let decay = (1.0 - JELLY_DECAY * dt).clamp(0.0, 1.0);
 
         for i in 0..self.cells.len() {
-            self.cells.jelly_phase[i] += dt * (12.0 + self.cells.jelly_intensity[i] * 6.0);
+            self.cells.jelly_phase[i] += dt * (6.0 + self.cells.jelly_intensity[i] * 3.0);
             self.cells.jelly_intensity[i] *= decay;
         }
     }
@@ -1761,13 +1766,16 @@ impl WorldState {
             self.arena_shape,
             &mut self.rng,
         );
-        self.cell_sound_event_serial = self.cell_sound_event_serial.wrapping_add(1);
+        self.cell_sound_events.push(Vec2::new(
+            self.cells.x[parent_index],
+            self.cells.y[parent_index],
+        ));
     }
 
     fn spawn_meat_from_cell(&mut self, cell_index: usize) {
-        self.cell_sound_event_serial = self.cell_sound_event_serial.wrapping_add(1);
         let chunk_count = self.rng.random_range(MEAT_CHUNKS_MIN..=MEAT_CHUNKS_MAX);
         let origin = Vec2::new(self.cells.x[cell_index], self.cells.y[cell_index]);
+        self.cell_sound_events.push(origin);
         let spread = (self.cells.radius[cell_index] * 3.2).max(18.0);
 
         for _ in 0..chunk_count {

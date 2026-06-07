@@ -173,6 +173,8 @@ pub fn sync_instance_data(
             + world.food_growers.total_branches() * BRANCH_RENDER_SEGMENTS,
     );
 
+    let (branch_z, branch_step) = branch_render_depths(&world.food_growers.branch_layer);
+
     for i in 0..world.cells.len() {
         let heading = world.cells.heading[i];
         let move_dir_x = heading.cos();
@@ -247,8 +249,7 @@ pub fn sync_instance_data(
             let branch_index = world.food.anchor_branch[i];
             if branch_index >= 0 {
                 let branch_index = branch_index as usize;
-                let layer = world.food_growers.branch_layer[branch_index];
-                z_layer_adjusted = 1.48 + layer * 0.20 + 0.05;
+                z_layer_adjusted = branch_z[branch_index] + branch_step * 0.66;
 
                 if !world.food_growers.branch_has_collision(branch_index) {
                     color[0] *= 0.45;
@@ -308,7 +309,7 @@ pub fn sync_instance_data(
     for i in 0..world.food_growers.len() {
         let radius = world.food_growers.radius[i];
         for branch_index in world.food_growers.branch_range(i) {
-            let layer = world.food_growers.branch_layer[branch_index];
+            let branch_base_z = branch_z[branch_index];
             let solid_branch = world.food_growers.branch_has_collision(branch_index);
             let hue_shift = world.food_growers.branch_hue_shift[branch_index];
             let light_shift = world.food_growers.branch_lightness_shift[branch_index];
@@ -347,15 +348,8 @@ pub fn sync_instance_data(
                 let instance_radius = half_length + visual_width * 2.0;
                 let center = a + segment * 0.5;
                 let angle = segment.y.atan2(segment.x);
-                let inv_segment_z = (BRANCH_RENDER_SEGMENTS - 1 - segment_index) as f32;
-
                 particles.push(InstanceData {
-                    pos_radius: [
-                        center.x,
-                        center.y,
-                        1.48 + layer * 0.20 + inv_segment_z * 0.002,
-                        instance_radius,
-                    ],
+                    pos_radius: [center.x, center.y, branch_base_z, instance_radius],
                     color,
                     nucleus: [0.0, 0.0, 0.0, 4.0],
                     motion: [
@@ -445,12 +439,11 @@ pub fn sync_instance_data(
                     ]
                 };
 
-                let layer = world.food_growers.branch_layer[branch_index];
                 particles.push(InstanceData {
                     pos_radius: [
                         stem_center.x,
                         stem_center.y,
-                        1.48 + layer * 0.20 + 0.04,
+                        branch_z[branch_index] + branch_step * 0.33,
                         instance_radius,
                     ],
                     color: branchlet_color,
@@ -469,7 +462,27 @@ pub fn sync_instance_data(
         }
     }
 
+    sort_instances_back_to_front(&mut particles);
     stats.upload_time = started.elapsed();
+}
+
+fn sort_instances_back_to_front(instances: &mut [InstanceData]) {
+    instances.sort_unstable_by(|left, right| left.pos_radius[2].total_cmp(&right.pos_radius[2]));
+}
+
+fn branch_render_depths(layers: &[f32]) -> (Vec<f32>, f32) {
+    let mut order: Vec<usize> = (0..layers.len()).collect();
+    order.sort_unstable_by(|&left, &right| {
+        layers[left]
+            .total_cmp(&layers[right])
+            .then_with(|| left.cmp(&right))
+    });
+    let step = 0.18 / (layers.len().max(1) + 1) as f32;
+    let mut depths = vec![1.48; layers.len()];
+    for (rank, branch_index) in order.into_iter().enumerate() {
+        depths[branch_index] = 1.48 + step * (rank + 1) as f32;
+    }
+    (depths, step)
 }
 
 fn unit_quad_mesh() -> Mesh {
@@ -493,6 +506,54 @@ fn unit_quad_mesh() -> Mesh {
     );
     mesh.insert_indices(Indices::U32(vec![0, 1, 2, 0, 2, 3]));
     mesh
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{InstanceData, branch_render_depths, sort_instances_back_to_front};
+
+    fn instance_at_depth(depth: f32) -> InstanceData {
+        InstanceData {
+            pos_radius: [0.0, 0.0, depth, 1.0],
+            color: [1.0; 4],
+            nucleus: [0.0; 4],
+            motion: [0.0; 4],
+            shape: [0.0; 4],
+            soft_radii_a: [1.0; 4],
+            soft_radii_b: [1.0; 4],
+        }
+    }
+
+    #[test]
+    fn branch_children_stay_below_the_next_higher_branch() {
+        let layers = [0.80, 0.21, 0.79, 0.42];
+        let (depths, step) = branch_render_depths(&layers);
+
+        for lower in 0..layers.len() {
+            for upper in 0..layers.len() {
+                if layers[lower] < layers[upper] {
+                    assert!(depths[lower] + step * 0.66 < depths[upper]);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn instance_buffer_draws_lower_branchlets_before_higher_branches() {
+        let mut instances = [
+            instance_at_depth(1.62),
+            instance_at_depth(1.51),
+            instance_at_depth(1.56),
+            instance_at_depth(1.53),
+        ];
+
+        sort_instances_back_to_front(&mut instances);
+
+        assert_eq!(
+            instances.map(|instance| instance.pos_radius[2]),
+            [1.51, 1.53, 1.56, 1.62]
+        );
+    }
 }
 
 fn spawn_arena(

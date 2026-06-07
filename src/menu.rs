@@ -4,6 +4,7 @@ use crate::{
 };
 use bevy::input::ButtonState;
 use bevy::input::keyboard::{Key, KeyboardInput};
+use bevy::input::mouse::{MouseScrollUnit, MouseWheel};
 use bevy::prelude::*;
 use bevy::ui::RelativeCursorPosition;
 
@@ -23,6 +24,9 @@ impl Plugin for MenuPlugin {
                     menu_button_style_system,
                     shape_weight_slider_system,
                     sync_shape_weight_sliders,
+                    menu_audio_slider_system,
+                    sync_menu_audio_sliders,
+                    menu_settings_scroll_system,
                 )
                     .chain()
                     .run_if(in_state(AppState::Menu)),
@@ -39,6 +43,9 @@ struct MenuUiState {
 
 #[derive(Component)]
 struct MenuEntity;
+
+#[derive(Component)]
+struct MenuSettingsScrollArea;
 
 #[derive(Component, Clone, Copy, PartialEq, Eq)]
 enum MenuButtonAction {
@@ -119,6 +126,21 @@ struct ShapeWeightFill(usize);
 
 #[derive(Component)]
 struct ShapeWeightValue(usize);
+
+#[derive(Clone, Copy)]
+enum MenuAudioKind {
+    Effects,
+    Ambient,
+}
+
+#[derive(Component)]
+struct MenuAudioSlider(MenuAudioKind);
+
+#[derive(Component)]
+struct MenuAudioFill(MenuAudioKind);
+
+#[derive(Component)]
+struct MenuAudioValue(MenuAudioKind);
 
 const NORMAL_BORDER: Color = Color::srgb(0.18, 0.30, 0.34);
 const FOCUSED_BORDER: Color = Color::srgb(0.46, 0.82, 0.90);
@@ -219,14 +241,19 @@ fn spawn_settings_column(
         .spawn((
             Node {
                 width: px(610),
+                height: vh(72),
                 padding: UiRect::all(px(18)),
                 border: UiRect::all(px(1)),
                 flex_direction: FlexDirection::Column,
                 row_gap: px(14),
+                overflow: Overflow::scroll_y(),
                 ..default()
             },
             BorderColor::all(Color::srgb(0.33, 0.58, 0.64)),
             BackgroundColor(Color::srgb(0.020, 0.032, 0.040)),
+            ScrollPosition::default(),
+            RelativeCursorPosition::default(),
+            MenuSettingsScrollArea,
         ))
         .with_children(|column| {
             spawn_section_title(column, font.clone(), "Параметры мира");
@@ -282,11 +309,13 @@ fn spawn_settings_column(
                 .spawn((
                     Node {
                         width: percent(100),
-                        flex_direction: FlexDirection::Column,
-                        row_gap: px(5),
+                        display: Display::None,
+                        flex_direction: FlexDirection::Row,
+                        flex_wrap: FlexWrap::Wrap,
+                        row_gap: px(4),
+                        column_gap: px(8),
                         ..default()
                     },
-                    Visibility::Hidden,
                     MenuSectionBody {
                         section: MenuSection::Shapes,
                     },
@@ -309,11 +338,11 @@ fn spawn_settings_column(
                 .spawn((
                     Node {
                         width: percent(100),
+                        display: Display::None,
                         flex_direction: FlexDirection::Column,
                         row_gap: px(10),
                         ..default()
                     },
-                    Visibility::Hidden,
                     MenuSectionBody {
                         section: MenuSection::Advanced,
                     },
@@ -327,8 +356,90 @@ fn spawn_settings_column(
                         config.seed as usize,
                     );
                     spawn_seed_randomize_button(advanced, font.clone());
+                    spawn_menu_audio_slider(
+                        advanced,
+                        font.clone(),
+                        "Громкость звуков",
+                        MenuAudioKind::Effects,
+                        config.sound_volume,
+                    );
+                    spawn_menu_audio_slider(
+                        advanced,
+                        font.clone(),
+                        "Громкость эмбиента",
+                        MenuAudioKind::Ambient,
+                        config.ambient_volume,
+                    );
                     spawn_vsync_row(advanced, font, config.vsync);
                 });
+        });
+}
+
+fn spawn_menu_audio_slider(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    label: &str,
+    kind: MenuAudioKind,
+    value: f32,
+) {
+    parent
+        .spawn((Node {
+            width: percent(100),
+            height: px(30),
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            column_gap: px(8),
+            ..default()
+        },))
+        .with_children(|row| {
+            row.spawn((
+                Text::new(label),
+                TextFont {
+                    font: font.clone(),
+                    font_size: 13.0,
+                    ..default()
+                },
+                TextColor(Color::srgb(0.70, 0.78, 0.80)),
+                Node {
+                    width: px(175),
+                    ..default()
+                },
+            ));
+            row.spawn((
+                Button,
+                Node {
+                    width: px(320),
+                    height: px(14),
+                    ..default()
+                },
+                BackgroundColor(Color::srgb(0.07, 0.11, 0.12)),
+                RelativeCursorPosition::default(),
+                MenuAudioSlider(kind),
+            ))
+            .with_child((
+                Node {
+                    width: percent(value * 100.0),
+                    height: percent(100),
+                    ..default()
+                },
+                BackgroundColor(Color::srgb(0.36, 0.72, 0.68)),
+                MenuAudioFill(kind),
+            ));
+            row.spawn((
+                Text::new(format!("{:.0}%", value * 100.0)),
+                TextFont {
+                    font,
+                    font_size: 12.0,
+                    ..default()
+                },
+                TextColor(Color::srgb(0.82, 0.92, 0.92)),
+                Node {
+                    width: px(48),
+                    justify_content: JustifyContent::FlexEnd,
+                    ..default()
+                },
+                MenuAudioValue(kind),
+            ));
         });
 }
 
@@ -412,7 +523,7 @@ fn spawn_shape_weight_slider(
 ) {
     parent
         .spawn((Node {
-            width: percent(100),
+            width: px(280),
             height: px(24),
             flex_direction: FlexDirection::Row,
             align_items: AlignItems::Center,
@@ -429,14 +540,14 @@ fn spawn_shape_weight_slider(
                 },
                 TextColor(Color::srgb(0.70, 0.78, 0.80)),
                 Node {
-                    width: px(155),
+                    width: px(82),
                     ..default()
                 },
             ));
             row.spawn((
                 Button,
                 Node {
-                    width: px(330),
+                    width: px(140),
                     height: px(14),
                     position_type: PositionType::Relative,
                     ..default()
@@ -463,7 +574,7 @@ fn spawn_shape_weight_slider(
                 },
                 TextColor(Color::srgb(0.82, 0.92, 0.92)),
                 Node {
-                    width: px(54),
+                    width: px(42),
                     justify_content: JustifyContent::FlexEnd,
                     ..default()
                 },
@@ -937,8 +1048,18 @@ fn menu_interaction_system(
             apply_preset(preset.0, &mut config);
         } else if let Some(toggle) = section_toggle {
             match toggle.section {
-                MenuSection::Advanced => menu_state.advanced_open = !menu_state.advanced_open,
-                MenuSection::Shapes => menu_state.shapes_open = !menu_state.shapes_open,
+                MenuSection::Advanced => {
+                    menu_state.advanced_open = !menu_state.advanced_open;
+                    if menu_state.advanced_open {
+                        menu_state.shapes_open = false;
+                    }
+                }
+                MenuSection::Shapes => {
+                    menu_state.shapes_open = !menu_state.shapes_open;
+                    if menu_state.shapes_open {
+                        menu_state.advanced_open = false;
+                    }
+                }
             }
         } else if vsync_toggle.is_some() {
             config.vsync = !config.vsync;
@@ -1115,14 +1236,13 @@ fn sync_menu_values_system(
 
 fn menu_section_visibility_system(
     menu_state: Res<MenuUiState>,
-    mut sections: Query<(&MenuSectionBody, &mut Visibility)>,
+    mut sections: Query<(&MenuSectionBody, &mut Node)>,
 ) {
-    for (section, mut visibility) in &mut sections {
-        *visibility = match section.section {
-            MenuSection::Advanced if menu_state.advanced_open => Visibility::Visible,
-            MenuSection::Advanced => Visibility::Hidden,
-            MenuSection::Shapes if menu_state.shapes_open => Visibility::Visible,
-            MenuSection::Shapes => Visibility::Hidden,
+    for (section, mut node) in &mut sections {
+        node.display = match section.section {
+            MenuSection::Advanced if menu_state.advanced_open => Display::Flex,
+            MenuSection::Shapes if menu_state.shapes_open => Display::Flex,
+            MenuSection::Advanced | MenuSection::Shapes => Display::None,
         };
     }
 }
@@ -1168,6 +1288,84 @@ fn sync_shape_weight_sliders(
         } else {
             Color::srgb(0.82, 0.92, 0.92)
         };
+    }
+}
+
+fn menu_settings_scroll_system(
+    mut mouse_wheel: MessageReader<MouseWheel>,
+    mut scroll_area: Query<
+        (&RelativeCursorPosition, &ComputedNode, &mut ScrollPosition),
+        With<MenuSettingsScrollArea>,
+    >,
+) {
+    let mut delta = 0.0;
+    for event in mouse_wheel.read() {
+        let scale = match event.unit {
+            MouseScrollUnit::Line => 28.0,
+            MouseScrollUnit::Pixel => 1.0,
+        };
+        delta -= event.y * scale;
+    }
+
+    if delta == 0.0 {
+        return;
+    }
+
+    for (cursor, computed, mut scroll_position) in &mut scroll_area {
+        if cursor.normalized.is_none() {
+            continue;
+        }
+
+        let max_offset = ((computed.content_size().y - computed.size().y)
+            * computed.inverse_scale_factor())
+        .max(0.0);
+        scroll_position.y = (scroll_position.y + delta).clamp(0.0, max_offset);
+    }
+}
+
+fn menu_audio_volume(config: &SimConfig, kind: MenuAudioKind) -> f32 {
+    match kind {
+        MenuAudioKind::Effects => config.sound_volume,
+        MenuAudioKind::Ambient => config.ambient_volume,
+    }
+}
+
+fn menu_audio_slider_system(
+    mouse: Res<ButtonInput<MouseButton>>,
+    sliders: Query<(&Interaction, &RelativeCursorPosition, &MenuAudioSlider)>,
+    mut config: ResMut<SimConfig>,
+) {
+    if !mouse.pressed(MouseButton::Left) {
+        return;
+    }
+    for (interaction, cursor, slider) in &sliders {
+        if *interaction != Interaction::Pressed {
+            continue;
+        }
+        let Some(position) = cursor.normalized else {
+            continue;
+        };
+        let value = position.x.clamp(0.0, 1.0);
+        match slider.0 {
+            MenuAudioKind::Effects => config.sound_volume = value,
+            MenuAudioKind::Ambient => config.ambient_volume = value,
+        }
+    }
+}
+
+fn sync_menu_audio_sliders(
+    config: Res<SimConfig>,
+    mut fills: Query<(&MenuAudioFill, &mut Node)>,
+    mut values: Query<(&MenuAudioValue, &mut Text)>,
+) {
+    if !config.is_changed() {
+        return;
+    }
+    for (fill, mut node) in &mut fills {
+        node.width = percent(menu_audio_volume(&config, fill.0) * 100.0);
+    }
+    for (value, mut text) in &mut values {
+        **text = format!("{:.0}%", menu_audio_volume(&config, value.0) * 100.0);
     }
 }
 
