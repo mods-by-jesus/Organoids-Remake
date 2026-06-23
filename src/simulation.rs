@@ -12,16 +12,16 @@ pub const GRASS_FOOD_COLOR: [f32; 4] = [0.25, 1.0, 0.34, 0.94];
 pub const MEAT_FOOD_COLOR: [f32; 4] = [1.0, 0.23, 0.18, 0.95];
 const GRID_CELL_SIZE: f32 = 240.0;
 const CELL_GRID_SIZE: f32 = 96.0;
-const SEARCH_RING: i32 = 2;
-const CELL_ACCELERATION_GAIN: f32 = 2.15;
-const CELL_LINEAR_DRAG: f32 = 0.14;
-const CELL_LATERAL_GRIP: f32 = 0.72;
-const CELL_TURN_RATE_MULTIPLIER: f32 = 0.46;
+const CELL_ACCELERATION_GAIN: f32 = 1.75;
+const CELL_LINEAR_DRAG: f32 = 0.11;
+const CELL_LATERAL_GRIP: f32 = 0.58;
+const CELL_TURN_RATE_MULTIPLIER: f32 = 0.40;
 const WANDER_GAIN: f32 = 0.45;
 pub const CELL_VIABILITY_MAX: f32 = 100.0;
-pub const CELL_SPEED_DISPLAY_MAX: f32 = 120.0;
-pub const CELL_TURN_DISPLAY_MAX: f32 = 5.2;
+pub const CELL_SPEED_DISPLAY_MAX: f32 = 100.0;
+pub const CELL_TURN_DISPLAY_MAX: f32 = 4.0;
 pub const CELL_MUTATION_DISPLAY_MAX: f32 = 100.0;
+pub const CELL_PERCEPTION_DISPLAY_MAX: f32 = 820.0;
 pub const CELL_DIVISION_THRESHOLD_DISPLAY_MAX: f32 = 100.0;
 pub const ARENA_RECTANGLE_CODE: f32 = 0.0;
 pub const ARENA_CIRCLE_CODE: f32 = 1.0;
@@ -37,29 +37,42 @@ pub const SOFT_BODY_BASE_ANGLES: [f32; SOFT_BODY_POINTS] = [
     std::f32::consts::FRAC_PI_4 * 7.0,
 ];
 const SOFT_BODY_SECTOR_ANGLE: f32 = std::f32::consts::FRAC_PI_4;
-const VIABILITY_DECAY_BASE: f32 = 0.95;
-const VIABILITY_DECAY_SPEED: f32 = 0.45;
+const VIABILITY_DECAY_BASE: f32 = 0.38;
+const VIABILITY_DECAY_SPEED: f32 = 0.62;
 const SOFT_BODY_ELASTICITY_SPEED: f32 = 8.0;
 const SOFT_BODY_VISUAL_FOLLOW_SPEED: f32 = 12.0;
 const SOFT_BODY_COMPRESSION_RESPONSE: f32 = 0.58;
-const SOFT_BODY_BIOMASS_DRAIN_RATE: f32 = 0.012;
+const SOFT_BODY_BIOMASS_DRAIN_RATE: f32 = 0.007;
 const CORE_RADIUS_FACTOR: f32 = 0.30;
 const HARD_CORE_STIFFNESS_MULTIPLIER: f32 = 10.0;
 const SOFT_BODY_BASE_MIN_FACTOR: f32 = CORE_RADIUS_FACTOR;
 const SOFT_BODY_MAX_ANGLE_OFFSET: f32 = 0.261_799_4;
-const SOFT_BODY_MUTATION_ANGLE_DELTA: f32 = 0.08;
-const SHAPE_MUTATION_LENGTH_SCALE: f32 = 0.22;
+const SOFT_BODY_MUTATION_ANGLE_DELTA: f32 = 0.065;
+const SHAPE_MUTATION_LENGTH_SCALE: f32 = 0.16;
 const SOFT_BODY_SHAPE_DRAG: f32 = 0.12;
 const SOFT_BODY_TURN_BONUS: f32 = 0.18;
 const SOFT_BODY_COMPRESSION_IMPULSE: f32 = 0.45;
 const SOFT_BODY_SOLID_PUSH_FACTOR: f32 = 0.62;
 const SOFT_BODY_SOLID_PUSH_MAX: f32 = 5.5;
 const MUTATION_FACTOR_DELTA_SCALE: f32 = 100.0 / (0.3 - 0.005);
-const FOOD_VIABILITY_GAIN: f32 = 18.0;
-const FEEDER_FOOD_VIABILITY_GAIN: f32 = 14.0;
-const MIN_VIABILITY_MOVE_FACTOR: f32 = 0.28;
-const REVERSE_ALIGNMENT: f32 = -0.35;
+const FOOD_VIABILITY_GAIN: f32 = 13.0;
+const FEEDER_FOOD_VIABILITY_GAIN: f32 = 11.0;
+const MIN_VIABILITY_MOVE_FACTOR: f32 = 0.35;
 const TURN_IN_PLACE_ANGLE: f32 = 1.35;
+const TURN_IN_PLACE_THROTTLE: f32 = 0.08;
+const STUCK_ALIGNMENT: f32 = -0.45;
+const STUCK_SPEED_FACTOR: f32 = 0.08;
+const STUCK_REVERSE_DELAY: f32 = 0.75;
+const EMERGENCY_REVERSE_DURATION: f32 = 0.38;
+const EMERGENCY_REVERSE_THROTTLE: f32 = 0.18;
+const TAIL_LONGITUDINAL_STIFFNESS: f32 = 12.0;
+const TAIL_LATERAL_STIFFNESS: f32 = 5.2;
+const TAIL_LONGITUDINAL_DAMPING: f32 = 4.8;
+const TAIL_LATERAL_DAMPING: f32 = 1.45;
+const MAX_COMPOUND_COLLISION_SEGMENTS: usize = 6;
+const TAIL_MIN_SPACING_FACTOR: f32 = 1.9;
+const TAIL_MAX_SPACING_FACTOR: f32 = 4.4;
+const INITIAL_SEGMENTED_CHANCE: f64 = 0.12;
 const FOOD_CURRENT_SPEED: f32 = 42.0;
 const CELL_CURRENT_SPEED: f32 = 24.0;
 const OBSTACLE_CURRENT_SPEED: f32 = 22.0;
@@ -74,23 +87,34 @@ const CELL_OBSTACLE_RESTITUTION: f32 = 0.35;
 const JELLY_DECAY: f32 = 1.4;
 const JELLY_HIT_GAIN: f32 = 0.42;
 const HUNGER_EPSILON: f32 = 0.25;
-const DIVISION_CHILD_OFFSET: f32 = 2.35;
+const DIVISION_CHILD_OFFSET: f32 = 2.15;
+const MITOSIS_DURATION: f32 = 2.15;
+const MITOSIS_RECOVERY_DURATION: f32 = 0.75;
+const MAX_VISUAL_PARTICLES: usize = 4_096;
+const FOOD_PARTICLES_PER_BITE: usize = 7;
 const MEAT_CHUNKS_MIN: usize = 3;
 const MEAT_CHUNKS_MAX: usize = 6;
-const MUTATION_CHANCE_MIN: f32 = 0.15;
-const MUTATION_CHANCE_MAX: f32 = 0.85;
-const MUTATION_STRENGTH_MIN: f32 = 0.02;
-const MUTATION_STRENGTH_MAX: f32 = 0.20;
-const MUTATION_POWER_MIN: f32 = 0.35;
-const MUTATION_POWER_MAX: f32 = 1.0;
-const SPEED_GENE_MIN: f32 = 30.0;
-const SPEED_GENE_MAX: f32 = 130.0;
-const TURN_GENE_MIN: f32 = 0.8;
-const TURN_GENE_MAX: f32 = 6.0;
+const MUTATION_CHANCE_MIN: f32 = 0.05;
+const MUTATION_CHANCE_MAX: f32 = 0.48;
+const MUTATION_STRENGTH_MIN: f32 = 0.01;
+const MUTATION_STRENGTH_MAX: f32 = 0.13;
+const MUTATION_POWER_MIN: f32 = 0.25;
+const MUTATION_POWER_MAX: f32 = 0.85;
+pub const CELL_SIZE_GENE_MIN: f32 = 4.2;
+pub const CELL_SIZE_GENE_MAX: f32 = 8.8;
+pub const SPEED_GENE_MIN: f32 = 24.0;
+pub const SPEED_GENE_MAX: f32 = 96.0;
+pub const TURN_GENE_MIN: f32 = 0.45;
+pub const TURN_GENE_MAX: f32 = 3.6;
+pub const PERCEPTION_GENE_MIN: f32 = 100.0;
+pub const PERCEPTION_GENE_MAX: f32 = CELL_PERCEPTION_DISPLAY_MAX;
+pub const CELL_PERSISTENCE_DISPLAY_MAX: f32 = 100.0;
+const PERSISTENCE_GENE_MIN: f32 = 0.0;
+const PERSISTENCE_GENE_MAX: f32 = CELL_PERSISTENCE_DISPLAY_MAX;
 const MUTATION_GENE_MIN: f32 = 0.0;
 const MUTATION_GENE_MAX: f32 = 100.0;
-const DIVISION_THRESHOLD_MIN: f32 = 50.0;
-const DIVISION_THRESHOLD_MAX: f32 = 95.0;
+const DIVISION_THRESHOLD_MIN: f32 = 68.0;
+const DIVISION_THRESHOLD_MAX: f32 = 94.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ArenaShape {
@@ -143,6 +167,7 @@ pub struct SimConfig {
     pub seed: u64,
     pub vsync: bool,
     pub random_cell_geometry: bool,
+    pub segmented_cells: bool,
     pub cell_shape_weights: [f32; CELL_SHAPE_COUNT],
     pub sound_volume: f32,
     pub ambient_volume: f32,
@@ -172,17 +197,18 @@ impl Default for SimConfig {
     fn default() -> Self {
         Self {
             cells: 10_000,
-            food: 2_000,
-            width: 24_000.0,
-            height: 13_500.0,
+            food: 3_000,
+            width: 18_000.0,
+            height: 10_000.0,
             arena_shape: ArenaShape::Rectangle,
-            obstacles: 26,
-            food_growers: 4,
+            obstacles: 30,
+            food_growers: 6,
             collision_stiffness: 500.0,
             collision_damping: 15.0,
             seed: 0xC011_CE11,
             vsync: false,
             random_cell_geometry: false,
+            segmented_cells: true,
             cell_shape_weights: DEFAULT_CELL_SHAPE_WEIGHTS,
             sound_volume: 0.8,
             ambient_volume: 0.6,
@@ -260,6 +286,9 @@ impl SimConfig {
                 "--vsync" => {
                     config.vsync = true;
                 }
+                "--no-segmented-cells" => {
+                    config.segmented_cells = false;
+                }
                 "--help" | "-h" => {
                     return Err(usage());
                 }
@@ -285,7 +314,7 @@ fn parse_next<T: std::str::FromStr>(
 }
 
 pub fn usage() -> String {
-    "Usage: organoids [--cells 10000] [--food 2000] [--width 24000] [--height 13500] [--shape rectangle|circle] [--obstacles 26] [--food-growers 4] [--collision-stiffness 500] [--collision-damping 15] [--seed 123] [--vsync]".to_string()
+    "Usage: organoids [--cells 10000] [--food 3000] [--width 18000] [--height 10000] [--shape rectangle|circle] [--obstacles 30] [--food-growers 6] [--collision-stiffness 500] [--collision-damping 15] [--seed 123] [--vsync] [--no-segmented-cells]".to_string()
 }
 
 fn floor_food_count(total_food: usize) -> usize {
@@ -433,6 +462,7 @@ pub struct WorldState {
     pub food: FoodStore,
     pub obstacles: ObstacleStore,
     pub food_growers: FoodGrowerStore,
+    pub visual_particles: VisualParticleStore,
     pub width: f32,
     pub height: f32,
     pub arena_shape: ArenaShape,
@@ -451,6 +481,67 @@ pub struct WorldState {
 pub enum FoodKind {
     Grass,
     Meat,
+}
+
+pub struct VisualParticleStore {
+    pub x: Vec<f32>,
+    pub y: Vec<f32>,
+    pub vx: Vec<f32>,
+    pub vy: Vec<f32>,
+    pub radius: Vec<f32>,
+    pub life: Vec<f32>,
+    pub lifetime: Vec<f32>,
+    pub phase: Vec<f32>,
+    pub color: Vec<[f32; 4]>,
+    pub style: Vec<f32>,
+}
+
+impl VisualParticleStore {
+    fn new() -> Self {
+        Self {
+            x: Vec::with_capacity(MAX_VISUAL_PARTICLES),
+            y: Vec::with_capacity(MAX_VISUAL_PARTICLES),
+            vx: Vec::with_capacity(MAX_VISUAL_PARTICLES),
+            vy: Vec::with_capacity(MAX_VISUAL_PARTICLES),
+            radius: Vec::with_capacity(MAX_VISUAL_PARTICLES),
+            life: Vec::with_capacity(MAX_VISUAL_PARTICLES),
+            lifetime: Vec::with_capacity(MAX_VISUAL_PARTICLES),
+            phase: Vec::with_capacity(MAX_VISUAL_PARTICLES),
+            color: Vec::with_capacity(MAX_VISUAL_PARTICLES),
+            style: Vec::with_capacity(MAX_VISUAL_PARTICLES),
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.x.len()
+    }
+
+    fn swap_remove(&mut self, index: usize) {
+        self.x.swap_remove(index);
+        self.y.swap_remove(index);
+        self.vx.swap_remove(index);
+        self.vy.swap_remove(index);
+        self.radius.swap_remove(index);
+        self.life.swap_remove(index);
+        self.lifetime.swap_remove(index);
+        self.phase.swap_remove(index);
+        self.color.swap_remove(index);
+        self.style.swap_remove(index);
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CellTargetKind {
+    Food,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct CellTarget {
+    pub kind: CellTargetKind,
+    pub index: usize,
+    pub position: Vec2,
+    pub distance_squared: f32,
+    pub remembered: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -530,6 +621,7 @@ impl WorldState {
             config.height,
             config.arena_shape,
             config.random_cell_geometry,
+            config.segmented_cells,
             &config.cell_shape_weights,
             &mut rng,
         );
@@ -564,6 +656,7 @@ impl WorldState {
             food,
             obstacles,
             food_growers,
+            visual_particles: VisualParticleStore::new(),
             width: config.width,
             height: config.height,
             arena_shape: config.arena_shape,
@@ -587,6 +680,7 @@ impl WorldState {
     pub fn update(&mut self, dt: f32) {
         let dt = dt.clamp(0.0, 1.0 / 20.0);
         self.elapsed += dt;
+        self.update_visual_particles(dt);
         self.remove_dead_cells();
         self.advect_obstacles(dt);
         self.advect_food_growers(dt);
@@ -604,17 +698,12 @@ impl WorldState {
             let x = self.cells.x[i];
             let y = self.cells.y[i];
             let speed = self.effective_cell_speed(i);
-            let hungry = self.cells.viability[i] < self.cells.max_viability[i] - HUNGER_EPSILON;
+            let target = self.update_cell_target(i, dt);
 
-            let mut target_food = None;
-
-            let (desired_x, desired_y) = if hungry
-                && let Some((food_index, dx, dy, dist_sq)) =
-                    self.grid.nearest_food(x, y, &self.food, SEARCH_RING)
-            {
-                let inv_len = dist_sq.sqrt().recip();
-                target_food = Some((food_index, dist_sq));
-                (dx * inv_len * speed, dy * inv_len * speed)
+            let (desired_x, desired_y) = if let Some(target) = target {
+                let delta = target.position - Vec2::new(x, y);
+                let inv_len = target.distance_squared.max(0.0001).sqrt().recip();
+                (delta.x * inv_len * speed, delta.y * inv_len * speed)
             } else {
                 let phase = ((i as f32 * 12.9898 + x * 0.017 + y * 0.011).sin()) * WANDER_GAIN;
                 let (s, c) = phase.sin_cos();
@@ -630,6 +719,17 @@ impl WorldState {
             let current = liquid_current_at(Vec2::new(x, y), self.elapsed) * CELL_CURRENT_SPEED;
             self.drive_cell(i, desired_velocity, current, dt);
 
+            let wake_speed = Vec2::new(self.cells.vx[i], self.cells.vy[i]).length();
+            let wake_target = ((wake_speed - 4.0) / (speed * 0.48).max(12.0)).clamp(0.0, 1.0);
+            let wake_follow_speed = if wake_target > self.cells.wake_strength[i] {
+                2.4
+            } else {
+                5.0
+            };
+            let wake_follow = 1.0 - (-wake_follow_speed * dt).exp();
+            self.cells.wake_strength[i] +=
+                (wake_target - self.cells.wake_strength[i]) * wake_follow;
+
             self.cells.x[i] += self.cells.vx[i] * dt;
             self.cells.y[i] += self.cells.vy[i] * dt;
 
@@ -637,11 +737,25 @@ impl WorldState {
             self.resolve_cell_obstacles(i);
             self.resolve_cell_food_growers(i);
 
-            if let Some((food_index, dist_sq)) = target_food {
-                let eat_radius = self.cells.collision_bound_radius(i) + FOOD_RADIUS;
-                if dist_sq <= eat_radius * eat_radius
-                    && self.cells.viability[i] < self.cells.max_viability[i] - HUNGER_EPSILON
+            if let Some(CellTarget {
+                kind: CellTargetKind::Food,
+                index: food_index,
+                remembered: false,
+                ..
+            }) = target
+            {
+                if cell_body_overlaps_circle(
+                    &self.cells,
+                    i,
+                    Vec2::new(self.food.x[food_index], self.food.y[food_index]),
+                    FOOD_RADIUS,
+                ) && self.cells.viability[i] < self.cells.max_viability[i] - HUNGER_EPSILON
                 {
+                    let eaten_position =
+                        Vec2::new(self.food.x[food_index], self.food.y[food_index]);
+                    let eaten_kind = self.food.kind[food_index];
+                    let eater_velocity = Vec2::new(self.cells.vx[i], self.cells.vy[i]);
+                    self.spawn_food_particles(eaten_position, eaten_kind, eater_velocity);
                     if self.food.is_feeder_food(food_index) {
                         self.clear_branchlet_food_association(food_index);
                         self.food.deactivate(food_index);
@@ -650,21 +764,305 @@ impl WorldState {
                         self.respawn_world_food(food_index);
                         self.cells.add_viability(i, FOOD_VIABILITY_GAIN);
                     }
+                    self.cells.target_food[i] = -1;
+                    self.cells.target_memory[i] = 0.0;
                     self.cell_sound_events
                         .push(Vec2::new(self.cells.x[i], self.cells.y[i]));
                 }
             }
         }
 
+        self.update_tail_sections(dt);
+
         self.solve_cell_collisions(dt);
         self.decay_viability(dt);
+        self.advance_mitosis(dt);
         self.process_cell_lifecycle();
     }
 
+    fn spawn_food_particles(&mut self, position: Vec2, kind: FoodKind, eater_velocity: Vec2) {
+        let available = MAX_VISUAL_PARTICLES.saturating_sub(self.visual_particles.len());
+        let count = FOOD_PARTICLES_PER_BITE.min(available);
+        let color = match kind {
+            FoodKind::Grass => [0.46, 1.0, 0.42, 1.0],
+            FoodKind::Meat => [1.0, 0.38, 0.30, 1.0],
+        };
+        for particle_index in 0..count {
+            let angle = self.rng.random_range(0.0..std::f32::consts::TAU);
+            let direction = Vec2::from_angle(angle);
+            let speed = if particle_index < 2 {
+                self.rng.random_range(70.0..112.0)
+            } else {
+                self.rng.random_range(28.0..76.0)
+            };
+            let lifetime = self.rng.random_range(0.36..0.72);
+            let offset = direction * self.rng.random_range(0.0..FOOD_RADIUS * 0.65);
+            let velocity = direction * speed + eater_velocity * 0.16;
+            self.visual_particles.x.push(position.x + offset.x);
+            self.visual_particles.y.push(position.y + offset.y);
+            self.visual_particles.vx.push(velocity.x);
+            self.visual_particles.vy.push(velocity.y);
+            self.visual_particles.radius.push(if particle_index < 2 {
+                self.rng.random_range(1.4..2.4)
+            } else {
+                self.rng.random_range(0.65..1.45)
+            });
+            self.visual_particles.life.push(lifetime);
+            self.visual_particles.lifetime.push(lifetime);
+            self.visual_particles
+                .phase
+                .push(self.rng.random_range(0.0..std::f32::consts::TAU));
+            self.visual_particles.color.push(color);
+            self.visual_particles.style.push(0.0);
+        }
+    }
+
+    fn spawn_mitosis_particles(&mut self, cell_index: usize, requested: usize, burst: f32) {
+        let available = MAX_VISUAL_PARTICLES.saturating_sub(self.visual_particles.len());
+        let count = requested.min(available);
+        if count == 0 || cell_index >= self.cells.len() {
+            return;
+        }
+
+        let center = Vec2::new(self.cells.x[cell_index], self.cells.y[cell_index]);
+        let cell_velocity = Vec2::new(self.cells.vx[cell_index], self.cells.vy[cell_index]);
+        let axis = Vec2::from_angle(self.cells.heading[cell_index] + std::f32::consts::FRAC_PI_2);
+        let normal = Vec2::new(-axis.y, axis.x);
+        let radius = self.cells.max_base_radius(cell_index);
+        let base_color = species_color(self.cells.species[cell_index], 1.0);
+        let color = [
+            base_color[0] * 0.52 + 0.48,
+            base_color[1] * 0.52 + 0.48,
+            base_color[2] * 0.52 + 0.48,
+            1.0,
+        ];
+
+        for _ in 0..count {
+            let along = self.rng.random_range(-1.0..1.0);
+            let sideways = self.rng.random_range(-0.72..0.72);
+            let direction = (axis * along + normal * sideways)
+                .try_normalize()
+                .unwrap_or(axis);
+            let offset = axis * self.rng.random_range(-radius * 0.34..radius * 0.34)
+                + normal * self.rng.random_range(-radius * 0.12..radius * 0.12);
+            let speed = self.rng.random_range(18.0..58.0) * burst;
+            let lifetime = self.rng.random_range(0.48..0.92);
+            let velocity = direction * speed + cell_velocity * 0.12;
+            self.visual_particles.x.push(center.x + offset.x);
+            self.visual_particles.y.push(center.y + offset.y);
+            self.visual_particles.vx.push(velocity.x);
+            self.visual_particles.vy.push(velocity.y);
+            self.visual_particles
+                .radius
+                .push(self.rng.random_range(0.75..1.85) * (0.82 + burst * 0.18));
+            self.visual_particles.life.push(lifetime);
+            self.visual_particles.lifetime.push(lifetime);
+            self.visual_particles
+                .phase
+                .push(self.rng.random_range(0.0..std::f32::consts::TAU));
+            self.visual_particles.color.push(color);
+            self.visual_particles.style.push(1.0);
+        }
+    }
+
+    fn update_visual_particles(&mut self, dt: f32) {
+        let mut index = 0;
+        while index < self.visual_particles.len() {
+            self.visual_particles.life[index] -= dt;
+            if self.visual_particles.life[index] <= 0.0 {
+                self.visual_particles.swap_remove(index);
+                continue;
+            }
+
+            let position = Vec2::new(
+                self.visual_particles.x[index],
+                self.visual_particles.y[index],
+            );
+            let current = liquid_current_at(position, self.elapsed) * 0.16;
+            let damping = (1.0 - dt * 3.8).max(0.0);
+            self.visual_particles.vx[index] =
+                self.visual_particles.vx[index] * damping + current.x * dt;
+            self.visual_particles.vy[index] =
+                self.visual_particles.vy[index] * damping + current.y * dt;
+            self.visual_particles.x[index] += self.visual_particles.vx[index] * dt;
+            self.visual_particles.y[index] += self.visual_particles.vy[index] * dt;
+            index += 1;
+        }
+    }
+
     fn effective_cell_speed(&self, cell_index: usize) -> f32 {
+        let mitosis_slowdown = if self.cells.mitosis_progress[cell_index] > 0.0 {
+            0.28
+        } else {
+            1.0
+        };
         self.cells.speed[cell_index]
             * (MIN_VIABILITY_MOVE_FACTOR + self.cells.viability_ratio(cell_index) * 0.72)
-            * self.cells.shape_drag_factor(cell_index)
+            * self.cells.morphology_speed_factor(cell_index)
+            * mitosis_slowdown
+    }
+
+    pub fn cell_target(&self, cell_index: usize) -> Option<CellTarget> {
+        if cell_index >= self.cells.len()
+            || self.cells.viability[cell_index]
+                >= self.cells.max_viability[cell_index] - HUNGER_EPSILON
+        {
+            return None;
+        }
+
+        let position = Vec2::new(self.cells.x[cell_index], self.cells.y[cell_index]);
+        let target_index = self.cells.target_food[cell_index];
+        if target_index >= 0 {
+            let index = target_index as usize;
+            let same_food = index < self.food.len()
+                && self.food.active[index]
+                && self.cells.target_food_generation[cell_index] == self.food.generation[index];
+            if same_food {
+                let target_position = Vec2::new(self.food.x[index], self.food.y[index]);
+                let distance_squared = position.distance_squared(target_position);
+                if distance_squared <= self.cells.perception[cell_index].powi(2) {
+                    return Some(CellTarget {
+                        kind: CellTargetKind::Food,
+                        index,
+                        position: target_position,
+                        distance_squared,
+                        remembered: false,
+                    });
+                }
+            }
+            if same_food && self.cells.target_memory[cell_index] > 0.0 {
+                let target_position = Vec2::new(
+                    self.cells.target_last_x[cell_index],
+                    self.cells.target_last_y[cell_index],
+                );
+                return Some(CellTarget {
+                    kind: CellTargetKind::Food,
+                    index,
+                    position: target_position,
+                    distance_squared: position.distance_squared(target_position),
+                    remembered: true,
+                });
+            }
+        }
+        self.grid
+            .nearest_food(
+                position.x,
+                position.y,
+                &self.food,
+                self.cells.perception[cell_index],
+            )
+            .map(|(index, dx, dy, distance_squared)| CellTarget {
+                kind: CellTargetKind::Food,
+                index,
+                position: position + Vec2::new(dx, dy),
+                distance_squared,
+                remembered: false,
+            })
+    }
+
+    fn update_cell_target(&mut self, cell_index: usize, dt: f32) -> Option<CellTarget> {
+        if self.cells.viability[cell_index] >= self.cells.max_viability[cell_index] - HUNGER_EPSILON
+        {
+            self.cells.target_food[cell_index] = -1;
+            self.cells.target_memory[cell_index] = 0.0;
+            return None;
+        }
+
+        let position = Vec2::new(self.cells.x[cell_index], self.cells.y[cell_index]);
+        let perception = self.cells.perception[cell_index];
+        let persistence =
+            (self.cells.persistence[cell_index] / PERSISTENCE_GENE_MAX).clamp(0.0, 1.0);
+        let memory_duration = 0.20 + persistence * 2.80;
+        let recheck_interval = 0.08 + persistence * 0.28;
+        let switch_ratio = 0.82 - persistence * 0.37;
+        self.cells.target_recheck[cell_index] -= dt;
+
+        let stored = self.cells.target_food[cell_index];
+        if stored >= 0 {
+            let index = stored as usize;
+            let same_food = index < self.food.len()
+                && self.food.active[index]
+                && self.cells.target_food_generation[cell_index] == self.food.generation[index];
+            if same_food {
+                let target_position = Vec2::new(self.food.x[index], self.food.y[index]);
+                let distance_squared = position.distance_squared(target_position);
+                if distance_squared <= perception * perception {
+                    self.cells.target_last_x[cell_index] = target_position.x;
+                    self.cells.target_last_y[cell_index] = target_position.y;
+                    self.cells.target_memory[cell_index] = memory_duration;
+                    if self.cells.target_recheck[cell_index] <= 0.0 {
+                        self.cells.target_recheck[cell_index] = recheck_interval;
+                        if let Some((new_index, dx, dy, new_distance_squared)) = self
+                            .grid
+                            .nearest_food(position.x, position.y, &self.food, perception)
+                        {
+                            if new_index != index
+                                && new_distance_squared
+                                    < distance_squared * switch_ratio * switch_ratio
+                            {
+                                self.cells.target_food[cell_index] = new_index as i32;
+                                self.cells.target_food_generation[cell_index] =
+                                    self.food.generation[new_index];
+                                self.cells.target_last_x[cell_index] = position.x + dx;
+                                self.cells.target_last_y[cell_index] = position.y + dy;
+                                return Some(CellTarget {
+                                    kind: CellTargetKind::Food,
+                                    index: new_index,
+                                    position: position + Vec2::new(dx, dy),
+                                    distance_squared: new_distance_squared,
+                                    remembered: false,
+                                });
+                            }
+                        }
+                    }
+                    return Some(CellTarget {
+                        kind: CellTargetKind::Food,
+                        index,
+                        position: target_position,
+                        distance_squared,
+                        remembered: false,
+                    });
+                }
+            }
+
+            if same_food {
+                self.cells.target_memory[cell_index] -= dt;
+            } else {
+                self.cells.target_memory[cell_index] = 0.0;
+            }
+            if same_food && self.cells.target_memory[cell_index] > 0.0 {
+                let last = Vec2::new(
+                    self.cells.target_last_x[cell_index],
+                    self.cells.target_last_y[cell_index],
+                );
+                return Some(CellTarget {
+                    kind: CellTargetKind::Food,
+                    index,
+                    position: last,
+                    distance_squared: position.distance_squared(last).max(0.0001),
+                    remembered: true,
+                });
+            }
+            self.cells.target_food[cell_index] = -1;
+        }
+
+        let (index, dx, dy, distance_squared) = self
+            .grid
+            .nearest_food(position.x, position.y, &self.food, perception)?;
+        let target_position = position + Vec2::new(dx, dy);
+        self.cells.target_food[cell_index] = index as i32;
+        self.cells.target_food_generation[cell_index] = self.food.generation[index];
+        self.cells.target_last_x[cell_index] = target_position.x;
+        self.cells.target_last_y[cell_index] = target_position.y;
+        self.cells.target_memory[cell_index] = memory_duration;
+        self.cells.target_recheck[cell_index] = recheck_interval;
+        Some(CellTarget {
+            kind: CellTargetKind::Food,
+            index,
+            position: target_position,
+            distance_squared,
+            remembered: false,
+        })
     }
 
     fn drive_cell(&mut self, cell_index: usize, desired_velocity: Vec2, current: Vec2, dt: f32) {
@@ -673,14 +1071,30 @@ impl WorldState {
         let desired_dir = desired_velocity.try_normalize().unwrap_or(forward);
         let desired_angle = desired_dir.y.atan2(desired_dir.x);
         let alignment = forward.dot(desired_dir);
-        let reversing = alignment < REVERSE_ALIGNMENT;
-        let target_heading = if reversing {
-            wrap_angle(desired_angle + std::f32::consts::PI)
+        let velocity = Vec2::new(self.cells.vx[cell_index], self.cells.vy[cell_index]);
+        let drive_speed = self.effective_cell_speed(cell_index);
+        let controlled_forward_speed = (velocity - current).dot(forward);
+        let stalled = alignment < STUCK_ALIGNMENT
+            && controlled_forward_speed.abs() < drive_speed * STUCK_SPEED_FACTOR;
+
+        if self.cells.reverse_time[cell_index] > 0.0 {
+            self.cells.reverse_time[cell_index] =
+                (self.cells.reverse_time[cell_index] - dt).max(0.0);
+        } else if stalled {
+            self.cells.stuck_time[cell_index] += dt;
+            if self.cells.stuck_time[cell_index] >= STUCK_REVERSE_DELAY {
+                self.cells.reverse_time[cell_index] = EMERGENCY_REVERSE_DURATION;
+                self.cells.stuck_time[cell_index] = 0.0;
+            }
         } else {
-            desired_angle
-        };
-        let turn_delta = angle_delta(target_heading, current_heading);
+            self.cells.stuck_time[cell_index] =
+                (self.cells.stuck_time[cell_index] - dt * 2.0).max(0.0);
+        }
+
+        let reversing = self.cells.reverse_time[cell_index] > 0.0;
+        let turn_delta = angle_delta(desired_angle, current_heading);
         let turn_step = self.cells.turn_speed[cell_index]
+            * self.cells.morphology_turn_factor(cell_index)
             * self.cells.turn_agility_factor(cell_index, turn_delta)
             * CELL_TURN_RATE_MULTIPLIER
             * dt;
@@ -690,18 +1104,22 @@ impl WorldState {
         let front = Vec2::new(new_heading.cos(), new_heading.sin());
         let abs_turn = turn_delta.abs();
         let throttle = if reversing {
-            -0.55
+            -EMERGENCY_REVERSE_THROTTLE
         } else if abs_turn > TURN_IN_PLACE_ANGLE {
-            0.18
+            TURN_IN_PLACE_THROTTLE
         } else {
             1.0 - (abs_turn / TURN_IN_PLACE_ANGLE).clamp(0.0, 1.0) * 0.45
         };
-        let drive_speed = self.effective_cell_speed(cell_index);
         let target_velocity = front * drive_speed * throttle + current;
         let side = Vec2::new(-front.y, front.x);
-        let velocity = Vec2::new(self.cells.vx[cell_index], self.cells.vy[cell_index]);
-        let acceleration_response = 1.0 - (-CELL_ACCELERATION_GAIN * dt).exp();
-        let lateral_response = 1.0 - (-CELL_LATERAL_GRIP * dt).exp();
+        let acceleration_response = 1.0
+            - (-CELL_ACCELERATION_GAIN
+                * self.cells.morphology_acceleration_factor(cell_index)
+                * dt)
+                .exp();
+        let lateral_grip =
+            CELL_LATERAL_GRIP * (0.72 + self.cells.morphology_turn_factor(cell_index) * 0.28);
+        let lateral_response = 1.0 - (-lateral_grip * dt).exp();
         let linear_drag = (-CELL_LINEAR_DRAG * dt).exp();
 
         let forward_speed = velocity.dot(front);
@@ -717,6 +1135,167 @@ impl WorldState {
         let new_velocity = (front * new_forward_speed + side * new_lateral_speed) * linear_drag;
         self.cells.vx[cell_index] = new_velocity.x;
         self.cells.vy[cell_index] = new_velocity.y;
+    }
+
+    fn update_tail_sections(&mut self, dt: f32) {
+        for index in 0..self.cells.len() {
+            if self.cells.section_count[index] < 2 {
+                self.cells.tail_x[index] = self.cells.x[index];
+                self.cells.tail_y[index] = self.cells.y[index];
+                self.cells.tail_vx[index] = self.cells.vx[index];
+                self.cells.tail_vy[index] = self.cells.vy[index];
+                continue;
+            }
+            let heading = self.cells.heading[index];
+            let spacing = self.cells.section_spacing[index];
+            for section in 1..self.cells.section_count[index] {
+                let parent_section = self.cells.section_parents[index][section as usize - 1];
+                let parent = self.cells.section_center(index, parent_section);
+                let parent_velocity = self.cells.section_velocity(index, parent_section);
+                let position = self.cells.section_center(index, section);
+                let velocity = self.cells.section_velocity(index, section);
+                let direction = Vec2::from_angle(
+                    heading + self.cells.section_angles[index][section as usize - 1],
+                );
+                let side = Vec2::new(-direction.y, direction.x);
+                let desired = parent + direction * spacing;
+                let position_error = desired - position;
+                let velocity_error = parent_velocity - velocity;
+                let spring =
+                    direction * position_error.dot(direction) * TAIL_LONGITUDINAL_STIFFNESS
+                        + side * position_error.dot(side) * TAIL_LATERAL_STIFFNESS;
+                let damping = direction * velocity_error.dot(direction) * TAIL_LONGITUDINAL_DAMPING
+                    + side * velocity_error.dot(side) * TAIL_LATERAL_DAMPING;
+                let current = liquid_current_at(position, self.elapsed) * CELL_CURRENT_SPEED * 0.68;
+                let mut new_velocity = velocity + (spring + damping + current) * dt;
+                new_velocity = new_velocity
+                    .clamp_length_max(self.effective_cell_speed(index) * 1.6 + CELL_CURRENT_SPEED);
+                let mut new_position = position + new_velocity * dt;
+                let from_parent = new_position - parent;
+                let distance = from_parent.length();
+                if distance > spacing * 1.42 && distance > 0.001 {
+                    new_position = parent + from_parent * (spacing * 1.42 / distance);
+                } else if distance < spacing * 0.50 && distance > 0.001 {
+                    new_position = parent + from_parent * (spacing * 0.50 / distance);
+                }
+                bounce_point_in_arena(
+                    &mut new_position.x,
+                    &mut new_position.y,
+                    &mut new_velocity.x,
+                    &mut new_velocity.y,
+                    self.width,
+                    self.height,
+                    self.arena_shape,
+                    self.cells.section_collision_radius(index, section),
+                );
+                self.cells
+                    .set_section_state(index, section, new_position, new_velocity);
+            }
+            for edge in 0..(self.cells.section_count[index] as usize - 1) {
+                let child = edge as u8 + 1;
+                let parent = self.cells.section_parents[index][edge];
+                let parent_position = self.cells.section_center(index, parent);
+                let child_position = self.cells.section_center(index, child);
+                let axis = child_position - parent_position;
+                let side = axis
+                    .try_normalize()
+                    .map(|direction| Vec2::new(-direction.y, direction.x))
+                    .unwrap_or(Vec2::Y);
+                let relative_velocity = self.cells.section_velocity(index, child)
+                    - self.cells.section_velocity(index, parent);
+                let idle =
+                    (self.elapsed * 0.74 + self.cells.jelly_phase[index] + edge as f32 * 1.9).sin()
+                        * spacing
+                        * 0.10;
+                self.cells.edge_curve_offsets[index][edge] = (relative_velocity.dot(side) * 0.045
+                    + idle
+                    + self.cells.section_angles[index][edge].sin() * spacing * 0.12)
+                    .clamp(-spacing * 0.42, spacing * 0.42);
+            }
+            self.resolve_tail_solids(index);
+        }
+    }
+
+    fn resolve_tail_solids(&mut self, cell_index: usize) {
+        for section in 1..self.cells.section_count[cell_index] {
+            let section_radius = self.cells.section_collision_radius(cell_index, section);
+            for obstacle_index in 0..self.obstacles.len() {
+                let center = Vec2::new(
+                    self.obstacles.x[obstacle_index],
+                    self.obstacles.y[obstacle_index],
+                );
+                self.push_section_from_solid(
+                    cell_index,
+                    section,
+                    center,
+                    self.obstacles.radius[obstacle_index] + section_radius,
+                );
+            }
+            for grower_index in 0..self.food_growers.len() {
+                let center = Vec2::new(
+                    self.food_growers.x[grower_index],
+                    self.food_growers.y[grower_index],
+                );
+                let before_push = self.cells.section_center(cell_index, section);
+                let broad_radius = self.food_growers.extent_radius(grower_index) + section_radius;
+                if before_push.distance_squared(center) > broad_radius * broad_radius {
+                    continue;
+                }
+                self.push_section_from_solid(
+                    cell_index,
+                    section,
+                    center,
+                    self.food_growers.radius[grower_index] + section_radius,
+                );
+                for branch_index in self.food_growers.branch_range(grower_index) {
+                    if !self.food_growers.branch_has_collision(branch_index) {
+                        continue;
+                    }
+                    let position = self.cells.section_center(cell_index, section);
+                    let (closest, t) = self
+                        .food_growers
+                        .closest_point_on_branch(branch_index, position);
+                    let influence = self.food_growers.branch_collision_width_at(branch_index, t)
+                        + section_radius;
+                    self.push_section_from_solid(cell_index, section, closest, influence);
+                }
+            }
+        }
+    }
+
+    fn push_section_from_solid(
+        &mut self,
+        cell_index: usize,
+        section: u8,
+        solid_center: Vec2,
+        influence: f32,
+    ) {
+        let position = self.cells.section_center(cell_index, section);
+        let delta = position - solid_center;
+        let dist_sq = delta.length_squared();
+        if dist_sq >= influence * influence {
+            return;
+        }
+        let (normal, distance) = if dist_sq > 0.0001 {
+            let distance = dist_sq.sqrt();
+            (delta / distance, distance)
+        } else {
+            (Vec2::X, 0.001)
+        };
+        let penetration = influence - distance;
+        let push = penetration
+            .mul_add(SOFT_BODY_SOLID_PUSH_FACTOR, 0.0)
+            .min(SOFT_BODY_SOLID_PUSH_MAX);
+        let pushed_position = position + normal * push;
+        let mut velocity = self.cells.section_velocity(cell_index, section);
+        self.cells
+            .compress_section_contact(cell_index, section, -normal, penetration * 0.45);
+        let inward = velocity.dot(normal);
+        if inward < 0.0 {
+            velocity -= normal * inward * 1.15;
+        }
+        self.cells
+            .set_section_state(cell_index, section, pushed_position, velocity);
     }
 
     fn advect_obstacles(&mut self, dt: f32) {
@@ -1553,6 +2132,7 @@ impl WorldState {
         self.food.anchor_angle[food_index] = 0.0;
         self.food.anchor_distance[food_index] = 0.0;
         self.food.anchor_lateral[food_index] = 0.0;
+        self.food.generation[food_index] = self.food.generation[food_index].wrapping_add(1);
     }
 
     fn safe_random_food_position(&mut self) -> Vec2 {
@@ -1718,8 +2298,9 @@ impl WorldState {
         for i in 0..self.cells.len() {
             let speed_cost = (self.cells.speed[i] / CELL_SPEED_DISPLAY_MAX).clamp(0.0, 1.5);
             let biomass_cost = self.cells.biomass_sum(i) * SOFT_BODY_BIOMASS_DRAIN_RATE;
-            let drain =
-                (VIABILITY_DECAY_BASE + speed_cost * VIABILITY_DECAY_SPEED + biomass_cost) * dt;
+            let drain = (VIABILITY_DECAY_BASE + speed_cost * VIABILITY_DECAY_SPEED + biomass_cost)
+                * self.cells.morphology_metabolism_factor(i)
+                * dt;
             self.cells.viability[i] = (self.cells.viability[i] - drain).max(0.0);
         }
     }
@@ -1748,13 +2329,53 @@ impl WorldState {
             }
 
             let threshold = self.cells.max_viability[i] * self.cells.division_threshold[i] / 100.0;
-            if self.cells.viability[i] >= threshold {
+            if self.cells.viability[i] >= threshold
+                && self.cells.mitosis_progress[i] <= 0.0
+                && self.cells.mitosis_recovery[i] <= 0.0
+            {
+                self.cells.mitosis_progress[i] = f32::EPSILON;
+                self.spawn_mitosis_particles(i, 4, 0.45);
+            }
+        }
+    }
+
+    fn advance_mitosis(&mut self, dt: f32) {
+        let initial_len = self.cells.len();
+        for i in 0..initial_len {
+            self.cells.mitosis_recovery[i] = (self.cells.mitosis_recovery[i] - dt).max(0.0);
+            if self.cells.mitosis_progress[i] <= 0.0 {
+                continue;
+            }
+            let previous_progress = self.cells.mitosis_progress[i];
+            self.cells.mitosis_progress[i] += dt / MITOSIS_DURATION;
+            if previous_progress < 0.48 && self.cells.mitosis_progress[i] >= 0.48 {
+                self.spawn_mitosis_particles(i, 7, 0.72);
+            }
+            if self.cells.mitosis_progress[i] >= 1.0 {
+                self.spawn_mitosis_particles(i, 15, 1.25);
+                self.cells.mitosis_progress[i] = 0.0;
+                self.cells.mitosis_recovery[i] = MITOSIS_RECOVERY_DURATION;
                 self.divide_cell(i);
             }
         }
     }
 
     fn divide_cell(&mut self, parent_index: usize) {
+        let division_axis =
+            Vec2::from_angle(self.cells.heading[parent_index] + std::f32::consts::FRAC_PI_2);
+        let division_offset =
+            self.cells.collision_bound_radius(parent_index) * DIVISION_CHILD_OFFSET;
+        let parent_shift = -division_axis * (division_offset * 0.5);
+        self.cells.x[parent_index] += parent_shift.x;
+        self.cells.y[parent_index] += parent_shift.y;
+        if self.cells.section_count[parent_index] >= 2 {
+            self.cells.tail_x[parent_index] += parent_shift.x;
+            self.cells.tail_y[parent_index] += parent_shift.y;
+            for extra_index in 0..(self.cells.section_count[parent_index] as usize - 2) {
+                self.cells.extra_sections[parent_index][extra_index].x += parent_shift.x;
+                self.cells.extra_sections[parent_index][extra_index].y += parent_shift.y;
+            }
+        }
         let split_viability = (self.cells.viability[parent_index] * 0.5)
             .clamp(0.0, self.cells.max_viability[parent_index]);
         self.cells.viability[parent_index] = split_viability;
@@ -1764,6 +2385,8 @@ impl WorldState {
             self.width,
             self.height,
             self.arena_shape,
+            division_axis,
+            division_offset,
             &mut self.rng,
         );
         self.cell_sound_events.push(Vec2::new(
@@ -1848,42 +2471,29 @@ impl WorldState {
     fn solve_cell_collisions(&mut self, dt: f32) {
         self.cell_grid.rebuild(&self.cells);
         self.collision_pairs.clear();
+        let max_bound = (0..self.cells.len())
+            .map(|index| self.cells.collision_bound_radius(index))
+            .fold(0.0, f32::max);
 
-        for bucket_index in 0..self.cell_grid.buckets.len() {
-            let bucket = &self.cell_grid.buckets[bucket_index];
-            if bucket.is_empty() {
-                continue;
-            }
-
-            for a in 0..bucket.len() {
-                for b in (a + 1)..bucket.len() {
-                    self.collision_pairs.push((bucket[a], bucket[b]));
-                }
-            }
-
-            let (gx, gy) = self.cell_grid.coords_from_index(bucket_index);
-            for (ox, oy) in [(1, 0), (0, 1), (1, 1), (-1, 1)] {
-                let nx = gx + ox;
-                let ny = gy + oy;
-
-                if nx < 0
-                    || ny < 0
-                    || nx >= self.cell_grid.cols as i32
-                    || ny >= self.cell_grid.rows as i32
-                {
-                    continue;
-                }
-
-                let other_index = ny as usize * self.cell_grid.cols + nx as usize;
-                if self.cell_grid.buckets[other_index].is_empty() {
-                    continue;
-                }
-
-                let other = &self.cell_grid.buckets[other_index];
-
-                for &a in bucket {
-                    for &b in other {
-                        self.collision_pairs.push((a, b));
+        for a in 0..self.cells.len() {
+            let bound_a = self.cells.collision_bound_radius(a);
+            let search_radius = bound_a + max_bound;
+            let center_a = Vec2::new(self.cells.x[a], self.cells.y[a]);
+            let (min_x, max_x, min_y, max_y) = self.cell_grid.bucket_range(center_a, search_radius);
+            for gy in min_y..=max_y {
+                for gx in min_x..=max_x {
+                    let bucket_index = gy * self.cell_grid.cols + gx;
+                    for &b in &self.cell_grid.buckets[bucket_index] {
+                        if b <= a {
+                            continue;
+                        }
+                        let bound_b = self.cells.collision_bound_radius(b);
+                        let broad_distance = bound_a + bound_b;
+                        let dx = self.cells.x[b] - self.cells.x[a];
+                        let dy = self.cells.y[b] - self.cells.y[a];
+                        if dx * dx + dy * dy < broad_distance * broad_distance {
+                            self.collision_pairs.push((a, b));
+                        }
                     }
                 }
             }
@@ -1900,36 +2510,75 @@ impl WorldState {
     }
 
     fn resolve_cell_pair(&mut self, a: usize, b: usize, dt: f32) {
-        let dx = self.cells.x[b] - self.cells.x[a];
-        let dy = self.cells.y[b] - self.cells.y[a];
-        let dist_sq = dx * dx + dy * dy;
-        let radius_a = self.cells.collision_radius[a];
-        let radius_b = self.cells.collision_radius[b];
-        let broad_min_dist = radius_a + radius_b;
-        if dist_sq >= broad_min_dist * broad_min_dist {
+        let both_single = self.cells.section_count[a] == 1 && self.cells.section_count[b] == 1;
+        if !both_single {
+            self.resolve_compound_cell_pair(a, b, dt);
             return;
         }
-
-        let center_distance = dist_sq.sqrt();
-        let normal = if dist_sq > 0.0001 {
-            Vec2::new(dx, dy) * center_distance.recip()
+        let (section_a, section_b) = if both_single {
+            let dx = self.cells.x[b] - self.cells.x[a];
+            let dy = self.cells.y[b] - self.cells.y[a];
+            let min_distance = self.cells.collision_radius[a] + self.cells.collision_radius[b];
+            if dx * dx + dy * dy >= min_distance * min_distance {
+                return;
+            }
+            (0, 0)
+        } else {
+            closest_section_pair(&self.cells, a, b)
+        };
+        let center_a = self.cells.section_center(a, section_a);
+        let center_b = self.cells.section_center(b, section_b);
+        let section_delta = center_b - center_a;
+        let section_dist_sq = section_delta.length_squared();
+        let section_radius_a = self.cells.section_collision_radius(a, section_a);
+        let section_radius_b = self.cells.section_collision_radius(b, section_b);
+        let broad_min_dist = section_radius_a + section_radius_b;
+        if section_dist_sq >= broad_min_dist * broad_min_dist {
+            return;
+        }
+        let center_distance = section_dist_sq.sqrt();
+        let normal = if section_dist_sq > 0.0001 {
+            section_delta * center_distance.recip()
         } else {
             let angle = ((a as f32 * 12.9898 + b as f32 * 78.233).sin()) * std::f32::consts::TAU;
             let (ny, nx) = angle.sin_cos();
             Vec2::new(nx, ny)
         };
 
-        let contact_a = sample_membrane_contact(&self.cells, a, b, normal);
-        let contact_b = sample_membrane_contact(&self.cells, b, a, -normal);
+        let (contact_a, contact_b) = if section_a == 0 && section_b == 0 {
+            (
+                sample_membrane_contact(&self.cells, a, b, normal),
+                sample_membrane_contact(&self.cells, b, a, -normal),
+            )
+        } else {
+            let penetration = (section_radius_a + section_radius_b - center_distance).max(0.0);
+            let mut contact_a = MembraneContact::default();
+            let mut contact_b = MembraneContact::default();
+            if penetration > 0.0 {
+                contact_a.depth_sum = penetration;
+                contact_a.count = 1;
+                contact_b.depth_sum = penetration;
+                contact_b.count = 1;
+            }
+            (contact_a, contact_b)
+        };
         let contact_count = contact_a.count + contact_b.count;
-        let core_distance = self.cells.core_radius[a] + self.cells.core_radius[b];
+        let core_distance = self.cells.section_core_radius(a, section_a)
+            + self.cells.section_core_radius(b, section_b);
         let core_penetration = (core_distance - center_distance).max(0.0);
         if contact_count == 0 && core_penetration <= 0.0 {
             return;
         }
 
-        self.cells.compress_rays_by_depth(a, &contact_a.ray_depths);
-        self.cells.compress_rays_by_depth(b, &contact_b.ray_depths);
+        if section_a == 0 && section_b == 0 {
+            self.cells.compress_rays_by_depth(a, &contact_a.ray_depths);
+            self.cells.compress_rays_by_depth(b, &contact_b.ray_depths);
+        } else if contact_count > 0 {
+            self.cells
+                .compress_section_contact(a, section_a, normal, contact_a.depth_sum * 0.5);
+            self.cells
+                .compress_section_contact(b, section_b, -normal, contact_b.depth_sum * 0.5);
+        }
 
         let membrane_penetration = if contact_count > 0 {
             (contact_a.depth_sum + contact_b.depth_sum) / contact_count as f32
@@ -1942,20 +2591,18 @@ impl WorldState {
         } else {
             self.collision_stiffness
         };
-        let relative_velocity = Vec2::new(
-            self.cells.vx[b] - self.cells.vx[a],
-            self.cells.vy[b] - self.cells.vy[a],
-        );
+        let relative_velocity =
+            self.cells.section_velocity(b, section_b) - self.cells.section_velocity(a, section_a);
         let relative_normal_speed = relative_velocity.dot(normal);
         let force =
             (stiffness * penetration - self.collision_damping * relative_normal_speed).max(0.0);
         let force_step = normal * force * dt;
-        let inverse_mass_a = radius_a.powi(2).max(1.0).recip();
-        let inverse_mass_b = radius_b.powi(2).max(1.0).recip();
-        self.cells.vx[a] -= force_step.x * inverse_mass_a;
-        self.cells.vy[a] -= force_step.y * inverse_mass_a;
-        self.cells.vx[b] += force_step.x * inverse_mass_b;
-        self.cells.vy[b] += force_step.y * inverse_mass_b;
+        let inverse_mass_a = section_radius_a.powi(2).max(1.0).recip();
+        let inverse_mass_b = section_radius_b.powi(2).max(1.0).recip();
+        self.cells
+            .apply_section_impulse(a, section_a, -force_step * inverse_mass_a);
+        self.cells
+            .apply_section_impulse(b, section_b, force_step * inverse_mass_b);
 
         let contact_scale = broad_min_dist.max(0.001);
         let wobble = ((penetration / contact_scale).clamp(0.0, 1.0)
@@ -1970,8 +2617,66 @@ impl WorldState {
         self.cells.jelly_dir_y[b] = normal.y;
     }
 
+    fn resolve_compound_cell_pair(&mut self, a: usize, b: usize, dt: f32) {
+        let Some(contact) = find_compound_contact(&self.cells, a, b) else {
+            return;
+        };
+        self.cells.compress_curve_contact(
+            a,
+            contact.t_a,
+            contact.normal,
+            contact.penetration * 0.5,
+        );
+        self.cells.compress_curve_contact(
+            b,
+            contact.t_b,
+            -contact.normal,
+            contact.penetration * 0.5,
+        );
+
+        let stiffness = if contact.core_penetration > 0.0 {
+            self.collision_stiffness * HARD_CORE_STIFFNESS_MULTIPLIER
+        } else {
+            self.collision_stiffness
+        };
+        let relative_normal_speed = (contact.velocity_b - contact.velocity_a).dot(contact.normal);
+        let penetration = contact.penetration.max(contact.core_penetration);
+        let force =
+            (stiffness * penetration - self.collision_damping * relative_normal_speed).max(0.0);
+        let force_step = contact.normal * force * dt;
+        let inverse_mass_a = contact.radius_a.powi(2).max(1.0).recip();
+        let inverse_mass_b = contact.radius_b.powi(2).max(1.0).recip();
+        self.cells
+            .apply_curve_impulse(a, contact.t_a, -force_step * inverse_mass_a);
+        self.cells
+            .apply_curve_impulse(b, contact.t_b, force_step * inverse_mass_b);
+
+        if contact.core_penetration > 0.0 && relative_normal_speed < 0.0 {
+            let inverse_mass_sum = (inverse_mass_a + inverse_mass_b).max(0.0001);
+            let stop_speed =
+                -relative_normal_speed + (contact.core_penetration * 6.0).clamp(0.0, 36.0);
+            let constraint_impulse = contact.normal * (stop_speed / inverse_mass_sum);
+            self.cells
+                .apply_curve_impulse(a, contact.t_a, -constraint_impulse * inverse_mass_a);
+            self.cells
+                .apply_curve_impulse(b, contact.t_b, constraint_impulse * inverse_mass_b);
+        }
+
+        let contact_scale = (contact.radius_a + contact.radius_b).max(0.001);
+        let wobble = ((penetration / contact_scale).clamp(0.0, 1.0)
+            + relative_normal_speed.abs() / 160.0)
+            .min(1.0)
+            * JELLY_HIT_GAIN;
+        self.cells.jelly_intensity[a] = (self.cells.jelly_intensity[a] + wobble).min(1.0);
+        self.cells.jelly_intensity[b] = (self.cells.jelly_intensity[b] + wobble).min(1.0);
+        self.cells.jelly_dir_x[a] = -contact.normal.x;
+        self.cells.jelly_dir_y[a] = -contact.normal.y;
+        self.cells.jelly_dir_x[b] = contact.normal.x;
+        self.cells.jelly_dir_y[b] = contact.normal.y;
+    }
+
     fn bounce_cell(&mut self, i: usize) {
-        let r = self.cells.collision_bound_radius(i);
+        let r = self.cells.collision_radius[i];
         let bounced = bounce_point_in_arena(
             &mut self.cells.x[i],
             &mut self.cells.y[i],
@@ -1991,10 +2696,320 @@ impl WorldState {
     }
 }
 
+#[derive(Default)]
 struct MembraneContact {
     ray_depths: [f32; SOFT_BODY_POINTS],
     depth_sum: f32,
     count: usize,
+}
+
+#[derive(Clone, Copy)]
+struct CompoundCurveSample {
+    center: Vec2,
+    velocity: Vec2,
+    radius: f32,
+    core_radius: f32,
+}
+
+impl CompoundCurveSample {
+    fn lerp(self, other: Self, t: f32, center: Vec2) -> Self {
+        Self {
+            center,
+            velocity: self.velocity.lerp(other.velocity, t),
+            radius: self.radius + (other.radius - self.radius) * t,
+            core_radius: self.core_radius + (other.core_radius - self.core_radius) * t,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct CompoundContact {
+    t_a: f32,
+    t_b: f32,
+    normal: Vec2,
+    penetration: f32,
+    core_penetration: f32,
+    radius_a: f32,
+    radius_b: f32,
+    velocity_a: Vec2,
+    velocity_b: Vec2,
+}
+
+fn compound_curve_sample(cells: &CellStore, index: usize, t: f32) -> CompoundCurveSample {
+    if cells.section_count[index] < 2 {
+        return CompoundCurveSample {
+            center: Vec2::new(cells.x[index], cells.y[index]),
+            velocity: Vec2::new(cells.vx[index], cells.vy[index]),
+            radius: cells.collision_radius[index],
+            core_radius: cells.core_radius[index],
+        };
+    }
+
+    let edge_count = cells.section_count[index] as usize - 1;
+    let scaled = t.clamp(0.0, 1.0) * edge_count as f32;
+    let edge = scaled.floor().min((edge_count - 1) as f32) as usize;
+    let local = (scaled - edge as f32).clamp(0.0, 1.0);
+    let first_section = cells.section_parents[index][edge];
+    let second_section = edge as u8 + 1;
+    let first_center = cells.section_center(index, first_section);
+    let second_center = cells.section_center(index, second_section);
+    let edge_axis = second_center - first_center;
+    let edge_side = edge_axis
+        .try_normalize()
+        .map(|direction| Vec2::new(-direction.y, direction.x))
+        .unwrap_or(Vec2::Y);
+    let control =
+        (first_center + second_center) * 0.5 + edge_side * cells.edge_curve_offsets[index][edge];
+    let center = first_center
+        .lerp(control, local)
+        .lerp(control.lerp(second_center, local), local);
+    let velocity = cells
+        .section_velocity(index, first_section)
+        .lerp(cells.section_velocity(index, second_section), local);
+    let first_radius = cells.section_collision_radius(index, first_section);
+    let second_radius = cells.section_collision_radius(index, second_section);
+    let radius = first_radius + (second_radius - first_radius) * local;
+    let first_core = cells.section_core_radius(index, first_section);
+    let second_core = cells.section_core_radius(index, second_section);
+    let core_radius = first_core + (second_core - first_core) * local;
+    CompoundCurveSample {
+        center,
+        velocity,
+        radius,
+        core_radius,
+    }
+}
+
+fn find_compound_contact(cells: &CellStore, a: usize, b: usize) -> Option<CompoundContact> {
+    let segments_a = if cells.section_count[a] >= 2 {
+        (cells.section_count[a] as usize - 1) * 2
+    } else {
+        1
+    };
+    let segments_b = if cells.section_count[b] >= 2 {
+        (cells.section_count[b] as usize - 1) * 2
+    } else {
+        1
+    };
+    let samples_a = compound_curve_samples(cells, a, segments_a);
+    let samples_b = compound_curve_samples(cells, b, segments_b);
+    let mut best: Option<CompoundContact> = None;
+
+    for segment_a in 0..segments_a {
+        let a_t0 = if cells.section_count[a] >= 2 {
+            segment_a as f32 / segments_a as f32
+        } else {
+            0.0
+        };
+        let a_t1 = if cells.section_count[a] >= 2 {
+            (segment_a + 1) as f32 / segments_a as f32
+        } else {
+            0.0
+        };
+        let a0 = samples_a[segment_a];
+        let a1 = samples_a[segment_a + 1];
+
+        for segment_b in 0..segments_b {
+            let b_t0 = if cells.section_count[b] >= 2 {
+                segment_b as f32 / segments_b as f32
+            } else {
+                0.0
+            };
+            let b_t1 = if cells.section_count[b] >= 2 {
+                (segment_b + 1) as f32 / segments_b as f32
+            } else {
+                0.0
+            };
+            let b0 = samples_b[segment_b];
+            let b1 = samples_b[segment_b + 1];
+            let (local_a, local_b, point_a, point_b) =
+                closest_segment_points(a0.center, a1.center, b0.center, b1.center);
+            let t_a = a_t0 + (a_t1 - a_t0) * local_a;
+            let t_b = b_t0 + (b_t1 - b_t0) * local_b;
+            let sample_a = a0.lerp(a1, local_a, point_a);
+            let sample_b = b0.lerp(b1, local_b, point_b);
+            let delta = point_b - point_a;
+            let distance_sq = delta.length_squared();
+            let distance = distance_sq.sqrt();
+            if sample_a.radius + sample_b.radius <= distance {
+                continue;
+            }
+            let normal = if distance_sq > 0.0001 {
+                delta / distance
+            } else {
+                (sample_b.center - sample_a.center)
+                    .try_normalize()
+                    .unwrap_or_else(|| {
+                        let tangent = (a1.center - a0.center).try_normalize().unwrap_or(Vec2::X);
+                        Vec2::new(-tangent.y, tangent.x)
+                    })
+            };
+            let radius_a = compound_membrane_radius(cells, a, t_a, normal);
+            let radius_b = compound_membrane_radius(cells, b, t_b, -normal);
+            let penetration = radius_a + radius_b - distance;
+            if penetration <= 0.0 {
+                continue;
+            }
+            let core_penetration =
+                (sample_a.core_radius + sample_b.core_radius - distance).max(0.0);
+            let contact = CompoundContact {
+                t_a,
+                t_b,
+                normal,
+                penetration,
+                core_penetration,
+                radius_a,
+                radius_b,
+                velocity_a: sample_a.velocity,
+                velocity_b: sample_b.velocity,
+            };
+            if best
+                .as_ref()
+                .is_none_or(|previous| penetration > previous.penetration)
+            {
+                best = Some(contact);
+            }
+        }
+    }
+    best
+}
+
+fn compound_membrane_radius(cells: &CellStore, index: usize, t: f32, direction: Vec2) -> f32 {
+    if cells.section_count[index] < 2 {
+        return cells.section_membrane_radius(index, 0, direction.y.atan2(direction.x));
+    }
+    let edge_count = cells.section_count[index] as usize - 1;
+    let scaled = t.clamp(0.0, 1.0) * edge_count as f32;
+    let edge = scaled.floor().min((edge_count - 1) as f32) as usize;
+    let local = (scaled - edge as f32).clamp(0.0, 1.0);
+    let parent = cells.section_parents[index][edge];
+    let child = edge as u8 + 1;
+    let angle = direction.y.atan2(direction.x);
+    let parent_radius = cells.section_membrane_radius(index, parent, angle);
+    let child_radius = cells.section_membrane_radius(index, child, angle);
+    let end_blend = (local * 2.0 - 1.0).powi(2);
+    (parent_radius + (child_radius - parent_radius) * local) * (0.78 + end_blend * 0.22)
+}
+
+fn compound_curve_samples(
+    cells: &CellStore,
+    index: usize,
+    segments: usize,
+) -> [CompoundCurveSample; MAX_COMPOUND_COLLISION_SEGMENTS + 1] {
+    let first = compound_curve_sample(cells, index, 0.0);
+    let mut samples = [first; MAX_COMPOUND_COLLISION_SEGMENTS + 1];
+    for (sample_index, sample) in samples.iter_mut().enumerate().take(segments + 1) {
+        let t = if cells.section_count[index] >= 2 {
+            sample_index as f32 / segments as f32
+        } else {
+            0.0
+        };
+        *sample = compound_curve_sample(cells, index, t);
+    }
+    samples
+}
+
+fn cell_body_overlaps_circle(
+    cells: &CellStore,
+    index: usize,
+    circle_center: Vec2,
+    circle_radius: f32,
+) -> bool {
+    if cells.section_count[index] < 2 {
+        let center = Vec2::new(cells.x[index], cells.y[index]);
+        let contact_radius = cells.collision_radius[index] + circle_radius;
+        return center.distance_squared(circle_center) <= contact_radius * contact_radius;
+    }
+
+    let segment_count = (cells.section_count[index] as usize - 1) * 2;
+    let samples = compound_curve_samples(cells, index, segment_count);
+    for segment in 0..segment_count {
+        let start = samples[segment];
+        let end = samples[segment + 1];
+        let axis = end.center - start.center;
+        let axis_length_sq = axis.length_squared();
+        let t = if axis_length_sq > 0.000001 {
+            ((circle_center - start.center).dot(axis) / axis_length_sq).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let closest = start.center + axis * t;
+        let direction = (circle_center - closest).try_normalize().unwrap_or(Vec2::X);
+        let body_t = (segment as f32 + t) / segment_count as f32;
+        let body_radius = compound_membrane_radius(cells, index, body_t, direction);
+        let contact_radius = body_radius + circle_radius;
+        if closest.distance_squared(circle_center) <= contact_radius * contact_radius {
+            return true;
+        }
+    }
+    false
+}
+
+fn closest_segment_points(p1: Vec2, q1: Vec2, p2: Vec2, q2: Vec2) -> (f32, f32, Vec2, Vec2) {
+    let first = q1 - p1;
+    let second = q2 - p2;
+    let offset = p1 - p2;
+    let first_len_sq = first.length_squared();
+    let second_len_sq = second.length_squared();
+    let mut first_t;
+    let second_t;
+
+    if first_len_sq <= 0.000001 && second_len_sq <= 0.000001 {
+        return (0.0, 0.0, p1, p2);
+    }
+    if first_len_sq <= 0.000001 {
+        first_t = 0.0;
+        second_t = (second.dot(-offset) / second_len_sq).clamp(0.0, 1.0);
+    } else {
+        let first_offset = first.dot(offset);
+        if second_len_sq <= 0.000001 {
+            second_t = 0.0;
+            first_t = (-first_offset / first_len_sq).clamp(0.0, 1.0);
+        } else {
+            let second_offset = second.dot(offset);
+            let cross = first.dot(second);
+            let denominator = first_len_sq * second_len_sq - cross * cross;
+            first_t = if denominator.abs() > 0.000001 {
+                ((cross * second_offset - first_offset * second_len_sq) / denominator)
+                    .clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            let projected_second = (cross * first_t + second_offset) / second_len_sq;
+            if projected_second < 0.0 {
+                second_t = 0.0;
+                first_t = (-first_offset / first_len_sq).clamp(0.0, 1.0);
+            } else if projected_second > 1.0 {
+                second_t = 1.0;
+                first_t = ((cross - first_offset) / first_len_sq).clamp(0.0, 1.0);
+            } else {
+                second_t = projected_second;
+            }
+        }
+    }
+    (
+        first_t,
+        second_t,
+        p1 + first * first_t,
+        p2 + second * second_t,
+    )
+}
+
+fn closest_section_pair(cells: &CellStore, a: usize, b: usize) -> (u8, u8) {
+    let mut best = (0, 0);
+    let mut best_distance_sq = f32::INFINITY;
+    for section_a in 0..cells.section_count[a] {
+        for section_b in 0..cells.section_count[b] {
+            let distance_sq = cells
+                .section_center(a, section_a)
+                .distance_squared(cells.section_center(b, section_b));
+            if distance_sq < best_distance_sq {
+                best_distance_sq = distance_sq;
+                best = (section_a, section_b);
+            }
+        }
+    }
+    best
 }
 
 fn sample_membrane_contact(
@@ -2150,6 +3165,10 @@ pub struct SoftBodyCell {
     pub speed: f32,
     pub energy: f32,
     pub agility: f32,
+    #[allow(dead_code)]
+    pub perception: f32,
+    #[allow(dead_code)]
+    pub persistence: f32,
     pub mutation_factor: f32,
     pub size: f32,
     pub base_radii: [f32; SOFT_BODY_POINTS],
@@ -2552,6 +3571,8 @@ fn mutate_child_soft_body(
         speed: 0.0,
         energy: 0.0,
         agility: 0.0,
+        perception: 0.0,
+        persistence: 0.0,
         mutation_factor: susceptibility,
         size,
         base_radii: parent_base,
@@ -2562,9 +3583,43 @@ fn mutate_child_soft_body(
     (cell.base_radii, cell.current_radii, cell.angle_offsets)
 }
 
+#[derive(Clone, Copy)]
+pub struct ExtraSection {
+    pub x: f32,
+    pub y: f32,
+    pub vx: f32,
+    pub vy: f32,
+    pub core_radius: f32,
+    pub collision_radius: f32,
+    pub base_radii: [f32; SOFT_BODY_POINTS],
+    pub current_radii: [f32; SOFT_BODY_POINTS],
+    pub visual_radii: [f32; SOFT_BODY_POINTS],
+    #[allow(dead_code)]
+    pub angle_offsets: [f32; SOFT_BODY_POINTS],
+}
+
+impl ExtraSection {
+    fn dormant(position: Vec2, radius: f32) -> Self {
+        let radii = [radius; SOFT_BODY_POINTS];
+        Self {
+            x: position.x,
+            y: position.y,
+            vx: 0.0,
+            vy: 0.0,
+            core_radius: radius * CORE_RADIUS_FACTOR,
+            collision_radius: radius,
+            base_radii: radii,
+            current_radii: radii,
+            visual_radii: radii,
+            angle_offsets: [0.0; SOFT_BODY_POINTS],
+        }
+    }
+}
+
 pub struct CellStore {
     pub id: Vec<u64>,
     next_id: u64,
+    segmented_enabled: bool,
     pub x: Vec<f32>,
     pub y: Vec<f32>,
     pub vx: Vec<f32>,
@@ -2574,11 +3629,42 @@ pub struct CellStore {
     pub core_radius: Vec<f32>,
     pub speed: Vec<f32>,
     pub turn_speed: Vec<f32>,
+    pub perception: Vec<f32>,
+    pub persistence: Vec<f32>,
+    target_food: Vec<i32>,
+    target_food_generation: Vec<u32>,
+    target_last_x: Vec<f32>,
+    target_last_y: Vec<f32>,
+    target_memory: Vec<f32>,
+    target_recheck: Vec<f32>,
+    pub section_count: Vec<u8>,
+    pub section_spacing: Vec<f32>,
+    pub section_bend: Vec<f32>,
+    pub section_angles: Vec<[f32; 3]>,
+    pub section_parents: Vec<[u8; 3]>,
+    pub edge_curve_offsets: Vec<[f32; 3]>,
+    pub extra_sections: Vec<[ExtraSection; 2]>,
+    pub tail_x: Vec<f32>,
+    pub tail_y: Vec<f32>,
+    pub tail_vx: Vec<f32>,
+    pub tail_vy: Vec<f32>,
+    pub tail_core_radius: Vec<f32>,
+    pub tail_base_radii: Vec<[f32; SOFT_BODY_POINTS]>,
+    pub tail_current_radii: Vec<[f32; SOFT_BODY_POINTS]>,
+    pub tail_visual_radii: Vec<[f32; SOFT_BODY_POINTS]>,
+    pub tail_angle_offsets: Vec<[f32; SOFT_BODY_POINTS]>,
+    tail_collision_radius: Vec<f32>,
+    tail_ray_dir_x: Vec<[f32; SOFT_BODY_POINTS]>,
+    tail_ray_dir_y: Vec<[f32; SOFT_BODY_POINTS]>,
+    stuck_time: Vec<f32>,
+    reverse_time: Vec<f32>,
     pub species: Vec<u8>,
     pub viability: Vec<f32>,
     pub max_viability: Vec<f32>,
     pub mutation_susceptibility: Vec<f32>,
     pub division_threshold: Vec<f32>,
+    pub mitosis_progress: Vec<f32>,
+    mitosis_recovery: Vec<f32>,
     pub base_radii: Vec<[f32; SOFT_BODY_POINTS]>,
     pub current_radii: Vec<[f32; SOFT_BODY_POINTS]>,
     pub visual_radii: Vec<[f32; SOFT_BODY_POINTS]>,
@@ -2588,6 +3674,10 @@ pub struct CellStore {
     asymmetry_x: Vec<f32>,
     asymmetry_y: Vec<f32>,
     shape_drag: Vec<f32>,
+    morphology_acceleration: Vec<f32>,
+    morphology_turn: Vec<f32>,
+    morphology_viability: Vec<f32>,
+    morphology_metabolism: Vec<f32>,
     ray_dir_x: Vec<[f32; SOFT_BODY_POINTS]>,
     ray_dir_y: Vec<[f32; SOFT_BODY_POINTS]>,
     pub shape_wave_a: Vec<f32>,
@@ -2601,21 +3691,201 @@ pub struct CellStore {
     pub jelly_intensity: Vec<f32>,
     pub jelly_dir_x: Vec<f32>,
     pub jelly_dir_y: Vec<f32>,
+    pub wake_strength: Vec<f32>,
 }
 
 impl CellStore {
+    #[inline]
+    pub(crate) fn section_center(&self, index: usize, section: u8) -> Vec2 {
+        match section {
+            0 => Vec2::new(self.x[index], self.y[index]),
+            1 => Vec2::new(self.tail_x[index], self.tail_y[index]),
+            _ => {
+                let extra = self.extra_sections[index][section as usize - 2];
+                Vec2::new(extra.x, extra.y)
+            }
+        }
+    }
+
+    #[inline]
+    pub(crate) fn section_velocity(&self, index: usize, section: u8) -> Vec2 {
+        match section {
+            0 => Vec2::new(self.vx[index], self.vy[index]),
+            1 => Vec2::new(self.tail_vx[index], self.tail_vy[index]),
+            _ => {
+                let extra = self.extra_sections[index][section as usize - 2];
+                Vec2::new(extra.vx, extra.vy)
+            }
+        }
+    }
+
+    #[inline]
+    fn section_collision_radius(&self, index: usize, section: u8) -> f32 {
+        match section {
+            0 => self.collision_radius[index],
+            1 => self.tail_collision_radius[index],
+            _ => self.extra_sections[index][section as usize - 2].collision_radius,
+        }
+    }
+
+    #[inline]
+    fn section_core_radius(&self, index: usize, section: u8) -> f32 {
+        match section {
+            0 => self.core_radius[index],
+            1 => self.tail_core_radius[index],
+            _ => self.extra_sections[index][section as usize - 2].core_radius,
+        }
+    }
+
+    fn section_membrane_radius(&self, index: usize, section: u8, world_angle: f32) -> f32 {
+        let (radii, offsets) = match section {
+            0 => (self.current_radii[index], self.angle_offsets[index]),
+            1 => (
+                self.tail_current_radii[index],
+                self.tail_angle_offsets[index],
+            ),
+            _ => {
+                let extra = self.extra_sections[index][section as usize - 2];
+                (extra.current_radii, extra.angle_offsets)
+            }
+        };
+        let local_angle =
+            (world_angle - self.section_heading(index, section)).rem_euclid(std::f32::consts::TAU);
+        let sector = local_angle / SOFT_BODY_SECTOR_ANGLE;
+        let first = sector.floor() as usize % SOFT_BODY_POINTS;
+        let second = (first + 1) % SOFT_BODY_POINTS;
+        let first_angle = first as f32 * SOFT_BODY_SECTOR_ANGLE + offsets[first];
+        let second_angle = (first + 1) as f32 * SOFT_BODY_SECTOR_ANGLE + offsets[second];
+        let span = (second_angle - first_angle).max(0.001);
+        let blend = ((local_angle - first_angle) / span).clamp(0.0, 1.0);
+        radii[first] + (radii[second] - radii[first]) * blend
+    }
+
+    fn section_heading(&self, index: usize, section: u8) -> f32 {
+        if section == 0 {
+            return self.heading[index];
+        }
+        let center = self.section_center(index, section);
+        let parent_section = self.section_parents[index][section as usize - 1];
+        let parent = self.section_center(index, parent_section);
+        (parent.y - center.y).atan2(parent.x - center.x)
+    }
+
+    fn apply_section_impulse(&mut self, index: usize, section: u8, impulse: Vec2) {
+        match section {
+            0 => {
+                self.vx[index] += impulse.x;
+                self.vy[index] += impulse.y;
+            }
+            1 => {
+                self.tail_vx[index] += impulse.x;
+                self.tail_vy[index] += impulse.y;
+            }
+            _ => {
+                let extra = &mut self.extra_sections[index][section as usize - 2];
+                extra.vx += impulse.x;
+                extra.vy += impulse.y;
+            }
+        }
+    }
+
+    fn set_section_state(&mut self, index: usize, section: u8, position: Vec2, velocity: Vec2) {
+        match section {
+            1 => {
+                self.tail_x[index] = position.x;
+                self.tail_y[index] = position.y;
+                self.tail_vx[index] = velocity.x;
+                self.tail_vy[index] = velocity.y;
+            }
+            2..=3 => {
+                let extra = &mut self.extra_sections[index][section as usize - 2];
+                extra.x = position.x;
+                extra.y = position.y;
+                extra.vx = velocity.x;
+                extra.vy = velocity.y;
+            }
+            _ => {}
+        }
+    }
+
+    fn apply_curve_impulse(&mut self, index: usize, t: f32, impulse: Vec2) {
+        if self.section_count[index] < 2 {
+            self.apply_section_impulse(index, 0, impulse);
+            return;
+        }
+        let edge_count = self.section_count[index] as usize - 1;
+        let scaled = t.clamp(0.0, 1.0) * edge_count as f32;
+        let edge = scaled.floor().min((edge_count - 1) as f32) as usize;
+        let local = (scaled - edge as f32).clamp(0.0, 1.0);
+        let child = edge as u8 + 1;
+        let parent = self.section_parents[index][edge];
+        self.apply_section_impulse(index, parent, impulse * (1.0 - local));
+        self.apply_section_impulse(index, child, impulse * local);
+    }
+
+    fn compress_curve_contact(&mut self, index: usize, t: f32, direction: Vec2, depth: f32) {
+        if self.section_count[index] < 2 {
+            self.compress_section_contact(index, 0, direction, depth);
+            return;
+        }
+        let edge_count = self.section_count[index] as usize - 1;
+        let scaled = t.clamp(0.0, 1.0) * edge_count as f32;
+        let edge = scaled.floor().min((edge_count - 1) as f32) as usize;
+        let local = (scaled - edge as f32).clamp(0.0, 1.0);
+        let child = edge as u8 + 1;
+        let parent = self.section_parents[index][edge];
+        if 1.0 - local > 0.05 {
+            self.compress_section_contact(index, parent, direction, depth * (1.0 - local));
+        }
+        if local > 0.05 {
+            self.compress_section_contact(index, child, direction, depth * local);
+        }
+    }
+
+    fn compress_section_contact(&mut self, index: usize, section: u8, direction: Vec2, depth: f32) {
+        let heading = self.section_heading(index, section);
+        let local_angle = direction.y.atan2(direction.x) - heading;
+        let ray_index = (local_angle / SOFT_BODY_SECTOR_ANGLE).round() as i32;
+        let ray_index = ray_index.rem_euclid(SOFT_BODY_POINTS as i32) as usize;
+        if section == 0 {
+            let min = self.core_radius[index];
+            self.current_radii[index][ray_index] =
+                (self.current_radii[index][ray_index] - depth).max(min);
+            self.refresh_current_radius_cache(index);
+        } else if section == 1 {
+            let min = self.tail_core_radius[index];
+            self.tail_current_radii[index][ray_index] =
+                (self.tail_current_radii[index][ray_index] - depth).max(min);
+            self.tail_collision_radius[index] = self.tail_current_radii[index]
+                .iter()
+                .copied()
+                .fold(min, f32::max);
+        } else {
+            let extra = &mut self.extra_sections[index][section as usize - 2];
+            extra.current_radii[ray_index] =
+                (extra.current_radii[ray_index] - depth).max(extra.core_radius);
+            extra.collision_radius = extra
+                .current_radii
+                .iter()
+                .copied()
+                .fold(extra.core_radius, f32::max);
+        }
+    }
+
     fn new(
         count: usize,
         arena_w: f32,
         arena_h: f32,
         arena_shape: ArenaShape,
         random_geometry: bool,
+        segmented_cells: bool,
         shape_weights: &[f32; CELL_SHAPE_COUNT],
         rng: &mut SmallRng,
     ) -> Self {
         let mut store = Self {
             id: Vec::with_capacity(count),
             next_id: 0,
+            segmented_enabled: segmented_cells,
             x: Vec::with_capacity(count),
             y: Vec::with_capacity(count),
             vx: Vec::with_capacity(count),
@@ -2625,11 +3895,42 @@ impl CellStore {
             core_radius: Vec::with_capacity(count),
             speed: Vec::with_capacity(count),
             turn_speed: Vec::with_capacity(count),
+            perception: Vec::with_capacity(count),
+            persistence: Vec::with_capacity(count),
+            target_food: Vec::with_capacity(count),
+            target_food_generation: Vec::with_capacity(count),
+            target_last_x: Vec::with_capacity(count),
+            target_last_y: Vec::with_capacity(count),
+            target_memory: Vec::with_capacity(count),
+            target_recheck: Vec::with_capacity(count),
+            section_count: Vec::with_capacity(count),
+            section_spacing: Vec::with_capacity(count),
+            section_bend: Vec::with_capacity(count),
+            section_angles: Vec::with_capacity(count),
+            section_parents: Vec::with_capacity(count),
+            edge_curve_offsets: Vec::with_capacity(count),
+            extra_sections: Vec::with_capacity(count),
+            tail_x: Vec::with_capacity(count),
+            tail_y: Vec::with_capacity(count),
+            tail_vx: Vec::with_capacity(count),
+            tail_vy: Vec::with_capacity(count),
+            tail_core_radius: Vec::with_capacity(count),
+            tail_base_radii: Vec::with_capacity(count),
+            tail_current_radii: Vec::with_capacity(count),
+            tail_visual_radii: Vec::with_capacity(count),
+            tail_angle_offsets: Vec::with_capacity(count),
+            tail_collision_radius: Vec::with_capacity(count),
+            tail_ray_dir_x: Vec::with_capacity(count),
+            tail_ray_dir_y: Vec::with_capacity(count),
+            stuck_time: Vec::with_capacity(count),
+            reverse_time: Vec::with_capacity(count),
             species: Vec::with_capacity(count),
             viability: Vec::with_capacity(count),
             max_viability: Vec::with_capacity(count),
             mutation_susceptibility: Vec::with_capacity(count),
             division_threshold: Vec::with_capacity(count),
+            mitosis_progress: Vec::with_capacity(count),
+            mitosis_recovery: Vec::with_capacity(count),
             base_radii: Vec::with_capacity(count),
             current_radii: Vec::with_capacity(count),
             visual_radii: Vec::with_capacity(count),
@@ -2639,6 +3940,10 @@ impl CellStore {
             asymmetry_x: Vec::with_capacity(count),
             asymmetry_y: Vec::with_capacity(count),
             shape_drag: Vec::with_capacity(count),
+            morphology_acceleration: Vec::with_capacity(count),
+            morphology_turn: Vec::with_capacity(count),
+            morphology_viability: Vec::with_capacity(count),
+            morphology_metabolism: Vec::with_capacity(count),
             ray_dir_x: Vec::with_capacity(count),
             ray_dir_y: Vec::with_capacity(count),
             shape_wave_a: Vec::with_capacity(count),
@@ -2652,17 +3957,23 @@ impl CellStore {
             jelly_intensity: Vec::with_capacity(count),
             jelly_dir_x: Vec::with_capacity(count),
             jelly_dir_y: Vec::with_capacity(count),
+            wake_strength: Vec::with_capacity(count),
         };
 
         for _cell_index in 0..count {
-            let radius = rng.random_range(4.0..8.5);
+            let radius = rng.random_range(CELL_SIZE_GENE_MIN..CELL_SIZE_GENE_MAX);
             let angle = rng.random_range(0.0..std::f32::consts::TAU);
-            let speed = rng.random_range(48.0..92.0);
-            let turn_speed = rng.random_range(1.75..4.65);
+            let speed = rng.random_range(42.0..72.0);
+            let turn_speed = rng.random_range(0.85..2.35);
             let (s, c) = angle.sin_cos();
             let nucleus_angle = rng.random_range(0.0..std::f32::consts::TAU);
             let nucleus_distance = rng.random_range(0.0..0.36) * radius;
             let (nucleus_s, nucleus_c) = nucleus_angle.sin_cos();
+            let (base_radii, angle_offsets) = if random_geometry {
+                random_free_shape(radius, rng)
+            } else {
+                random_seed_shape(radius, None, shape_weights, rng)
+            };
 
             let position = random_point_in_arena(arena_w, arena_h, arena_shape, radius, rng);
             store.x.push(position.x);
@@ -2674,20 +3985,131 @@ impl CellStore {
             store.core_radius.push(radius * CORE_RADIUS_FACTOR);
             store.speed.push(speed);
             store.turn_speed.push(turn_speed);
+            store.perception.push(rng.random_range(260.0..520.0));
+            store.persistence.push(rng.random_range(18.0..62.0));
+            store.target_food.push(-1);
+            store.target_food_generation.push(0);
+            store.target_last_x.push(position.x);
+            store.target_last_y.push(position.y);
+            store.target_memory.push(0.0);
+            store.target_recheck.push(rng.random_range(0.0..0.24));
+            let section_count = if segmented_cells && rng.random_bool(INITIAL_SEGMENTED_CHANCE) {
+                let topology_roll = rng.random::<f32>();
+                if topology_roll < 0.70 {
+                    2
+                } else if topology_roll < 0.92 {
+                    3
+                } else {
+                    4
+                }
+            } else {
+                1
+            };
+            let spacing =
+                radius * rng.random_range(TAIL_MIN_SPACING_FACTOR..TAIL_MAX_SPACING_FACTOR);
+            let bend = if section_count >= 2 {
+                rng.random_range(-0.24..0.24)
+            } else {
+                0.0
+            };
+            let tail_width = rng.random_range(0.62..1.02);
+            let tail_radii = base_radii.map(|ray| (ray * tail_width).max(radius * 0.30));
+            let section_angles = [
+                rng.random_range(0.0..std::f32::consts::TAU),
+                rng.random_range(0.0..std::f32::consts::TAU),
+                rng.random_range(0.0..std::f32::consts::TAU),
+            ];
+            let section_parents = [0, rng.random_range(0..2), rng.random_range(0..3)];
+            let first_direction = Vec2::from_angle(angle + section_angles[0]);
+            let tail_position = if section_count >= 2 {
+                clamp_point_to_arena(
+                    position + first_direction * spacing,
+                    arena_w,
+                    arena_h,
+                    arena_shape,
+                    radius * tail_width,
+                )
+            } else {
+                position
+            };
+            store.section_count.push(section_count);
+            store.section_spacing.push(spacing);
+            store.section_bend.push(bend);
+            store.section_angles.push(section_angles);
+            store.section_parents.push(section_parents);
+            store.edge_curve_offsets.push([0.0; 3]);
+            store.tail_x.push(tail_position.x);
+            store.tail_y.push(tail_position.y);
+            store.tail_vx.push(c * speed);
+            store.tail_vy.push(s * speed);
+            store
+                .tail_core_radius
+                .push(radius * tail_width * CORE_RADIUS_FACTOR);
+            store.tail_base_radii.push(tail_radii);
+            store.tail_current_radii.push(tail_radii);
+            store.tail_visual_radii.push(tail_radii);
+            store.tail_angle_offsets.push(angle_offsets);
+            store.tail_collision_radius.push(
+                tail_radii
+                    .iter()
+                    .copied()
+                    .fold(radius * tail_width * CORE_RADIUS_FACTOR, f32::max),
+            );
+            let mut tail_dirs_x = [0.0; SOFT_BODY_POINTS];
+            let mut tail_dirs_y = [0.0; SOFT_BODY_POINTS];
+            for ray_index in 0..SOFT_BODY_POINTS {
+                let angle = SOFT_BODY_BASE_ANGLES[ray_index] + angle_offsets[ray_index];
+                tail_dirs_x[ray_index] = angle.cos();
+                tail_dirs_y[ray_index] = angle.sin();
+            }
+            store.tail_ray_dir_x.push(tail_dirs_x);
+            store.tail_ray_dir_y.push(tail_dirs_y);
+            let mut extras = [
+                ExtraSection::dormant(tail_position, radius * tail_width),
+                ExtraSection::dormant(tail_position, radius * tail_width),
+            ];
+            let mut generated_positions = [position, tail_position, tail_position, tail_position];
+            for extra_index in 0..2 {
+                if section_count as usize > extra_index + 2 {
+                    let section = extra_index + 2;
+                    let parent = section_parents[section - 1] as usize;
+                    let direction = Vec2::from_angle(angle + section_angles[extra_index + 1]);
+                    let generated = clamp_point_to_arena(
+                        generated_positions[parent] + direction * spacing,
+                        arena_w,
+                        arena_h,
+                        arena_shape,
+                        radius * tail_width,
+                    );
+                    extras[extra_index] = ExtraSection {
+                        x: generated.x,
+                        y: generated.y,
+                        vx: c * speed,
+                        vy: s * speed,
+                        core_radius: radius * tail_width * CORE_RADIUS_FACTOR,
+                        collision_radius: radius * tail_width,
+                        base_radii: tail_radii,
+                        current_radii: tail_radii,
+                        visual_radii: tail_radii,
+                        angle_offsets,
+                    };
+                    generated_positions[section] = generated;
+                }
+            }
+            store.extra_sections.push(extras);
+            store.stuck_time.push(0.0);
+            store.reverse_time.push(0.0);
             store.species.push(rng.random_range(0..12));
             store.max_viability.push(CELL_VIABILITY_MAX);
             store
                 .viability
-                .push(rng.random_range((CELL_VIABILITY_MAX * 0.45)..(CELL_VIABILITY_MAX * 0.70)));
+                .push(rng.random_range((CELL_VIABILITY_MAX * 0.50)..(CELL_VIABILITY_MAX * 0.68)));
             store
                 .mutation_susceptibility
-                .push(rng.random_range(35.0..65.0));
-            store.division_threshold.push(rng.random_range(72.0..88.0));
-            let (base_radii, angle_offsets) = if random_geometry {
-                random_free_shape(radius, rng)
-            } else {
-                random_seed_shape(radius, None, shape_weights, rng)
-            };
+                .push(rng.random_range(18.0..45.0));
+            store.division_threshold.push(rng.random_range(78.0..90.0));
+            store.mitosis_progress.push(0.0);
+            store.mitosis_recovery.push(0.0);
             store.base_radii.push(base_radii);
             store.current_radii.push(base_radii);
             store.visual_radii.push(base_radii);
@@ -2697,6 +4119,10 @@ impl CellStore {
             store.asymmetry_x.push(0.0);
             store.asymmetry_y.push(0.0);
             store.shape_drag.push(1.0);
+            store.morphology_acceleration.push(1.0);
+            store.morphology_turn.push(1.0);
+            store.morphology_viability.push(1.0);
+            store.morphology_metabolism.push(1.0);
             store.ray_dir_x.push([0.0; SOFT_BODY_POINTS]);
             store.ray_dir_y.push([0.0; SOFT_BODY_POINTS]);
             store.rebuild_soft_body_cache(store.len() - 1);
@@ -2717,6 +4143,7 @@ impl CellStore {
             store.jelly_intensity.push(0.0);
             store.jelly_dir_x.push(c);
             store.jelly_dir_y.push(s);
+            store.wake_strength.push(0.0);
             store.id.push(store.next_id);
             store.next_id += 1;
         }
@@ -2741,6 +4168,8 @@ impl CellStore {
             speed: self.speed[index],
             energy: self.viability[index],
             agility: self.turn_speed[index],
+            perception: self.perception[index],
+            persistence: self.persistence[index],
             mutation_factor: self.mutation_susceptibility[index],
             size: self.radius[index],
             base_radii: self.base_radii[index],
@@ -2750,6 +4179,17 @@ impl CellStore {
     }
 
     pub fn shape_name(&self, index: usize) -> String {
+        if self.section_count[index] >= 2 {
+            let aspect = self.section_spacing[index]
+                / (self.max_base_radius(index) + self.tail_collision_radius[index]).max(0.1);
+            return if self.section_bend[index].abs() > 0.20 {
+                "Спирилла / Изогнутый филамент".to_string()
+            } else if aspect > 1.55 {
+                "Филамент / Нематода".to_string()
+            } else {
+                "Бацилла".to_string()
+            };
+        }
         analyze_cell_shape(&self.soft_body_profile(index))
     }
 
@@ -2760,14 +4200,16 @@ impl CellStore {
         arena_w: f32,
         arena_h: f32,
         arena_shape: ArenaShape,
+        division_axis: Vec2,
+        division_offset: f32,
         rng: &mut SmallRng,
     ) {
         let parent_heading = self.heading[parent_index];
         let side = if rng.random_bool(0.5) { -1.0 } else { 1.0 };
-        let offset_angle = parent_heading + side * std::f32::consts::FRAC_PI_2;
-        let (offset_s, offset_c) = offset_angle.sin_cos();
+        let offset_c = division_axis.x;
+        let offset_s = division_axis.y;
         let radius = self.radius[parent_index];
-        let offset = radius * DIVISION_CHILD_OFFSET;
+        let offset = division_offset;
         let position = clamp_point_to_arena(
             Vec2::new(
                 self.x[parent_index] + offset_c * offset,
@@ -2803,6 +4245,158 @@ impl CellStore {
             susceptibility,
             rng,
         ));
+        self.perception.push(mutate_gene(
+            self.perception[parent_index],
+            PERCEPTION_GENE_MIN,
+            PERCEPTION_GENE_MAX,
+            susceptibility,
+            rng,
+        ));
+        self.persistence.push(mutate_gene(
+            self.persistence[parent_index],
+            PERSISTENCE_GENE_MIN,
+            PERSISTENCE_GENE_MAX,
+            susceptibility,
+            rng,
+        ));
+        self.target_food.push(-1);
+        self.target_food_generation.push(0);
+        self.target_last_x.push(position.x);
+        self.target_last_y.push(position.y);
+        self.target_memory.push(0.0);
+        self.target_recheck.push(rng.random_range(0.0..0.24));
+        let mut child_section_count = self.section_count[parent_index];
+        let topology_mutation_chance = 0.015 + susceptibility as f64 / 100.0 * 0.055;
+        if self.segmented_enabled && rng.random_bool(topology_mutation_chance) {
+            child_section_count = if rng.random_bool(0.62) {
+                (child_section_count + 1).min(4)
+            } else {
+                child_section_count.saturating_sub(1).max(1)
+            };
+        }
+        let spacing = mutate_gene(
+            self.section_spacing[parent_index],
+            radius * TAIL_MIN_SPACING_FACTOR,
+            radius * TAIL_MAX_SPACING_FACTOR,
+            susceptibility,
+            rng,
+        );
+        let bend = if child_section_count >= 2 {
+            (self.section_bend[parent_index]
+                + rng.random_range(-0.09..0.09) * mutation_power(susceptibility))
+            .clamp(-0.38, 0.38)
+        } else {
+            0.0
+        };
+        let tail_source_base = if self.section_count[parent_index] >= 2 {
+            self.tail_base_radii[parent_index]
+        } else {
+            self.base_radii[parent_index]
+        };
+        let tail_source_current = if self.section_count[parent_index] >= 2 {
+            self.tail_current_radii[parent_index]
+        } else {
+            self.current_radii[parent_index]
+        };
+        let tail_source_offsets = if self.section_count[parent_index] >= 2 {
+            self.tail_angle_offsets[parent_index]
+        } else {
+            self.angle_offsets[parent_index]
+        };
+        let (tail_base, tail_current, tail_offsets) = mutate_child_soft_body(
+            tail_source_base,
+            tail_source_current,
+            tail_source_offsets,
+            radius,
+            susceptibility,
+            rng,
+        );
+        let child_heading = wrap_angle(parent_heading + side * 0.28);
+        let mut section_angles = self.section_angles[parent_index];
+        for angle in &mut section_angles {
+            *angle =
+                wrap_angle(*angle + rng.random_range(-0.22..0.22) * mutation_power(susceptibility));
+        }
+        let mut section_parents = self.section_parents[parent_index];
+        for edge in 0..3 {
+            section_parents[edge] = section_parents[edge].min(edge as u8);
+        }
+        if child_section_count > self.section_count[parent_index] {
+            for child in self.section_count[parent_index]..child_section_count {
+                if child > 0 {
+                    section_parents[child as usize - 1] = rng.random_range(0..child);
+                }
+            }
+        } else if child_section_count > 2 && rng.random_bool(topology_mutation_chance * 0.35) {
+            let child = rng.random_range(2..child_section_count);
+            section_parents[child as usize - 1] = rng.random_range(0..child);
+        }
+        let tail_direction = Vec2::from_angle(child_heading + section_angles[0]);
+        let tail_position = if child_section_count >= 2 {
+            clamp_point_to_arena(
+                position + tail_direction * spacing,
+                arena_w,
+                arena_h,
+                arena_shape,
+                radius,
+            )
+        } else {
+            position
+        };
+        self.section_count.push(child_section_count);
+        self.section_spacing.push(spacing);
+        self.section_bend.push(bend);
+        self.section_angles.push(section_angles);
+        self.section_parents.push(section_parents);
+        self.edge_curve_offsets.push([0.0; 3]);
+        self.tail_x.push(tail_position.x);
+        self.tail_y.push(tail_position.y);
+        self.tail_vx.push(self.vx[parent_index] * 0.35);
+        self.tail_vy.push(self.vy[parent_index] * 0.35);
+        self.tail_core_radius.push(radius * CORE_RADIUS_FACTOR);
+        self.tail_base_radii.push(tail_base);
+        self.tail_current_radii.push(tail_current);
+        self.tail_visual_radii.push(tail_current);
+        self.tail_angle_offsets.push(tail_offsets);
+        self.tail_collision_radius.push(radius);
+        self.tail_ray_dir_x.push([0.0; SOFT_BODY_POINTS]);
+        self.tail_ray_dir_y.push([0.0; SOFT_BODY_POINTS]);
+        let mut extras = [
+            ExtraSection::dormant(tail_position, radius),
+            ExtraSection::dormant(tail_position, radius),
+        ];
+        let mut generated_positions = [position, tail_position, tail_position, tail_position];
+        for extra_index in 0..2 {
+            if child_section_count as usize > extra_index + 2 {
+                let section = extra_index + 2;
+                let parent = section_parents[section - 1] as usize;
+                let generated = clamp_point_to_arena(
+                    generated_positions[parent]
+                        + Vec2::from_angle(child_heading + section_angles[extra_index + 1])
+                            * spacing,
+                    arena_w,
+                    arena_h,
+                    arena_shape,
+                    radius,
+                );
+                extras[extra_index] = ExtraSection {
+                    x: generated.x,
+                    y: generated.y,
+                    vx: self.vx[parent_index] * 0.35,
+                    vy: self.vy[parent_index] * 0.35,
+                    core_radius: radius * CORE_RADIUS_FACTOR,
+                    collision_radius: radius,
+                    base_radii: tail_base,
+                    current_radii: tail_current,
+                    visual_radii: tail_current,
+                    angle_offsets: tail_offsets,
+                };
+                generated_positions[section] = generated;
+            }
+        }
+        self.extra_sections.push(extras);
+        self.stuck_time.push(0.0);
+        self.reverse_time.push(0.0);
         self.species.push(self.species[parent_index]);
         self.viability
             .push(viability.clamp(0.0, self.max_viability[parent_index]));
@@ -2826,6 +4420,8 @@ impl CellStore {
             susceptibility,
             rng,
         ));
+        self.mitosis_progress.push(0.0);
+        self.mitosis_recovery.push(MITOSIS_RECOVERY_DURATION);
         let (child_base_radii, child_current_radii, child_angle_offsets) = mutate_child_soft_body(
             self.base_radii[parent_index],
             self.current_radii[parent_index],
@@ -2843,9 +4439,14 @@ impl CellStore {
         self.asymmetry_x.push(0.0);
         self.asymmetry_y.push(0.0);
         self.shape_drag.push(1.0);
+        self.morphology_acceleration.push(1.0);
+        self.morphology_turn.push(1.0);
+        self.morphology_viability.push(1.0);
+        self.morphology_metabolism.push(1.0);
         self.ray_dir_x.push([0.0; SOFT_BODY_POINTS]);
         self.ray_dir_y.push([0.0; SOFT_BODY_POINTS]);
         self.rebuild_soft_body_cache(self.len() - 1);
+        self.rebuild_tail_cache(self.len() - 1);
         self.shape_wave_a.push(self.shape_wave_a[parent_index]);
         self.shape_wave_b.push(self.shape_wave_b[parent_index]);
         self.shape_phase
@@ -2861,6 +4462,7 @@ impl CellStore {
         self.jelly_intensity.push(0.35);
         self.jelly_dir_x.push(offset_c);
         self.jelly_dir_y.push(offset_s);
+        self.wake_strength.push(0.0);
     }
 
     fn swap_remove(&mut self, index: usize) {
@@ -2874,11 +4476,42 @@ impl CellStore {
         self.core_radius.swap_remove(index);
         self.speed.swap_remove(index);
         self.turn_speed.swap_remove(index);
+        self.perception.swap_remove(index);
+        self.persistence.swap_remove(index);
+        self.target_food.swap_remove(index);
+        self.target_food_generation.swap_remove(index);
+        self.target_last_x.swap_remove(index);
+        self.target_last_y.swap_remove(index);
+        self.target_memory.swap_remove(index);
+        self.target_recheck.swap_remove(index);
+        self.section_count.swap_remove(index);
+        self.section_spacing.swap_remove(index);
+        self.section_bend.swap_remove(index);
+        self.section_angles.swap_remove(index);
+        self.section_parents.swap_remove(index);
+        self.edge_curve_offsets.swap_remove(index);
+        self.extra_sections.swap_remove(index);
+        self.tail_x.swap_remove(index);
+        self.tail_y.swap_remove(index);
+        self.tail_vx.swap_remove(index);
+        self.tail_vy.swap_remove(index);
+        self.tail_core_radius.swap_remove(index);
+        self.tail_base_radii.swap_remove(index);
+        self.tail_current_radii.swap_remove(index);
+        self.tail_visual_radii.swap_remove(index);
+        self.tail_angle_offsets.swap_remove(index);
+        self.tail_collision_radius.swap_remove(index);
+        self.tail_ray_dir_x.swap_remove(index);
+        self.tail_ray_dir_y.swap_remove(index);
+        self.stuck_time.swap_remove(index);
+        self.reverse_time.swap_remove(index);
         self.species.swap_remove(index);
         self.viability.swap_remove(index);
         self.max_viability.swap_remove(index);
         self.mutation_susceptibility.swap_remove(index);
         self.division_threshold.swap_remove(index);
+        self.mitosis_progress.swap_remove(index);
+        self.mitosis_recovery.swap_remove(index);
         self.base_radii.swap_remove(index);
         self.current_radii.swap_remove(index);
         self.visual_radii.swap_remove(index);
@@ -2888,6 +4521,10 @@ impl CellStore {
         self.asymmetry_x.swap_remove(index);
         self.asymmetry_y.swap_remove(index);
         self.shape_drag.swap_remove(index);
+        self.morphology_acceleration.swap_remove(index);
+        self.morphology_turn.swap_remove(index);
+        self.morphology_viability.swap_remove(index);
+        self.morphology_metabolism.swap_remove(index);
         self.ray_dir_x.swap_remove(index);
         self.ray_dir_y.swap_remove(index);
         self.shape_wave_a.swap_remove(index);
@@ -2901,6 +4538,7 @@ impl CellStore {
         self.jelly_intensity.swap_remove(index);
         self.jelly_dir_x.swap_remove(index);
         self.jelly_dir_y.swap_remove(index);
+        self.wake_strength.swap_remove(index);
     }
 
     #[allow(dead_code)]
@@ -2915,7 +4553,15 @@ impl CellStore {
     }
 
     pub fn collision_bound_radius(&self, index: usize) -> f32 {
-        self.collision_radius[index]
+        let head = self.section_center(index, 0);
+        let mut bound = self.collision_radius[index];
+        for section in 1..self.section_count[index] {
+            bound = bound.max(
+                head.distance(self.section_center(index, section))
+                    + self.section_collision_radius(index, section),
+            );
+        }
+        bound
     }
 
     pub fn max_base_radius(&self, index: usize) -> f32 {
@@ -2923,6 +4569,48 @@ impl CellStore {
             .iter()
             .copied()
             .fold(self.radius[index] * SOFT_BODY_BASE_MIN_FACTOR, f32::max)
+    }
+
+    pub(crate) fn section_wake_half_width(&self, index: usize, section: u8) -> f32 {
+        let radii = match section {
+            0 => self.visual_radii[index],
+            1 => self.tail_visual_radii[index],
+            _ => self.extra_sections[index][section as usize - 2].visual_radii,
+        };
+        ((radii[2] + radii[6]) * 0.5)
+            .max(self.section_core_radius(index, section))
+            .max(0.1)
+    }
+
+    pub(crate) fn connection_wake_sample(
+        &self,
+        index: usize,
+        edge: usize,
+        t: f32,
+    ) -> (Vec2, Vec2, f32) {
+        let parent = self.section_parents[index][edge];
+        let child = edge as u8 + 1;
+        let parent_center = self.section_center(index, parent);
+        let child_center = self.section_center(index, child);
+        let axis = child_center - parent_center;
+        let side = axis
+            .try_normalize()
+            .map(|direction| Vec2::new(-direction.y, direction.x))
+            .unwrap_or(Vec2::Y);
+        let control =
+            (parent_center + child_center) * 0.5 + side * self.edge_curve_offsets[index][edge];
+        let t = t.clamp(0.0, 1.0);
+        let center = parent_center
+            .lerp(control, t)
+            .lerp(control.lerp(child_center, t), t);
+        let velocity = self
+            .section_velocity(index, parent)
+            .lerp(self.section_velocity(index, child), t);
+        let parent_width = self.section_wake_half_width(index, parent);
+        let child_width = self.section_wake_half_width(index, child);
+        let end_blend = (t * 2.0 - 1.0).powi(2);
+        let width = (parent_width + (child_width - parent_width) * t) * (0.78 + end_blend * 0.22);
+        (center, velocity, width)
     }
 
     fn biomass_sum(&self, index: usize) -> f32 {
@@ -3037,6 +4725,45 @@ impl CellStore {
             }
             self.collision_radius[index] = max_current;
             self.biomass[index] = biomass;
+
+            if self.section_count[index] >= 2 {
+                let mut tail_max = self.tail_core_radius[index];
+                for ray_index in 0..SOFT_BODY_POINTS {
+                    let base = self.tail_base_radii[index][ray_index]
+                        .min(self.radius[index])
+                        .max(self.tail_core_radius[index]);
+                    self.tail_base_radii[index][ray_index] = base;
+                    let current = self.tail_current_radii[index][ray_index]
+                        .clamp(self.tail_core_radius[index], base);
+                    let relaxed = current + (base - current) * elasticity;
+                    self.tail_current_radii[index][ray_index] = relaxed;
+                    let visual = self.tail_visual_radii[index][ray_index].min(self.radius[index]);
+                    self.tail_visual_radii[index][ray_index] =
+                        visual + (relaxed - visual) * visual_follow;
+                    tail_max = tail_max.max(relaxed);
+                    biomass += base;
+                }
+                self.tail_collision_radius[index] = tail_max;
+                for extra_index in 0..(self.section_count[index] as usize - 2) {
+                    let extra = &mut self.extra_sections[index][extra_index];
+                    let mut extra_max = extra.core_radius;
+                    for ray_index in 0..SOFT_BODY_POINTS {
+                        let base = extra.base_radii[ray_index]
+                            .min(self.radius[index])
+                            .max(extra.core_radius);
+                        extra.base_radii[ray_index] = base;
+                        let current = extra.current_radii[ray_index].clamp(extra.core_radius, base);
+                        let relaxed = current + (base - current) * elasticity;
+                        extra.current_radii[ray_index] = relaxed;
+                        extra.visual_radii[ray_index] +=
+                            (relaxed - extra.visual_radii[ray_index]) * visual_follow;
+                        extra_max = extra_max.max(relaxed);
+                        biomass += base;
+                    }
+                    extra.collision_radius = extra_max;
+                }
+                self.biomass[index] = biomass;
+            }
         }
     }
 
@@ -3059,8 +4786,117 @@ impl CellStore {
         self.biomass[index] = biomass;
         self.asymmetry_x[index] = normalized.x;
         self.asymmetry_y[index] = normalized.y;
-        let asymmetry = normalized.length().clamp(0.0, 1.0);
-        self.shape_drag[index] = (1.0 - asymmetry * SOFT_BODY_SHAPE_DRAG).clamp(0.82, 1.0);
+        self.rebuild_morphology_profile(index);
+    }
+
+    fn rebuild_morphology_profile(&mut self, index: usize) {
+        let radii = self.base_radii[index];
+        let mean = radii.iter().sum::<f32>() / SOFT_BODY_POINTS as f32;
+        let variance = radii
+            .iter()
+            .map(|radius| (radius - mean).powi(2))
+            .sum::<f32>()
+            / SOFT_BODY_POINTS as f32;
+        let radial_cv = variance.sqrt() / mean.max(0.001);
+
+        let axis_mean = (radii[0] + radii[2] + radii[4] + radii[6]) * 0.25;
+        let diagonal_mean = (radii[1] + radii[3] + radii[5] + radii[7]) * 0.25;
+        let corner_ratio = diagonal_mean / axis_mean.max(0.001);
+        let opposite_symmetry = (1.0
+            - (0..4)
+                .map(|ray| (radii[ray] - radii[ray + 4]).abs())
+                .sum::<f32>()
+                / (mean * 4.0).max(0.001))
+        .clamp(0.0, 1.0);
+        let corner_score = (1.0 - (corner_ratio - std::f32::consts::SQRT_2).abs() / 0.32)
+            .clamp(0.0, 1.0)
+            * opposite_symmetry;
+
+        let mut vertices = [Vec2::ZERO; SOFT_BODY_POINTS];
+        for ray in 0..SOFT_BODY_POINTS {
+            vertices[ray] =
+                Vec2::from_angle(SOFT_BODY_BASE_ANGLES[ray] + self.angle_offsets[index][ray])
+                    * radii[ray];
+        }
+        let mut twice_area = 0.0;
+        let mut perimeter = 0.0;
+        for ray in 0..SOFT_BODY_POINTS {
+            let next = (ray + 1) % SOFT_BODY_POINTS;
+            twice_area += vertices[ray].perp_dot(vertices[next]);
+            perimeter += vertices[ray].distance(vertices[next]);
+        }
+        let area = twice_area.abs() * 0.5;
+        let mut compactness =
+            (4.0 * std::f32::consts::PI * area / perimeter.max(0.001).powi(2)).clamp(0.0, 1.0);
+
+        let mut min_axis = f32::INFINITY;
+        let mut max_axis: f32 = 0.0;
+        for ray in 0..4 {
+            let extent = radii[ray] + radii[ray + 4];
+            min_axis = min_axis.min(extent);
+            max_axis = max_axis.max(extent);
+        }
+        let ray_elongation =
+            (((max_axis / min_axis.max(0.001) - 1.0) / 2.0) - corner_score * 0.22).clamp(0.0, 1.0);
+        let segment_elongation = if self.section_count[index] > 1 {
+            let count_factor = (self.section_count[index] as f32 - 1.0) / 3.0;
+            let spacing_factor =
+                (self.section_spacing[index] / (mean * 2.0).max(0.001)).clamp(0.55, 1.8);
+            (count_factor * spacing_factor * 0.82).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let elongation = ray_elongation.max(segment_elongation);
+        compactness *= 1.0 - elongation * 0.42;
+
+        let angle_disorder = self.angle_offsets[index]
+            .iter()
+            .map(|angle| angle.abs())
+            .sum::<f32>()
+            / (SOFT_BODY_POINTS as f32 * SOFT_BODY_MAX_ANGLE_OFFSET);
+        let irregularity = (((radial_cv - corner_score * 0.15).max(0.0) / 0.42)
+            + angle_disorder * 0.55
+            + (1.0 - opposite_symmetry) * 0.35)
+            .clamp(0.0, 1.0);
+        let asymmetry = self.asymmetry_vector(index).length().clamp(0.0, 1.0);
+        let effective_corner = corner_score * (1.0 - elongation * 0.45);
+
+        self.shape_drag[index] = (1.0 + elongation * 0.25
+            - irregularity * 0.13
+            - effective_corner * 0.06
+            - asymmetry * SOFT_BODY_SHAPE_DRAG)
+            .clamp(0.72, 1.28);
+        self.morphology_acceleration[index] =
+            (1.0 + elongation * 0.32 - irregularity * 0.13 - effective_corner * 0.04)
+                .clamp(0.72, 1.32);
+        self.morphology_turn[index] =
+            (1.0 - elongation * 0.48 - effective_corner * 0.08 - irregularity * 0.10
+                + (compactness - 0.72).max(0.0) * 0.18)
+                .clamp(0.48, 1.16);
+        self.morphology_viability[index] = (0.92 + compactness * 0.12 + effective_corner * 0.12
+            - elongation * 0.08
+            - irregularity * 0.07)
+            .clamp(0.78, 1.20);
+        self.morphology_metabolism[index] =
+            (1.04 + elongation * 0.12 + irregularity * 0.10 - compactness * 0.08).clamp(0.88, 1.26);
+
+        let old_max = self.max_viability[index].max(1.0);
+        let viability_ratio = (self.viability[index] / old_max).clamp(0.0, 1.0);
+        self.max_viability[index] = CELL_VIABILITY_MAX * self.morphology_viability[index];
+        self.viability[index] = viability_ratio * self.max_viability[index];
+    }
+
+    fn rebuild_tail_cache(&mut self, index: usize) {
+        let mut max_current = self.tail_core_radius[index];
+        for ray_index in 0..SOFT_BODY_POINTS {
+            let angle =
+                SOFT_BODY_BASE_ANGLES[ray_index] + self.tail_angle_offsets[index][ray_index];
+            self.tail_ray_dir_x[index][ray_index] = angle.cos();
+            self.tail_ray_dir_y[index][ray_index] = angle.sin();
+            max_current = max_current.max(self.tail_current_radii[index][ray_index]);
+        }
+        self.tail_collision_radius[index] = max_current;
+        self.tail_visual_radii[index] = self.tail_current_radii[index];
     }
 
     fn refresh_current_radius_cache(&mut self, index: usize) {
@@ -3074,8 +4910,29 @@ impl CellStore {
         Vec2::new(self.asymmetry_x[index], self.asymmetry_y[index])
     }
 
-    fn shape_drag_factor(&self, index: usize) -> f32 {
+    pub fn morphology_speed_factor(&self, index: usize) -> f32 {
         self.shape_drag[index]
+    }
+
+    #[cfg(test)]
+    fn shape_drag_factor(&self, index: usize) -> f32 {
+        self.morphology_speed_factor(index)
+    }
+
+    pub fn morphology_acceleration_factor(&self, index: usize) -> f32 {
+        self.morphology_acceleration[index]
+    }
+
+    pub fn morphology_turn_factor(&self, index: usize) -> f32 {
+        self.morphology_turn[index]
+    }
+
+    pub fn morphology_viability_factor(&self, index: usize) -> f32 {
+        self.morphology_viability[index]
+    }
+
+    pub fn morphology_metabolism_factor(&self, index: usize) -> f32 {
+        self.morphology_metabolism[index]
     }
 
     fn turn_agility_factor(&self, index: usize, turn_delta: f32) -> f32 {
@@ -3141,8 +4998,16 @@ impl CellGrid {
         gy * self.cols + gx
     }
 
-    fn coords_from_index(&self, index: usize) -> (i32, i32) {
-        ((index % self.cols) as i32, (index / self.cols) as i32)
+    fn bucket_range(&self, center: Vec2, radius: f32) -> (usize, usize, usize, usize) {
+        let min_x = (((center.x - radius + self.width * 0.5) / self.cell_size).floor() as i32)
+            .clamp(0, self.cols as i32 - 1) as usize;
+        let max_x = (((center.x + radius + self.width * 0.5) / self.cell_size).floor() as i32)
+            .clamp(0, self.cols as i32 - 1) as usize;
+        let min_y = (((center.y - radius + self.height * 0.5) / self.cell_size).floor() as i32)
+            .clamp(0, self.rows as i32 - 1) as usize;
+        let max_y = (((center.y + radius + self.height * 0.5) / self.cell_size).floor() as i32)
+            .clamp(0, self.rows as i32 - 1) as usize;
+        (min_x, max_x, min_y, max_y)
     }
 }
 
@@ -3156,6 +5021,7 @@ pub struct FoodStore {
     pub spin: Vec<f32>,
     pub growth: Vec<f32>,
     pub active: Vec<bool>,
+    generation: Vec<u32>,
     pub feeder: Vec<i32>,
     pub anchor_branch: Vec<i32>,
     pub anchor_angle: Vec<f32>,
@@ -3181,6 +5047,7 @@ impl FoodStore {
             spin: Vec::with_capacity(count),
             growth: Vec::with_capacity(count),
             active: Vec::with_capacity(count),
+            generation: Vec::with_capacity(count),
             feeder: Vec::with_capacity(count),
             anchor_branch: Vec::with_capacity(count),
             anchor_angle: Vec::with_capacity(count),
@@ -3220,6 +5087,7 @@ impl FoodStore {
         self.spin.push(random_food_spin(rng));
         self.growth.push(1.0);
         self.active.push(true);
+        self.generation.push(1);
         self.feeder.push(-1);
         self.anchor_branch.push(-1);
         self.anchor_angle.push(0.0);
@@ -3247,6 +5115,7 @@ impl FoodStore {
         let y = point.y;
 
         if let Some(index) = self.inactive_slot() {
+            self.generation[index] = self.generation[index].wrapping_add(1);
             self.x[index] = x;
             self.y[index] = y;
             self.kind[index] = FoodKind::Grass;
@@ -3274,6 +5143,7 @@ impl FoodStore {
         self.spin.push(0.0);
         self.growth.push(0.24);
         self.active.push(true);
+        self.generation.push(1);
         self.feeder.push(grower_index);
         self.anchor_branch.push(branch_index);
         self.anchor_angle.push(anchor_angle);
@@ -3297,6 +5167,7 @@ impl FoodStore {
         let y = point.y;
 
         if let Some(index) = self.inactive_slot() {
+            self.generation[index] = self.generation[index].wrapping_add(1);
             self.x[index] = x;
             self.y[index] = y;
             self.kind[index] = FoodKind::Meat;
@@ -3325,6 +5196,7 @@ impl FoodStore {
         self.spin.push(random_food_spin(rng));
         self.growth.push(1.0);
         self.active.push(true);
+        self.generation.push(1);
         self.feeder.push(-1);
         self.anchor_branch.push(-1);
         self.anchor_angle.push(0.0);
@@ -3357,6 +5229,7 @@ impl FoodStore {
     }
 
     fn deactivate(&mut self, index: usize) {
+        self.generation[index] = self.generation[index].wrapping_add(1);
         self.active[index] = false;
         self.growth[index] = 0.0;
         self.feeder[index] = -1;
@@ -3496,6 +5369,40 @@ pub struct FoodGrowerStore {
     pub branchlet_food_index: Vec<Option<usize>>,
 }
 
+fn random_non_overlapping_grower_position(
+    arena_w: f32,
+    arena_h: f32,
+    arena_shape: ArenaShape,
+    extent: f32,
+    gap: f32,
+    existing_x: &[f32],
+    existing_y: &[f32],
+    existing_extents: &[f32],
+    rng: &mut SmallRng,
+) -> Vec2 {
+    let mut best = Vec2::ZERO;
+    let mut best_clearance = f32::NEG_INFINITY;
+    for _ in 0..192 {
+        let candidate = random_point_in_arena(arena_w, arena_h, arena_shape, extent, rng);
+        let clearance = existing_x
+            .iter()
+            .zip(existing_y)
+            .zip(existing_extents)
+            .map(|((&x, &y), &other_extent)| {
+                candidate.distance(Vec2::new(x, y)) - extent - other_extent - gap
+            })
+            .fold(f32::INFINITY, f32::min);
+        if clearance >= 0.0 {
+            return candidate;
+        }
+        if clearance > best_clearance {
+            best = candidate;
+            best_clearance = clearance;
+        }
+    }
+    best
+}
+
 impl FoodGrowerStore {
     fn new(
         count: usize,
@@ -3546,8 +5453,10 @@ impl FoodGrowerStore {
             branchlet_food_index: Vec::with_capacity(count.saturating_mul(20)),
         };
 
-        let arena_scale = arena_w.min(arena_h).max(1_000.0);
-        let titanic_radius = (arena_scale * 0.028).clamp(190.0, 760.0);
+        let arena_min_dimension = arena_w.min(arena_h).max(1_000.0);
+        let grower_scale = (arena_min_dimension / 10_000.0).clamp(0.35, 3.0);
+        let titanic_radius = 280.0 * grower_scale;
+        let grower_gap = 42.0 * grower_scale;
 
         for grower_index in 0..count {
             let titanic = grower_index == 0;
@@ -3555,9 +5464,9 @@ impl FoodGrowerStore {
             let radius = if titanic {
                 titanic_radius
             } else if giant {
-                rng.random_range(110.0..150.0)
+                rng.random_range(110.0..150.0) * grower_scale
             } else {
-                rng.random_range(50.0..86.0)
+                rng.random_range(50.0..86.0) * grower_scale
             };
             let branch_reach: f32 = if titanic {
                 rng.random_range(1.92..2.18)
@@ -3575,7 +5484,18 @@ impl FoodGrowerStore {
                 store.vx.push(rng.random_range(-0.45..0.45));
                 store.vy.push(rng.random_range(-0.45..0.45));
             } else {
-                let position = random_point_in_arena(arena_w, arena_h, arena_shape, extent, rng);
+                let spawn_extent = extent + radius * 0.18;
+                let position = random_non_overlapping_grower_position(
+                    arena_w,
+                    arena_h,
+                    arena_shape,
+                    spawn_extent,
+                    grower_gap,
+                    &store.x,
+                    &store.y,
+                    &store.extent,
+                    rng,
+                );
                 store.x.push(position.x);
                 store.y.push(position.y);
                 store.vx.push(rng.random_range(-2.0..2.0));
@@ -3824,41 +5744,155 @@ impl SpatialGrid {
         }
     }
 
+    #[inline]
     fn nearest_food(
         &self,
         x: f32,
         y: f32,
         food: &FoodStore,
-        ring: i32,
+        perception_radius: f32,
     ) -> Option<(usize, f32, f32, f32)> {
         let (cx, cy) = self.grid_coords(x, y);
         let mut best = None;
-        let mut best_dist_sq = f32::MAX;
+        let radius_sq = perception_radius.max(0.0).powi(2);
+        let mut best_dist_sq = f32::INFINITY;
+        let max_ring = (perception_radius.max(0.0) / self.cell_size).ceil() as i32 + 1;
 
-        for oy in -ring..=ring {
-            for ox in -ring..=ring {
-                let gx = cx + ox;
-                let gy = cy + oy;
-
-                if gx < 0 || gy < 0 || gx >= self.cols as i32 || gy >= self.rows as i32 {
-                    continue;
+        for ring in 0..=max_ring {
+            if ring == 0 {
+                self.scan_food_bucket(cx, cy, x, y, food, radius_sq, &mut best_dist_sq, &mut best);
+            } else {
+                for ox in -ring..=ring {
+                    self.scan_food_bucket(
+                        cx + ox,
+                        cy - ring,
+                        x,
+                        y,
+                        food,
+                        radius_sq,
+                        &mut best_dist_sq,
+                        &mut best,
+                    );
+                    self.scan_food_bucket(
+                        cx + ox,
+                        cy + ring,
+                        x,
+                        y,
+                        food,
+                        radius_sq,
+                        &mut best_dist_sq,
+                        &mut best,
+                    );
                 }
-
-                let bucket = (gy as usize * self.cols) + gx as usize;
-                for &food_index in &self.buckets[bucket] {
-                    let dx = food.x[food_index] - x;
-                    let dy = food.y[food_index] - y;
-                    let dist_sq = dx * dx + dy * dy;
-
-                    if dist_sq < best_dist_sq {
-                        best_dist_sq = dist_sq;
-                        best = Some((food_index, dx, dy, dist_sq.max(0.0001)));
-                    }
+                for oy in (-ring + 1)..ring {
+                    self.scan_food_bucket(
+                        cx - ring,
+                        cy + oy,
+                        x,
+                        y,
+                        food,
+                        radius_sq,
+                        &mut best_dist_sq,
+                        &mut best,
+                    );
+                    self.scan_food_bucket(
+                        cx + ring,
+                        cy + oy,
+                        x,
+                        y,
+                        food,
+                        radius_sq,
+                        &mut best_dist_sq,
+                        &mut best,
+                    );
                 }
+            }
+
+            if best.is_some() && best_dist_sq <= self.unsearched_distance_sq(x, y, cx, cy, ring) {
+                break;
             }
         }
 
         best
+    }
+
+    #[inline]
+    #[allow(clippy::too_many_arguments)]
+    fn scan_food_bucket(
+        &self,
+        gx: i32,
+        gy: i32,
+        x: f32,
+        y: f32,
+        food: &FoodStore,
+        radius_sq: f32,
+        best_dist_sq: &mut f32,
+        best: &mut Option<(usize, f32, f32, f32)>,
+    ) {
+        if gx < 0 || gy < 0 || gx >= self.cols as i32 || gy >= self.rows as i32 {
+            return;
+        }
+        if self.bucket_distance_sq(x, y, gx, gy) > radius_sq.min(*best_dist_sq) {
+            return;
+        }
+
+        let bucket = gy as usize * self.cols + gx as usize;
+        for &food_index in &self.buckets[bucket] {
+            let dx = food.x[food_index] - x;
+            let dy = food.y[food_index] - y;
+            let dist_sq = dx * dx + dy * dy;
+            if dist_sq <= radius_sq && dist_sq < *best_dist_sq {
+                *best_dist_sq = dist_sq;
+                *best = Some((food_index, dx, dy, dist_sq.max(0.0001)));
+            }
+        }
+    }
+
+    #[inline]
+    fn bucket_distance_sq(&self, x: f32, y: f32, gx: i32, gy: i32) -> f32 {
+        let min_x = -self.width * 0.5 + gx as f32 * self.cell_size;
+        let min_y = -self.height * 0.5 + gy as f32 * self.cell_size;
+        let max_x = (min_x + self.cell_size).min(self.width * 0.5);
+        let max_y = (min_y + self.cell_size).min(self.height * 0.5);
+        let dx = if x < min_x {
+            min_x - x
+        } else if x > max_x {
+            x - max_x
+        } else {
+            0.0
+        };
+        let dy = if y < min_y {
+            min_y - y
+        } else if y > max_y {
+            y - max_y
+        } else {
+            0.0
+        };
+        dx * dx + dy * dy
+    }
+
+    #[inline]
+    fn unsearched_distance_sq(&self, x: f32, y: f32, cx: i32, cy: i32, ring: i32) -> f32 {
+        let min_gx = (cx - ring).max(0);
+        let max_gx = (cx + ring).min(self.cols as i32 - 1);
+        let min_gy = (cy - ring).max(0);
+        let max_gy = (cy + ring).min(self.rows as i32 - 1);
+        let mut distance = f32::INFINITY;
+
+        if min_gx > 0 {
+            distance = distance.min(x - (-self.width * 0.5 + min_gx as f32 * self.cell_size));
+        }
+        if max_gx < self.cols as i32 - 1 {
+            distance = distance.min(-self.width * 0.5 + (max_gx + 1) as f32 * self.cell_size - x);
+        }
+        if min_gy > 0 {
+            distance = distance.min(y - (-self.height * 0.5 + min_gy as f32 * self.cell_size));
+        }
+        if max_gy < self.rows as i32 - 1 {
+            distance = distance.min(-self.height * 0.5 + (max_gy + 1) as f32 * self.cell_size - y);
+        }
+
+        distance.max(0.0).powi(2)
     }
 
     fn bucket_index(&self, x: f32, y: f32) -> usize {
@@ -3920,6 +5954,8 @@ mod tests {
             speed: 60.0,
             energy: 50.0,
             agility: 3.0,
+            perception: 500.0,
+            persistence: 50.0,
             mutation_factor: 50.0,
             size: 10.0,
             base_radii,
@@ -3939,6 +5975,70 @@ mod tests {
     }
 
     #[test]
+    fn simulator_10k_is_the_default_balance_profile() {
+        let config = SimConfig::default();
+        assert_eq!(config.cells, 10_000);
+        assert_eq!(config.food, 3_000);
+        assert_eq!((config.width, config.height), (18_000.0, 10_000.0));
+        assert_eq!(config.obstacles, 30);
+        assert_eq!(config.food_growers, 6);
+        assert!(config.segmented_cells);
+    }
+
+    #[test]
+    fn simulator_population_starts_inside_balanced_gene_core() {
+        let world = WorldState::new(&SimConfig {
+            cells: 1_024,
+            food: 0,
+            obstacles: 0,
+            food_growers: 0,
+            ..default()
+        });
+
+        assert!(
+            world
+                .cells
+                .speed
+                .iter()
+                .all(|value| (42.0..72.0).contains(value))
+        );
+        assert!(
+            world
+                .cells
+                .turn_speed
+                .iter()
+                .all(|value| (0.85..2.35).contains(value))
+        );
+        assert!(
+            world
+                .cells
+                .perception
+                .iter()
+                .all(|value| (260.0..520.0).contains(value))
+        );
+        assert!(
+            world
+                .cells
+                .mutation_susceptibility
+                .iter()
+                .all(|value| (18.0..45.0).contains(value))
+        );
+        assert!(
+            world
+                .cells
+                .division_threshold
+                .iter()
+                .all(|value| (78.0..90.0).contains(value))
+        );
+    }
+
+    fn complete_test_mitosis(world: &mut WorldState) {
+        world.process_cell_lifecycle();
+        assert!(world.cells.mitosis_progress[0] > 0.0);
+        world.advance_mitosis(MITOSIS_DURATION);
+    }
+
+    #[test]
     fn keeps_cells_inside_arena() {
         let config = SimConfig {
             cells: 1_000,
@@ -3952,11 +6052,14 @@ mod tests {
         }
 
         for i in 0..world.cells.len() {
-            let r = world.cells.collision_bound_radius(i);
-            assert!(world.cells.x[i] >= -world.width * 0.5 + r);
-            assert!(world.cells.x[i] <= world.width * 0.5 - r);
-            assert!(world.cells.y[i] >= -world.height * 0.5 + r);
-            assert!(world.cells.y[i] <= world.height * 0.5 - r);
+            for section in 0..world.cells.section_count[i] {
+                let point = world.cells.section_center(i, section);
+                let radius = world.cells.section_collision_radius(i, section);
+                assert!(point.x >= -world.width * 0.5 + radius);
+                assert!(point.x <= world.width * 0.5 - radius);
+                assert!(point.y >= -world.height * 0.5 + radius);
+                assert!(point.y <= world.height * 0.5 - radius);
+            }
         }
     }
 
@@ -3975,14 +6078,15 @@ mod tests {
         let world = WorldState::new(&config);
 
         for i in 0..world.cells.len() {
-            let point = Vec2::new(world.cells.x[i], world.cells.y[i]);
-            assert!(point_inside_arena(
-                point,
-                world.width,
-                world.height,
-                world.arena_shape,
-                world.cells.collision_bound_radius(i),
-            ));
+            for section in 0..world.cells.section_count[i] {
+                assert!(point_inside_arena(
+                    world.cells.section_center(i, section),
+                    world.width,
+                    world.height,
+                    world.arena_shape,
+                    world.cells.section_collision_radius(i, section),
+                ));
+            }
         }
         for i in 0..world.food.len() {
             let point = Vec2::new(world.food.x[i], world.food.y[i]);
@@ -4022,7 +6126,7 @@ mod tests {
             cells: 1,
             food: 1,
             obstacles: 1,
-            food_growers: 1,
+            food_growers: 2,
             width: 1_200.0,
             height: 1_200.0,
             arena_shape: ArenaShape::Circle,
@@ -4231,6 +6335,7 @@ mod tests {
             food: 0,
             obstacles: 0,
             food_growers: 0,
+            segmented_cells: false,
             ..default()
         };
         let mut world = WorldState::new(&config);
@@ -4655,8 +6760,14 @@ mod tests {
         world.cells.speed[1] = 60.0;
         world.cells.base_radii[0] = [4.0; SOFT_BODY_POINTS];
         world.cells.base_radii[1] = [8.0; SOFT_BODY_POINTS];
+        world.cells.angle_offsets[0] = [0.0; SOFT_BODY_POINTS];
+        world.cells.angle_offsets[1] = [0.0; SOFT_BODY_POINTS];
+        world.cells.section_count[0] = 1;
+        world.cells.section_count[1] = 1;
         world.cells.rebuild_soft_body_cache(0);
         world.cells.rebuild_soft_body_cache(1);
+        world.cells.viability[0] = 100.0;
+        world.cells.viability[1] = 100.0;
 
         world.decay_viability(1.0);
 
@@ -4704,7 +6815,7 @@ mod tests {
             cells: 0,
             food: 0,
             obstacles: 0,
-            food_growers: 1,
+            food_growers: 2,
             width: 2_000.0,
             height: 2_000.0,
             ..default()
@@ -4713,7 +6824,7 @@ mod tests {
             cells: 0,
             food: 0,
             obstacles: 0,
-            food_growers: 1,
+            food_growers: 2,
             width: 30_000.0,
             height: 20_000.0,
             ..default()
@@ -4721,6 +6832,28 @@ mod tests {
 
         assert!(large.food_growers.radius[0] > small.food_growers.radius[0]);
         assert!(large.food_growers.extent_radius(0) > small.food_growers.extent_radius(0));
+        assert!(large.food_growers.radius[1] > small.food_growers.radius[1]);
+    }
+
+    #[test]
+    fn small_food_growers_spawn_outside_the_mega_grower() {
+        let world = WorldState::new(&SimConfig {
+            cells: 0,
+            food: 0,
+            obstacles: 0,
+            food_growers: 12,
+            seed: 0xFEED_1234,
+            ..default()
+        });
+        let mega = Vec2::new(world.food_growers.x[0], world.food_growers.y[0]);
+        let mega_extent = world.food_growers.extent_radius(0);
+        for index in 1..world.food_growers.len() {
+            let position = Vec2::new(world.food_growers.x[index], world.food_growers.y[index]);
+            assert!(
+                position.distance(mega) >= mega_extent + world.food_growers.extent_radius(index),
+                "grower {index} overlaps the central mega grower"
+            );
+        }
     }
 
     #[test]
@@ -5132,8 +7265,17 @@ mod tests {
         world.cells.mutation_susceptibility[0] = 0.0;
 
         world.process_cell_lifecycle();
+        assert_eq!(world.cells.len(), 1);
+        assert!(world.cells.mitosis_progress[0] > 0.0);
+        assert_eq!(world.visual_particles.len(), 4);
+        world.advance_mitosis(MITOSIS_DURATION * 0.55);
+        assert_eq!(world.cells.len(), 1);
+        assert!(world.cells.mitosis_progress[0] > 0.5);
+        assert_eq!(world.visual_particles.len(), 11);
+        world.advance_mitosis(MITOSIS_DURATION * 0.45);
 
         assert_eq!(world.cells.len(), 2);
+        assert_eq!(world.visual_particles.len(), 26);
         assert!((world.cells.viability[0] - 40.0).abs() < 0.001);
         assert!((world.cells.viability[1] - 40.0).abs() < 0.001);
     }
@@ -5152,13 +7294,20 @@ mod tests {
         world.cells.division_threshold[0] = 80.0;
         world.cells.speed[0] = SPEED_GENE_MAX;
         world.cells.turn_speed[0] = TURN_GENE_MAX;
+        world.cells.perception[0] = PERCEPTION_GENE_MAX;
         world.cells.mutation_susceptibility[0] = MUTATION_GENE_MAX;
 
-        world.process_cell_lifecycle();
+        complete_test_mitosis(&mut world);
         let child = 1;
 
         assert!((SPEED_GENE_MIN..=SPEED_GENE_MAX).contains(&world.cells.speed[child]));
         assert!((TURN_GENE_MIN..=TURN_GENE_MAX).contains(&world.cells.turn_speed[child]));
+        assert!(
+            (PERCEPTION_GENE_MIN..=PERCEPTION_GENE_MAX).contains(&world.cells.perception[child])
+        );
+        assert!(
+            (PERSISTENCE_GENE_MIN..=PERSISTENCE_GENE_MAX).contains(&world.cells.persistence[child])
+        );
         assert!(
             (MUTATION_GENE_MIN..=MUTATION_GENE_MAX)
                 .contains(&world.cells.mutation_susceptibility[child])
@@ -5167,6 +7316,583 @@ mod tests {
             (DIVISION_THRESHOLD_MIN..=DIVISION_THRESHOLD_MAX)
                 .contains(&world.cells.division_threshold[child])
         );
+    }
+
+    #[test]
+    fn segmented_feature_flag_preserves_single_section_cells() {
+        let world = WorldState::new(&SimConfig {
+            cells: 256,
+            food: 0,
+            segmented_cells: false,
+            ..default()
+        });
+        assert!(world.cells.section_count.iter().all(|count| *count == 1));
+    }
+
+    #[test]
+    fn segmented_population_contains_full_second_soft_bodies() {
+        let world = WorldState::new(&SimConfig {
+            cells: 512,
+            food: 0,
+            segmented_cells: true,
+            seed: 42,
+            ..default()
+        });
+        assert!(world.cells.section_count.iter().any(|count| *count == 2));
+        assert_eq!(world.cells.tail_base_radii.len(), world.cells.len());
+        assert_eq!(world.cells.tail_current_radii.len(), world.cells.len());
+        assert_eq!(world.cells.tail_visual_radii.len(), world.cells.len());
+    }
+
+    #[test]
+    fn segmented_population_reaches_four_sections_with_free_angles() {
+        let world = WorldState::new(&SimConfig {
+            cells: 2_000,
+            food: 0,
+            segmented_cells: true,
+            seed: 91,
+            ..default()
+        });
+        assert!(world.cells.section_count.iter().all(|count| *count <= 4));
+        assert!(world.cells.section_count.contains(&3));
+        assert!(world.cells.section_count.contains(&4));
+        assert!(
+            world
+                .cells
+                .section_angles
+                .iter()
+                .flatten()
+                .any(|angle| angle.sin().abs() > 0.65)
+        );
+        assert!(
+            world
+                .cells
+                .section_count
+                .iter()
+                .enumerate()
+                .any(|(index, count)| *count >= 3 && world.cells.section_parents[index][1] == 0)
+        );
+    }
+
+    #[test]
+    fn fourth_section_follows_without_driving_the_head() {
+        let mut world = WorldState::new(&SimConfig {
+            cells: 1,
+            food: 0,
+            segmented_cells: false,
+            ..default()
+        });
+        world.cells.section_count[0] = 4;
+        world.cells.section_spacing[0] = 20.0;
+        world.cells.section_angles[0] = [std::f32::consts::PI, 1.4, -1.2];
+        world.cells.section_parents[0] = [0, 0, 1];
+        world.cells.x[0] = 8_000.0;
+        world.cells.y[0] = 0.0;
+        world.cells.heading[0] = 0.0;
+        world.cells.vx[0] = 35.0;
+        world.cells.vy[0] = 0.0;
+        world.cells.tail_x[0] = 7_980.0;
+        world.cells.tail_y[0] = 0.0;
+        world.cells.extra_sections[0][0].x = 7_980.0;
+        world.cells.extra_sections[0][0].y = 20.0;
+        world.cells.extra_sections[0][1].x = 7_980.0;
+        world.cells.extra_sections[0][1].y = 40.0;
+        let last_before = world.cells.section_center(0, 3);
+
+        world.update_tail_sections(1.0 / 60.0);
+
+        assert_eq!(world.cells.vx[0], 35.0);
+        assert_eq!(world.cells.heading[0], 0.0);
+        assert_ne!(world.cells.section_center(0, 3), last_before);
+        assert!(cell_body_overlaps_circle(
+            &world.cells,
+            0,
+            world.cells.section_center(0, 3),
+            FOOD_RADIUS,
+        ));
+    }
+
+    #[test]
+    fn extra_section_membrane_uses_its_eight_directional_radii() {
+        let mut world = WorldState::new(&SimConfig {
+            cells: 1,
+            food: 0,
+            segmented_cells: false,
+            ..default()
+        });
+        world.cells.section_count[0] = 3;
+        world.cells.section_parents[0] = [0, 1, 0];
+        world.cells.extra_sections[0][0].current_radii =
+            [14.0, 10.0, 5.0, 6.0, 13.0, 9.0, 5.0, 7.0];
+        world.cells.extra_sections[0][0].angle_offsets = [0.0; SOFT_BODY_POINTS];
+        let heading = world.cells.section_heading(0, 2);
+
+        let along = world.cells.section_membrane_radius(0, 2, heading);
+        let across =
+            world
+                .cells
+                .section_membrane_radius(0, 2, heading + std::f32::consts::FRAC_PI_2);
+
+        assert!(along > across * 2.0);
+    }
+
+    #[test]
+    fn collision_follows_curved_connection_instead_of_straight_chord() {
+        let mut world = WorldState::new(&SimConfig {
+            cells: 2,
+            food: 0,
+            segmented_cells: false,
+            ..default()
+        });
+        world.cells.section_count[0] = 2;
+        world.cells.section_parents[0] = [0, 0, 0];
+        world.cells.x[0] = -30.0;
+        world.cells.y[0] = 0.0;
+        world.cells.tail_x[0] = 30.0;
+        world.cells.tail_y[0] = 0.0;
+        world.cells.edge_curve_offsets[0][0] = 20.0;
+        set_test_cell_soft_radius(&mut world, 0, 4.0);
+        world.cells.tail_current_radii[0] = [4.0; SOFT_BODY_POINTS];
+        world.cells.tail_collision_radius[0] = 4.0;
+
+        world.cells.section_count[1] = 1;
+        world.cells.x[1] = 0.0;
+        world.cells.y[1] = 10.0;
+        set_test_cell_soft_radius(&mut world, 1, 3.0);
+
+        let contact = find_compound_contact(&world.cells, 0, 1)
+            .expect("coccus must touch the curved midpoint");
+        assert!((contact.t_a - 0.5).abs() < 0.12);
+    }
+
+    #[test]
+    fn tail_has_no_drive_and_follows_the_head_spring() {
+        let mut world = WorldState::new(&SimConfig {
+            cells: 1,
+            food: 0,
+            segmented_cells: false,
+            ..default()
+        });
+        world.cells.section_count[0] = 2;
+        world.cells.section_spacing[0] = 30.0;
+        world.cells.section_bend[0] = 0.0;
+        world.cells.section_angles[0][0] = std::f32::consts::PI;
+        world.cells.x[0] = 8_020.0;
+        world.cells.y[0] = 0.0;
+        world.cells.heading[0] = 0.0;
+        world.cells.vx[0] = 40.0;
+        world.cells.vy[0] = 0.0;
+        world.cells.tail_x[0] = 7_970.0;
+        world.cells.tail_y[0] = 0.0;
+        world.cells.tail_vx[0] = 0.0;
+        world.cells.tail_vy[0] = 0.0;
+
+        world.update_tail_sections(1.0 / 60.0);
+
+        assert!(world.cells.tail_vx[0] > 0.0);
+        assert_eq!(world.cells.heading[0], 0.0);
+        assert_eq!(world.cells.vx[0], 40.0);
+    }
+
+    #[test]
+    fn tail_lags_behind_lateral_head_motion() {
+        let mut world = WorldState::new(&SimConfig {
+            cells: 1,
+            food: 0,
+            segmented_cells: false,
+            ..default()
+        });
+        world.cells.section_count[0] = 2;
+        world.cells.section_spacing[0] = 30.0;
+        world.cells.section_bend[0] = 0.0;
+        world.cells.section_angles[0][0] = std::f32::consts::PI;
+        world.cells.x[0] = 8_020.0;
+        world.cells.y[0] = 0.0;
+        world.cells.heading[0] = 0.0;
+        world.cells.vx[0] = 0.0;
+        world.cells.vy[0] = 40.0;
+        world.cells.tail_x[0] = 7_990.0;
+        world.cells.tail_y[0] = 0.0;
+        world.cells.tail_vx[0] = 0.0;
+        world.cells.tail_vy[0] = 0.0;
+
+        world.update_tail_sections(1.0 / 60.0);
+
+        assert!(world.cells.tail_vy[0] > 0.0);
+        assert!(world.cells.tail_vy[0] < world.cells.vy[0] * 0.08);
+    }
+
+    #[test]
+    fn tail_to_tail_collision_is_resolved_without_moving_centers() {
+        let mut world = WorldState::new(&SimConfig {
+            cells: 2,
+            food: 0,
+            segmented_cells: false,
+            ..default()
+        });
+        for index in 0..2 {
+            world.cells.section_count[index] = 2;
+            set_test_cell_soft_radius(&mut world, index, 8.0);
+            world.cells.tail_current_radii[index] = [8.0; SOFT_BODY_POINTS];
+            world.cells.tail_base_radii[index] = [8.0; SOFT_BODY_POINTS];
+            world.cells.tail_collision_radius[index] = 8.0;
+            world.cells.tail_vx[index] = 0.0;
+            world.cells.tail_vy[index] = 0.0;
+        }
+        world.cells.x[0] = 0.0;
+        world.cells.x[1] = 80.0;
+        world.cells.tail_x[0] = 40.0;
+        world.cells.tail_y[0] = 0.0;
+        world.cells.tail_x[1] = 44.0;
+        world.cells.tail_y[1] = 0.0;
+
+        world.resolve_cell_pair(0, 1, 1.0 / 60.0);
+
+        assert_eq!(world.cells.x[0], 0.0);
+        assert_eq!(world.cells.x[1], 80.0);
+        assert!(world.cells.tail_vx[0] < 0.0);
+        assert!(world.cells.tail_vx[1] > 0.0);
+    }
+
+    #[test]
+    fn curved_connections_collide_when_all_end_sections_are_separate() {
+        let mut world = WorldState::new(&SimConfig {
+            cells: 2,
+            food: 0,
+            obstacles: 0,
+            food_growers: 0,
+            segmented_cells: false,
+            ..default()
+        });
+        for index in 0..2 {
+            world.cells.section_count[index] = 2;
+            world.cells.section_bend[index] = 0.0;
+            world.cells.vx[index] = 0.0;
+            world.cells.vy[index] = 0.0;
+            world.cells.tail_vx[index] = 0.0;
+            world.cells.tail_vy[index] = 0.0;
+            world.cells.collision_radius[index] = 4.0;
+            world.cells.tail_collision_radius[index] = 4.0;
+            world.cells.core_radius[index] = 1.0;
+            world.cells.tail_core_radius[index] = 1.0;
+            world.cells.current_radii[index] = [4.0; SOFT_BODY_POINTS];
+            world.cells.tail_current_radii[index] = [4.0; SOFT_BODY_POINTS];
+        }
+        world.cells.x[0] = 30.0;
+        world.cells.y[0] = 0.0;
+        world.cells.tail_x[0] = -30.0;
+        world.cells.tail_y[0] = 0.0;
+        world.cells.x[1] = 0.0;
+        world.cells.y[1] = 30.0;
+        world.cells.tail_x[1] = 0.0;
+        world.cells.tail_y[1] = -30.0;
+
+        for section_a in 0..2 {
+            for section_b in 0..2 {
+                assert!(
+                    world
+                        .cells
+                        .section_center(0, section_a)
+                        .distance(world.cells.section_center(1, section_b))
+                        > 8.0
+                );
+            }
+        }
+        let contact = find_compound_contact(&world.cells, 0, 1).expect("curves must intersect");
+        assert!((contact.t_a - 0.5).abs() < 0.1);
+        assert!((contact.t_b - 0.5).abs() < 0.1);
+
+        world.resolve_cell_pair(0, 1, 1.0 / 60.0);
+
+        let first_speed = Vec2::new(world.cells.vx[0], world.cells.vy[0]).length()
+            + Vec2::new(world.cells.tail_vx[0], world.cells.tail_vy[0]).length();
+        let second_speed = Vec2::new(world.cells.vx[1], world.cells.vy[1]).length()
+            + Vec2::new(world.cells.tail_vx[1], world.cells.tail_vy[1]).length();
+        assert!(first_speed > 0.0);
+        assert!(second_speed > 0.0);
+    }
+
+    #[test]
+    fn driven_coccus_cannot_push_through_a_connection_core() {
+        let mut world = WorldState::new(&SimConfig {
+            cells: 2,
+            food: 0,
+            obstacles: 0,
+            food_growers: 0,
+            segmented_cells: false,
+            ..default()
+        });
+        world.cells.section_count[0] = 2;
+        world.cells.section_bend[0] = 0.0;
+        world.cells.x[0] = 30.0;
+        world.cells.y[0] = 0.0;
+        world.cells.tail_x[0] = -30.0;
+        world.cells.tail_y[0] = 0.0;
+        world.cells.vx[0] = 0.0;
+        world.cells.vy[0] = 0.0;
+        world.cells.tail_vx[0] = 0.0;
+        world.cells.tail_vy[0] = 0.0;
+        world.cells.collision_radius[0] = 5.0;
+        world.cells.tail_collision_radius[0] = 5.0;
+        world.cells.core_radius[0] = 2.0;
+        world.cells.tail_core_radius[0] = 2.0;
+
+        world.cells.section_count[1] = 1;
+        world.cells.x[1] = 0.0;
+        world.cells.y[1] = -14.0;
+        world.cells.vx[1] = 0.0;
+        world.cells.vy[1] = 80.0;
+        world.cells.collision_radius[1] = 4.0;
+        world.cells.core_radius[1] = 1.5;
+
+        let dt = 1.0 / 60.0;
+        for _ in 0..30 {
+            world.cells.vy[1] += (80.0 - world.cells.vy[1]) * 0.08;
+            world.cells.x[1] += world.cells.vx[1] * dt;
+            world.cells.y[1] += world.cells.vy[1] * dt;
+            world.resolve_cell_pair(0, 1, dt);
+        }
+
+        assert!(world.cells.y[1] < 0.0);
+    }
+
+    #[test]
+    fn segmented_cell_only_eats_food_touching_its_real_body() {
+        let mut world = WorldState::new(&SimConfig {
+            cells: 1,
+            food: 0,
+            segmented_cells: false,
+            ..default()
+        });
+        world.cells.section_count[0] = 2;
+        world.cells.x[0] = 30.0;
+        world.cells.y[0] = 0.0;
+        world.cells.tail_x[0] = -30.0;
+        world.cells.tail_y[0] = 0.0;
+        world.cells.collision_radius[0] = 5.0;
+        world.cells.tail_collision_radius[0] = 5.0;
+
+        let distant_food = Vec2::new(30.0, 30.0);
+        let old_broad_radius = world.cells.collision_bound_radius(0) + FOOD_RADIUS;
+        assert!(
+            Vec2::new(world.cells.x[0], world.cells.y[0]).distance_squared(distant_food)
+                < old_broad_radius * old_broad_radius
+        );
+        assert!(!cell_body_overlaps_circle(
+            &world.cells,
+            0,
+            distant_food,
+            FOOD_RADIUS
+        ));
+        assert!(cell_body_overlaps_circle(
+            &world.cells,
+            0,
+            Vec2::new(0.0, 4.0),
+            FOOD_RADIUS
+        ));
+    }
+
+    #[test]
+    fn solid_pushes_tail_section_without_moving_the_head() {
+        let mut world = WorldState::new(&SimConfig {
+            cells: 1,
+            food: 0,
+            segmented_cells: false,
+            ..default()
+        });
+        world.cells.section_count[0] = 2;
+        world.cells.x[0] = 80.0;
+        world.cells.y[0] = 0.0;
+        world.cells.tail_x[0] = 10.0;
+        world.cells.tail_y[0] = 0.0;
+        world.cells.tail_vx[0] = -12.0;
+        world.cells.tail_vy[0] = 0.0;
+        world.cells.tail_core_radius[0] = 2.0;
+        world.cells.tail_base_radii[0] = [8.0; SOFT_BODY_POINTS];
+        world.cells.tail_current_radii[0] = [8.0; SOFT_BODY_POINTS];
+        world.cells.tail_collision_radius[0] = 8.0;
+
+        world.push_section_from_solid(0, 1, Vec2::ZERO, 20.0);
+
+        assert_eq!(world.cells.x[0], 80.0);
+        assert!(world.cells.tail_x[0] > 10.0);
+        assert!(world.cells.tail_vx[0] >= 0.0);
+        assert!(world.cells.tail_current_radii[0][4] < 8.0);
+        assert!(world.cells.tail_current_radii[0][4] >= world.cells.tail_core_radius[0]);
+    }
+
+    #[test]
+    fn perception_strictly_limits_food_visibility() {
+        let config = SimConfig {
+            cells: 1,
+            food: 1,
+            obstacles: 0,
+            food_growers: 0,
+            ..default()
+        };
+        let mut world = WorldState::new(&config);
+        for food_index in 0..world.food.len() {
+            world.food.active[food_index] = false;
+        }
+        world.food.active[0] = true;
+        world.food.x[0] = 500.0;
+        world.food.y[0] = 0.0;
+        world.cells.x[0] = 0.0;
+        world.cells.y[0] = 0.0;
+        world.cells.viability[0] = 10.0;
+        world.cells.perception[0] = 499.0;
+        world.grid.rebuild(&world.food);
+
+        assert!(
+            world
+                .grid
+                .nearest_food(0.0, 0.0, &world.food, 499.0)
+                .is_none()
+        );
+        assert!(world.cell_target(0).is_none());
+
+        world.cells.perception[0] = 500.0;
+        let visible = world
+            .grid
+            .nearest_food(0.0, 0.0, &world.food, 500.0)
+            .expect("food on the perception boundary is visible");
+        assert_eq!(visible.0, 0);
+        assert!((visible.3 - 250_000.0).abs() < 0.001);
+        let target = world
+            .cell_target(0)
+            .expect("cell acquires visible food target");
+        assert_eq!(target.kind, CellTargetKind::Food);
+        assert_eq!(target.index, 0);
+        assert_eq!(target.position, Vec2::new(500.0, 0.0));
+    }
+
+    #[test]
+    fn perception_search_returns_nearest_visible_food_across_grid_rings() {
+        let config = SimConfig {
+            cells: 1,
+            food: 2,
+            obstacles: 0,
+            food_growers: 0,
+            ..default()
+        };
+        let mut world = WorldState::new(&config);
+        for food_index in 0..world.food.len() {
+            world.food.active[food_index] = false;
+        }
+        world.food.active[0] = true;
+        world.food.x[0] = 700.0;
+        world.food.y[0] = 0.0;
+        world.food.active[1] = true;
+        world.food.x[1] = 260.0;
+        world.food.y[1] = 0.0;
+        world.grid.rebuild(&world.food);
+
+        let nearest = world
+            .grid
+            .nearest_food(0.0, 0.0, &world.food, 800.0)
+            .expect("visible food exists");
+        assert_eq!(nearest.0, 1);
+    }
+
+    #[test]
+    fn persistence_controls_target_switch_hysteresis() {
+        let mut world = WorldState::new(&SimConfig {
+            cells: 1,
+            food: 8,
+            obstacles: 0,
+            food_growers: 0,
+            ..default()
+        });
+        for active in &mut world.food.active {
+            *active = false;
+        }
+        world.food.active[0] = true;
+        world.food.active[1] = true;
+        world.food.x[0] = 200.0;
+        world.food.y[0] = 0.0;
+        world.food.x[1] = 220.0;
+        world.food.y[1] = 0.0;
+        world.cells.x[0] = 0.0;
+        world.cells.y[0] = 0.0;
+        world.cells.viability[0] = 10.0;
+        world.cells.perception[0] = 500.0;
+        world.cells.persistence[0] = 100.0;
+        world.grid.rebuild(&world.food);
+        assert_eq!(world.update_cell_target(0, 0.01).unwrap().index, 0);
+
+        world.food.x[1] = 150.0;
+        world.cells.target_recheck[0] = 0.0;
+        world.grid.rebuild(&world.food);
+        assert_eq!(world.update_cell_target(0, 0.01).unwrap().index, 0);
+
+        world.cells.persistence[0] = 0.0;
+        world.cells.target_recheck[0] = 0.0;
+        assert_eq!(world.update_cell_target(0, 0.01).unwrap().index, 1);
+    }
+
+    #[test]
+    fn persistent_cell_chases_last_known_position_after_losing_food() {
+        let mut world = WorldState::new(&SimConfig {
+            cells: 1,
+            food: 4,
+            obstacles: 0,
+            food_growers: 0,
+            ..default()
+        });
+        for active in &mut world.food.active {
+            *active = false;
+        }
+        world.food.active[0] = true;
+        world.food.x[0] = 200.0;
+        world.food.y[0] = 30.0;
+        world.cells.x[0] = 0.0;
+        world.cells.y[0] = 0.0;
+        world.cells.viability[0] = 10.0;
+        world.cells.perception[0] = 400.0;
+        world.cells.persistence[0] = 100.0;
+        world.grid.rebuild(&world.food);
+        world.update_cell_target(0, 0.01).unwrap();
+
+        world.food.x[0] = 900.0;
+        world.grid.rebuild(&world.food);
+        let remembered = world.update_cell_target(0, 0.1).unwrap();
+        assert!(remembered.remembered);
+        assert_eq!(remembered.position, Vec2::new(200.0, 30.0));
+
+        for _ in 0..31 {
+            world.update_cell_target(0, 0.1);
+        }
+        assert!(world.update_cell_target(0, 0.1).is_none());
+    }
+
+    #[test]
+    fn replaced_food_is_not_chased_at_its_old_position() {
+        let mut world = WorldState::new(&SimConfig {
+            cells: 1,
+            food: 1,
+            obstacles: 0,
+            food_growers: 0,
+            ..default()
+        });
+        world.food.x[0] = 200.0;
+        world.food.y[0] = 30.0;
+        world.cells.x[0] = 0.0;
+        world.cells.y[0] = 0.0;
+        world.cells.viability[0] = 10.0;
+        world.cells.perception[0] = 400.0;
+        world.cells.persistence[0] = 100.0;
+        world.grid.rebuild(&world.food);
+        world.update_cell_target(0, 0.01).unwrap();
+
+        world.food.deactivate(0);
+        world.food.active[0] = true;
+        world.food.x[0] = 900.0;
+        world.food.y[0] = 0.0;
+        world.grid.rebuild(&world.food);
+
+        assert!(world.update_cell_target(0, 0.1).is_none());
+        assert_eq!(world.cells.target_food[0], -1);
+        assert_eq!(world.cells.target_memory[0], 0.0);
     }
 
     #[test]
@@ -5184,7 +7910,7 @@ mod tests {
         world.cells.division_threshold[0] = 80.0;
         world.cells.mutation_susceptibility[0] = MUTATION_GENE_MAX;
 
-        world.process_cell_lifecycle();
+        complete_test_mitosis(&mut world);
         let child = 1;
 
         for ray_index in 0..SOFT_BODY_POINTS {
@@ -5225,13 +7951,49 @@ mod tests {
         let mut world = WorldState::new(&config);
         world.cells.angle_offsets[0] = [0.0; SOFT_BODY_POINTS];
         world.cells.rebuild_soft_body_cache(0);
-        assert_eq!(world.cells.shape_drag_factor(0), 1.0);
+        let baseline_speed_factor = world.cells.shape_drag_factor(0);
 
         world.cells.angle_offsets[0][2] = SOFT_BODY_MAX_ANGLE_OFFSET;
         world.cells.rebuild_soft_body_cache(0);
-        assert!(world.cells.shape_drag_factor(0) < 1.0);
+        assert!(world.cells.shape_drag_factor(0) < baseline_speed_factor);
         assert!(world.cells.turn_agility_factor(0, 0.5) > 1.0);
         assert_eq!(world.cells.turn_agility_factor(0, -0.5), 1.0);
+    }
+
+    #[test]
+    fn geometry_continuously_controls_morphology_tradeoffs() {
+        let mut world = WorldState::new(&SimConfig {
+            cells: 3,
+            food: 0,
+            obstacles: 0,
+            food_growers: 0,
+            segmented_cells: false,
+            ..default()
+        });
+        for index in 0..3 {
+            world.cells.angle_offsets[index] = [0.0; SOFT_BODY_POINTS];
+            world.cells.section_count[index] = 1;
+        }
+
+        world.cells.base_radii[0] = [6.0; SOFT_BODY_POINTS];
+        world.cells.base_radii[1] = [6.0, 8.485, 6.0, 8.485, 6.0, 8.485, 6.0, 8.485];
+        world.cells.base_radii[2] = [14.0, 6.0, 4.5, 6.0, 14.0, 6.0, 4.5, 6.0];
+        for index in 0..3 {
+            world.cells.rebuild_soft_body_cache(index);
+        }
+
+        assert!(
+            world.cells.morphology_viability_factor(1) > world.cells.morphology_viability_factor(0)
+        );
+        assert!(world.cells.morphology_speed_factor(2) > world.cells.morphology_speed_factor(0));
+        assert!(
+            world.cells.morphology_acceleration_factor(2)
+                > world.cells.morphology_acceleration_factor(0)
+        );
+        assert!(world.cells.morphology_turn_factor(2) < world.cells.morphology_turn_factor(0));
+        assert!(
+            world.cells.morphology_viability_factor(1) > world.cells.morphology_viability_factor(2)
+        );
     }
 
     #[test]
@@ -5286,6 +8048,26 @@ mod tests {
         world.update(1.0 / 60.0);
 
         assert!(world.cells.viability[0] > 10.0);
+        assert_eq!(world.visual_particles.len(), FOOD_PARTICLES_PER_BITE);
+        assert!(world.visual_particles.life.iter().all(|life| *life > 0.0));
+
+        world.update_visual_particles(1.0);
+        assert_eq!(world.visual_particles.len(), 0);
+    }
+
+    #[test]
+    fn food_particle_budget_is_bounded() {
+        let mut world = WorldState::new(&SimConfig {
+            cells: 0,
+            food: 0,
+            obstacles: 0,
+            food_growers: 0,
+            ..default()
+        });
+        for _ in 0..(MAX_VISUAL_PARTICLES / FOOD_PARTICLES_PER_BITE + 20) {
+            world.spawn_food_particles(Vec2::ZERO, FoodKind::Grass, Vec2::ZERO);
+        }
+        assert_eq!(world.visual_particles.len(), MAX_VISUAL_PARTICLES);
     }
 
     #[test]
@@ -5344,6 +8126,107 @@ mod tests {
     }
 
     #[test]
+    fn cell_wake_strength_fades_in_instead_of_appearing_immediately() {
+        let mut world = WorldState::new(&SimConfig {
+            cells: 1,
+            food: 0,
+            obstacles: 0,
+            food_growers: 0,
+            ..default()
+        });
+        assert_eq!(world.cells.wake_strength[0], 0.0);
+
+        world.update(1.0 / 60.0);
+        let first_frame = world.cells.wake_strength[0];
+        assert!(first_frame > 0.0 && first_frame < 0.1);
+
+        for _ in 0..90 {
+            world.update(1.0 / 60.0);
+        }
+        assert!(world.cells.wake_strength[0] > first_frame);
+    }
+
+    #[test]
+    fn rear_target_causes_a_turn_instead_of_immediate_reverse() {
+        let config = SimConfig {
+            cells: 1,
+            food: 0,
+            obstacles: 0,
+            food_growers: 0,
+            ..default()
+        };
+        let mut world = WorldState::new(&config);
+        world.cells.heading[0] = 0.0;
+        world.cells.vx[0] = 0.0;
+        world.cells.vy[0] = 0.0;
+        world.cells.speed[0] = 100.0;
+        world.cells.viability[0] = world.cells.max_viability[0];
+        world.cells.angle_offsets[0] = [0.0; SOFT_BODY_POINTS];
+        world.cells.rebuild_soft_body_cache(0);
+
+        world.drive_cell(0, -Vec2::X * 100.0, Vec2::ZERO, 1.0 / 60.0);
+
+        let front = Vec2::from_angle(world.cells.heading[0]);
+        let velocity = Vec2::new(world.cells.vx[0], world.cells.vy[0]);
+        assert_ne!(world.cells.heading[0], 0.0);
+        assert!(velocity.dot(front) >= 0.0);
+        assert_eq!(world.cells.reverse_time[0], 0.0);
+    }
+
+    #[test]
+    fn emergency_reverse_requires_a_sustained_stall() {
+        let config = SimConfig {
+            cells: 1,
+            food: 0,
+            obstacles: 0,
+            food_growers: 0,
+            ..default()
+        };
+        let mut world = WorldState::new(&config);
+        world.cells.heading[0] = 0.0;
+        world.cells.vx[0] = 0.0;
+        world.cells.vy[0] = 0.0;
+        world.cells.speed[0] = 100.0;
+        world.cells.turn_speed[0] = 0.0;
+        world.cells.viability[0] = world.cells.max_viability[0];
+        world.cells.angle_offsets[0] = [0.0; SOFT_BODY_POINTS];
+        world.cells.rebuild_soft_body_cache(0);
+
+        for _ in 0..44 {
+            world.drive_cell(0, -Vec2::X * 100.0, Vec2::ZERO, 1.0 / 60.0);
+        }
+        assert_eq!(world.cells.reverse_time[0], 0.0);
+
+        for _ in 0..4 {
+            world.drive_cell(0, -Vec2::X * 100.0, Vec2::ZERO, 1.0 / 60.0);
+        }
+        assert!(world.cells.reverse_time[0] > 0.0);
+        assert!(world.cells.reverse_time[0] <= EMERGENCY_REVERSE_DURATION);
+    }
+
+    #[test]
+    fn liquid_current_can_still_push_a_cell_sideways() {
+        let config = SimConfig {
+            cells: 1,
+            food: 0,
+            obstacles: 0,
+            food_growers: 0,
+            ..default()
+        };
+        let mut world = WorldState::new(&config);
+        world.cells.heading[0] = 0.0;
+        world.cells.vx[0] = 0.0;
+        world.cells.vy[0] = 0.0;
+        world.cells.viability[0] = world.cells.max_viability[0];
+
+        for _ in 0..60 {
+            world.drive_cell(0, Vec2::X * 100.0, Vec2::Y * 24.0, 1.0 / 60.0);
+        }
+
+        assert!(world.cells.vy[0] > 5.0);
+    }
+
+    #[test]
     fn velocity_lags_behind_heading_during_turns() {
         let config = SimConfig {
             cells: 1,
@@ -5394,6 +8277,7 @@ mod tests {
         let config = SimConfig {
             cells: 2,
             food: 0,
+            segmented_cells: false,
             ..default()
         };
         let mut world = WorldState::new(&config);

@@ -13,12 +13,15 @@ use bevy::ui::RelativeCursorPosition;
 use bevy::window::{PresentMode, PrimaryWindow, WindowResolution};
 use rand::Rng;
 use rendering::{
-    InstancedDiscPlugin, LiquidMediumMaterial, SimulationRenderEntity, spawn_simulation_layers,
-    sync_instance_data,
+    InstancedDiscPlugin, LiquidMediumMaterial, SimulationRenderEntity, clear_cell_wake_trails,
+    spawn_simulation_layers, sync_instance_data,
 };
 use simulation::{
-    CELL_DIVISION_THRESHOLD_DISPLAY_MAX, CELL_MUTATION_DISPLAY_MAX, CELL_SPEED_DISPLAY_MAX,
-    CELL_TURN_DISPLAY_MAX, CELL_VIABILITY_MAX, FrameStats, SimConfig, WorldState,
+    CELL_DIVISION_THRESHOLD_DISPLAY_MAX, CELL_MUTATION_DISPLAY_MAX, CELL_PERCEPTION_DISPLAY_MAX,
+    CELL_PERSISTENCE_DISPLAY_MAX, CELL_SIZE_GENE_MAX, CELL_SIZE_GENE_MIN, CELL_SPEED_DISPLAY_MAX,
+    CELL_TURN_DISPLAY_MAX, CELL_VIABILITY_MAX, FrameStats, PERCEPTION_GENE_MAX,
+    PERCEPTION_GENE_MIN, SPEED_GENE_MAX, SPEED_GENE_MIN, SimConfig, TURN_GENE_MAX, TURN_GENE_MIN,
+    WorldState,
 };
 use std::time::Instant;
 
@@ -73,6 +76,8 @@ enum GeneStatId {
     Viability,
     Speed,
     Turn,
+    Perception,
+    Persistence,
     Mutation,
     Size,
 }
@@ -112,6 +117,21 @@ struct PassportCellTitle;
 
 #[derive(Component)]
 struct PassportToggleButton;
+
+#[derive(Component, Default)]
+struct PanelReveal {
+    progress: f32,
+    hidden_offset: f32,
+}
+
+impl PanelReveal {
+    fn horizontal(hidden_offset: f32) -> Self {
+        Self {
+            progress: 0.0,
+            hidden_offset,
+        }
+    }
+}
 
 #[derive(Component)]
 struct PauseIndicator;
@@ -234,6 +254,7 @@ fn main() {
             OnEnter(AppState::Running),
             (
                 initialize_world_state,
+                clear_cell_wake_trails,
                 spawn_simulation_layers,
                 setup_game_stats_ui,
                 setup_biolab_ui_v2,
@@ -259,7 +280,9 @@ fn main() {
                 update_stats_overlay,
                 update_selection_ui,
                 update_pause_ui,
-                passport_toggle_button_system,
+                passport_toggle_action_system,
+                passport_toggle_button_style_system,
+                animate_game_buttons,
                 pause_menu_button_system,
                 pause_menu_button_style_system,
                 speed_button_system,
@@ -557,9 +580,11 @@ fn setup_game_stats_ui(mut commands: Commands, asset_server: Res<AssetServer>) {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum GeneCategory {
-    Life,
+    State,
+    Morphology,
     Movement,
-    Reproduction,
+    Behavior,
+    Heredity,
 }
 
 struct GeneStatDescriptor {
@@ -577,7 +602,7 @@ fn gene_stat_descriptors() -> Vec<GeneStatDescriptor> {
             id: GeneStatId::Viability,
             label: "Жизнеспособность",
             icon: "sprites/gene-viability.png",
-            category: GeneCategory::Life,
+            category: GeneCategory::State,
             compact: true,
             color: Color::srgb(0.35, 0.95, 0.46),
         },
@@ -598,10 +623,26 @@ fn gene_stat_descriptors() -> Vec<GeneStatDescriptor> {
             color: Color::srgb(0.95, 0.78, 0.36),
         },
         GeneStatDescriptor {
+            id: GeneStatId::Perception,
+            label: "Восприятие",
+            icon: "sprites/gene-perception.png",
+            category: GeneCategory::Behavior,
+            compact: true,
+            color: Color::srgb(0.38, 0.88, 0.86),
+        },
+        GeneStatDescriptor {
+            id: GeneStatId::Persistence,
+            label: "Настойчивость",
+            icon: "sprites/gene-persistence.png",
+            category: GeneCategory::Behavior,
+            compact: true,
+            color: Color::srgb(0.96, 0.62, 0.42),
+        },
+        GeneStatDescriptor {
             id: GeneStatId::Mutation,
             label: "Мутации",
             icon: "sprites/gene-mutation.png",
-            category: GeneCategory::Reproduction,
+            category: GeneCategory::Heredity,
             compact: true,
             color: Color::srgb(0.77, 0.56, 1.0),
         },
@@ -609,7 +650,7 @@ fn gene_stat_descriptors() -> Vec<GeneStatDescriptor> {
             id: GeneStatId::Size,
             label: "Размер",
             icon: "sprites/gene-size.png",
-            category: GeneCategory::Life,
+            category: GeneCategory::Morphology,
             compact: true,
             color: Color::srgb(0.70, 0.95, 0.86),
         },
@@ -651,6 +692,7 @@ fn spawn_compact_selection_panel(
             BackgroundColor(Color::srgb(0.025, 0.035, 0.043)),
             Visibility::Hidden,
             SelectionPanel,
+            PanelReveal::horizontal(540.0),
             RunningUiEntity,
         ))
         .with_children(|panel| {
@@ -726,19 +768,19 @@ fn spawn_passport_panel(
                 position_type: PositionType::Absolute,
                 top: px(12),
                 right: px(12),
-                width: px(830),
-                height: percent(96),
-                padding: UiRect::all(px(20)),
+                width: percent(92),
+                max_width: px(760),
+                padding: UiRect::all(px(18)),
                 border: UiRect::all(px(2)),
                 flex_direction: FlexDirection::Column,
-                row_gap: px(16),
-                overflow: Overflow::clip_y(),
+                row_gap: px(14),
                 ..default()
             },
             BorderColor::all(Color::srgb(0.44, 0.74, 0.82)),
             BackgroundColor(Color::srgb(0.018, 0.027, 0.034)),
             Visibility::Hidden,
             PassportPanel,
+            PanelReveal::horizontal(860.0),
             RunningUiEntity,
         ))
         .with_children(|passport| {
@@ -755,7 +797,7 @@ fn spawn_passport_panel(
                         Text::new("ПАСПОРТ КЛЕТКИ"),
                         TextFont {
                             font: font.clone(),
-                            font_size: 22.0,
+                            font_size: 20.0,
                             ..default()
                         },
                         TextColor(Color::srgb(0.78, 0.97, 0.94)),
@@ -766,8 +808,8 @@ fn spawn_passport_panel(
                         .spawn((
                             Button,
                             Node {
-                                width: px(92),
-                                height: px(36),
+                                width: px(84),
+                                height: px(34),
                                 border: UiRect::all(px(2)),
                                 justify_content: JustifyContent::Center,
                                 align_items: AlignItems::Center,
@@ -792,7 +834,7 @@ fn spawn_passport_panel(
                 .spawn((Node {
                     width: percent(100),
                     flex_direction: FlexDirection::Row,
-                    column_gap: px(16),
+                    column_gap: px(14),
                     align_items: AlignItems::FlexStart,
                     ..default()
                 },))
@@ -802,21 +844,21 @@ fn spawn_passport_panel(
                         asset_server,
                         font.clone(),
                         stats,
-                        &[(GeneCategory::Life, "Жизнь")],
-                    );
-                    spawn_passport_column(
-                        columns,
-                        asset_server,
-                        font.clone(),
-                        stats,
-                        &[(GeneCategory::Movement, "Движение")],
+                        &[
+                            (GeneCategory::State, "Состояние"),
+                            (GeneCategory::Morphology, "Морфология"),
+                            (GeneCategory::Heredity, "Наследственность"),
+                        ],
                     );
                     spawn_passport_column(
                         columns,
                         asset_server,
                         font,
                         stats,
-                        &[(GeneCategory::Reproduction, "Размножение")],
+                        &[
+                            (GeneCategory::Movement, "Движение"),
+                            (GeneCategory::Behavior, "Поведение"),
+                        ],
                     );
                 });
         });
@@ -831,18 +873,23 @@ fn spawn_passport_column(
 ) {
     parent
         .spawn((Node {
-            width: percent(33),
+            flex_basis: px(0),
+            flex_grow: 1.0,
             flex_direction: FlexDirection::Column,
-            row_gap: px(13),
+            row_gap: px(10),
             ..default()
         },))
         .with_children(|column| {
             for (category, label) in categories {
                 column.spawn((
                     Text::new(*label),
+                    Node {
+                        margin: UiRect::top(px(2)),
+                        ..default()
+                    },
                     TextFont {
                         font: font.clone(),
-                        font_size: 15.0,
+                        font_size: 14.0,
                         ..default()
                     },
                     TextColor(Color::srgb(0.64, 0.93, 0.88)),
@@ -879,7 +926,8 @@ fn spawn_biolab_stat_row(
                 align_items: AlignItems::Center,
                 column_gap: px(11),
                 width: percent(100),
-                padding: UiRect::axes(px(10), px(8)),
+                min_height: px(68),
+                padding: UiRect::axes(px(9), px(7)),
                 border: UiRect::left(px(4)),
                 ..default()
             },
@@ -890,15 +938,15 @@ fn spawn_biolab_stat_row(
             row.spawn((
                 ImageNode::new(icon),
                 Node {
-                    width: px(34),
-                    height: px(34),
+                    width: px(32),
+                    height: px(32),
                     ..default()
                 },
             ));
 
             row.spawn((Node {
                 flex_direction: FlexDirection::Column,
-                row_gap: px(6),
+                row_gap: px(5),
                 flex_grow: 1.0,
                 ..default()
             },))
@@ -916,7 +964,7 @@ fn spawn_biolab_stat_row(
                                 Text::new(label),
                                 TextFont {
                                     font: font.clone(),
-                                    font_size: 14.0,
+                                    font_size: 13.0,
                                     ..default()
                                 },
                                 TextColor(Color::srgb(0.70, 0.76, 0.80)),
@@ -926,7 +974,7 @@ fn spawn_biolab_stat_row(
                                 Text::new("0"),
                                 TextFont {
                                     font: font.clone(),
-                                    font_size: 14.0,
+                                    font_size: 13.0,
                                     ..default()
                                 },
                                 TextColor(Color::srgb(0.91, 0.96, 0.97)),
@@ -938,7 +986,7 @@ fn spawn_biolab_stat_row(
                         .spawn((
                             Node {
                                 width: percent(100),
-                                height: px(13),
+                                height: px(11),
                                 border: UiRect::all(px(2)),
                                 ..default()
                             },
@@ -990,7 +1038,7 @@ fn spawn_biolab_stat_row(
                             Text::new("0-100"),
                             TextFont {
                                 font,
-                                font_size: 12.0,
+                                font_size: 11.0,
                                 ..default()
                             },
                             TextColor(Color::srgb(0.43, 0.56, 0.60)),
@@ -1123,6 +1171,7 @@ fn spawn_pause_menu(commands: &mut Commands, font: Handle<Font>) {
             GlobalZIndex(120),
             Visibility::Hidden,
             PauseMenu,
+            PanelReveal::default(),
             RunningUiEntity,
         ))
         .with_children(|menu| {
@@ -1256,15 +1305,19 @@ fn pause_audio_slider_system(
 }
 
 fn sync_pause_audio_sliders(
+    time: Res<Time>,
     config: Res<SimConfig>,
     mut fills: Query<(&PauseAudioFill, &mut Node)>,
     mut values: Query<(&PauseAudioValue, &mut Text)>,
 ) {
-    if !config.is_changed() {
-        return;
-    }
+    let follow = 1.0 - (-12.0 * time.delta_secs()).exp();
     for (fill, mut node) in &mut fills {
-        node.width = percent(audio_volume(&config, fill.0) * 100.0);
+        let target = audio_volume(&config, fill.0) * 100.0;
+        let current = match node.width {
+            Val::Percent(value) => value,
+            _ => target,
+        };
+        node.width = percent(current + (target - current) * follow);
     }
     for (value, mut text) in &mut values {
         **text = format!("{:.0}%", audio_volume(&config, value.0) * 100.0);
@@ -1424,6 +1477,7 @@ fn speed_button_system(
 }
 
 fn update_speed_button_styles(
+    time: Res<Time>,
     ui_state: Res<GameUiState>,
     mut buttons: Query<(
         &SpeedButton,
@@ -1432,6 +1486,7 @@ fn update_speed_button_styles(
         &mut BorderColor,
     )>,
 ) {
+    let follow = 1.0 - (-14.0 * time.delta_secs()).exp();
     for (speed_btn, interaction, mut bg, mut border) in &mut buttons {
         let is_active = if speed_btn.multiplier == 0.0 {
             ui_state.paused
@@ -1445,7 +1500,7 @@ fn update_speed_button_styles(
             Color::srgb(0.06, 0.10, 0.12)
         };
 
-        bg.0 = match *interaction {
+        let target_bg = match *interaction {
             Interaction::Pressed => Color::srgb(0.18, 0.38, 0.42),
             Interaction::Hovered => {
                 if is_active {
@@ -1456,6 +1511,7 @@ fn update_speed_button_styles(
             }
             Interaction::None => base_bg,
         };
+        bg.0 = bg.0.mix(&target_bg, follow);
 
         *border = if is_active {
             BorderColor::all(Color::srgb(0.50, 0.88, 0.92))
@@ -1843,12 +1899,12 @@ fn select_cell_system(
     }
 
     if selected.cell_id.is_some() {
-        let panel_width = if ui_state.passport_open { 870.0 } else { 510.0 };
-        let panel_height = if ui_state.passport_open {
-            window.height()
+        let panel_width = if ui_state.passport_open {
+            (window.width() * 0.92).min(780.0)
         } else {
-            650.0
+            510.0
         };
+        let panel_height = if ui_state.passport_open { 520.0 } else { 650.0 };
         if cursor.x > window.width() - panel_width && cursor.y < panel_height {
             return;
         }
@@ -2132,13 +2188,51 @@ fn update_stats_overlay(
     );
 }
 
+fn animate_panel_reveal(
+    visibility: &mut Visibility,
+    node: &mut Node,
+    reveal: &mut PanelReveal,
+    show: bool,
+    dt: f32,
+) {
+    if show {
+        *visibility = Visibility::Visible;
+    }
+    let target = if show { 1.0 } else { 0.0 };
+    let follow = 1.0 - (-13.0 * dt).exp();
+    reveal.progress += (target - reveal.progress) * follow;
+    node.right = px(12.0 - reveal.hidden_offset * (1.0 - reveal.progress));
+    if !show && reveal.progress < 0.002 {
+        *visibility = Visibility::Hidden;
+    }
+}
+
 fn update_selection_ui(
+    time: Res<Time>,
     world: Res<WorldState>,
     mut selected: ResMut<SelectedCell>,
     ui_state: Res<GameUiState>,
     windows: Query<&Window, With<PrimaryWindow>>,
-    mut compact_panel: Query<&mut Visibility, (With<SelectionPanel>, Without<PassportPanel>)>,
-    mut passport_panel: Query<&mut Visibility, (With<PassportPanel>, Without<SelectionPanel>)>,
+    mut compact_panel: Query<
+        (&mut Visibility, &mut Node, &mut PanelReveal),
+        (
+            With<SelectionPanel>,
+            Without<PassportPanel>,
+            Without<GeneBarFill>,
+            Without<DivisionThresholdMarker>,
+            Without<DivisionTooltip>,
+        ),
+    >,
+    mut passport_panel: Query<
+        (&mut Visibility, &mut Node, &mut PanelReveal),
+        (
+            With<PassportPanel>,
+            Without<SelectionPanel>,
+            Without<GeneBarFill>,
+            Without<DivisionThresholdMarker>,
+            Without<DivisionTooltip>,
+        ),
+    >,
     mut compact_title: Query<
         &mut Text,
         (
@@ -2161,8 +2255,25 @@ fn update_selection_ui(
             Without<DivisionTooltipValueText>,
         ),
     >,
-    mut bar_fills: Query<(&GeneBarFill, &mut Node), Without<DivisionThresholdMarker>>,
-    mut division_markers: Query<&mut Node, (With<DivisionThresholdMarker>, Without<GeneBarFill>)>,
+    mut bar_fills: Query<
+        (&GeneBarFill, &mut Node),
+        (
+            Without<DivisionThresholdMarker>,
+            Without<SelectionPanel>,
+            Without<PassportPanel>,
+            Without<DivisionTooltip>,
+        ),
+    >,
+    mut division_markers: Query<
+        &mut Node,
+        (
+            With<DivisionThresholdMarker>,
+            Without<GeneBarFill>,
+            Without<SelectionPanel>,
+            Without<PassportPanel>,
+            Without<DivisionTooltip>,
+        ),
+    >,
     marker_interactions: Query<&Interaction, With<DivisionThresholdMarker>>,
     mut tooltip: Query<
         (&mut Visibility, &mut Node),
@@ -2221,19 +2332,23 @@ fn update_selection_ui(
     }
 
     let has_selection = selected_index.is_some();
-    if let Ok(mut visibility) = compact_panel.single_mut() {
-        *visibility = if has_selection && !ui_state.passport_open {
-            Visibility::Visible
-        } else {
-            Visibility::Hidden
-        };
+    if let Ok((mut visibility, mut node, mut reveal)) = compact_panel.single_mut() {
+        animate_panel_reveal(
+            &mut visibility,
+            &mut node,
+            &mut reveal,
+            has_selection && !ui_state.passport_open,
+            time.delta_secs(),
+        );
     }
-    if let Ok(mut visibility) = passport_panel.single_mut() {
-        *visibility = if has_selection && ui_state.passport_open {
-            Visibility::Visible
-        } else {
-            Visibility::Hidden
-        };
+    if let Ok((mut visibility, mut node, mut reveal)) = passport_panel.single_mut() {
+        animate_panel_reveal(
+            &mut visibility,
+            &mut node,
+            &mut reveal,
+            has_selection && ui_state.passport_open,
+            time.delta_secs(),
+        );
     }
 
     let Some(cell_index) = selected_index else {
@@ -2255,13 +2370,24 @@ fn update_selection_ui(
     let division_threshold = world.cells.division_threshold[cell_index];
     for (bar, mut node) in &mut bar_fills {
         let value = stat_ui_value(&world, cell_index, bar.kind);
-        node.width = Val::Percent(value.normalized.clamp(0.0, 1.0) * 100.0);
+        let target = value.normalized.clamp(0.0, 1.0) * 100.0;
+        let current = match node.width {
+            Val::Percent(value) => value,
+            _ => 0.0,
+        };
+        let follow = 1.0 - (-10.0 * time.delta_secs()).exp();
+        node.width = percent(current + (target - current) * follow);
     }
 
     for mut marker in &mut division_markers {
-        marker.left = Val::Percent(
-            (division_threshold / CELL_DIVISION_THRESHOLD_DISPLAY_MAX).clamp(0.0, 1.0) * 100.0,
-        );
+        let target =
+            (division_threshold / CELL_DIVISION_THRESHOLD_DISPLAY_MAX).clamp(0.0, 1.0) * 100.0;
+        let current = match marker.left {
+            Val::Percent(value) => value,
+            _ => target,
+        };
+        let follow = 1.0 - (-12.0 * time.delta_secs()).exp();
+        marker.left = percent(current + (target - current) * follow);
     }
 
     let marker_hovered = marker_interactions.iter().any(|interaction| {
@@ -2317,27 +2443,63 @@ fn stat_ui_value(world: &WorldState, cell_index: usize, id: GeneStatId) -> StatU
     let viability_ratio = (viability / max_viability).clamp(0.0, 1.0);
     let radius = cells.radius[cell_index].max(0.1);
     let membrane_size = cells.max_base_radius(cell_index).max(0.1);
+    let speed_factor = cells.morphology_speed_factor(cell_index);
+    let acceleration_factor = cells.morphology_acceleration_factor(cell_index);
+    let turn_factor = cells.morphology_turn_factor(cell_index);
+    let viability_factor = cells.morphology_viability_factor(cell_index);
+    let metabolism_factor = cells.morphology_metabolism_factor(cell_index);
+    let modifier = |factor: f32| format!("{:+.0}%", (factor - 1.0) * 100.0);
 
     match id {
         GeneStatId::Viability => StatUiValue {
             normalized: viability_ratio,
-            display: format!("{viability:.0}/{max_viability:.0}"),
-            range: format!("0-{:.0}", CELL_VIABILITY_MAX),
+            display: format!(
+                "{viability:.0} / {:.0}→{max_viability:.0}",
+                CELL_VIABILITY_MAX
+            ),
+            range: format!(
+                "запас {} · расход {}",
+                modifier(viability_factor),
+                modifier(metabolism_factor)
+            ),
         },
         GeneStatId::Speed => {
             let speed = cells.speed[cell_index];
             StatUiValue {
                 normalized: speed / CELL_SPEED_DISPLAY_MAX,
-                display: format!("{speed:.0}"),
-                range: "30-130".to_string(),
+                display: format!("{speed:.0}→{:.0}", speed * speed_factor),
+                range: format!(
+                    "ген {SPEED_GENE_MIN:.0}-{SPEED_GENE_MAX:.0} · форма {} · разгон {}",
+                    modifier(speed_factor),
+                    modifier(acceleration_factor)
+                ),
             }
         }
         GeneStatId::Turn => {
             let turn = cells.turn_speed[cell_index];
             StatUiValue {
                 normalized: turn / CELL_TURN_DISPLAY_MAX,
-                display: format!("{turn:.1}"),
-                range: "0.8-6.0".to_string(),
+                display: format!("{turn:.1}→{:.1}", turn * turn_factor),
+                range: format!(
+                    "ген {TURN_GENE_MIN:.2}-{TURN_GENE_MAX:.1} · форма {}",
+                    modifier(turn_factor)
+                ),
+            }
+        }
+        GeneStatId::Perception => {
+            let perception = cells.perception[cell_index];
+            StatUiValue {
+                normalized: perception / CELL_PERCEPTION_DISPLAY_MAX,
+                display: format!("{perception:.0}"),
+                range: format!("{PERCEPTION_GENE_MIN:.0}-{PERCEPTION_GENE_MAX:.0}"),
+            }
+        }
+        GeneStatId::Persistence => {
+            let persistence = cells.persistence[cell_index];
+            StatUiValue {
+                normalized: persistence / CELL_PERSISTENCE_DISPLAY_MAX,
+                display: format!("{persistence:.0}%"),
+                range: "0-100%".to_string(),
             }
         }
         GeneStatId::Mutation => {
@@ -2349,17 +2511,23 @@ fn stat_ui_value(world: &WorldState, cell_index: usize, id: GeneStatId) -> StatU
             }
         }
         GeneStatId::Size => StatUiValue {
-            normalized: (membrane_size / 10.0).clamp(0.0, 1.0),
+            normalized: ((membrane_size - CELL_SIZE_GENE_MIN)
+                / (CELL_SIZE_GENE_MAX - CELL_SIZE_GENE_MIN))
+                .clamp(0.0, 1.0),
             display: format!("{membrane_size:.1}/{radius:.1}"),
-            range: "4-9".to_string(),
+            range: format!("{CELL_SIZE_GENE_MIN:.1}-{CELL_SIZE_GENE_MAX:.1}"),
         },
     }
 }
 
 fn update_pause_ui(
+    time: Res<Time>,
     ui_state: Res<GameUiState>,
     mut indicator: Query<&mut Visibility, (With<PauseIndicator>, Without<PauseMenu>)>,
-    mut menu: Query<&mut Visibility, (With<PauseMenu>, Without<PauseIndicator>)>,
+    mut menu: Query<
+        (&mut Visibility, &mut Node, &mut PanelReveal),
+        (With<PauseMenu>, Without<PauseIndicator>),
+    >,
 ) {
     if let Ok(mut visibility) = indicator.single_mut() {
         *visibility = if ui_state.paused {
@@ -2369,38 +2537,64 @@ fn update_pause_ui(
         };
     }
 
-    if let Ok(mut visibility) = menu.single_mut() {
-        *visibility = if ui_state.pause_menu_open {
-            Visibility::Visible
-        } else {
-            Visibility::Hidden
-        };
+    if let Ok((mut visibility, mut node, mut reveal)) = menu.single_mut() {
+        if ui_state.pause_menu_open {
+            *visibility = Visibility::Visible;
+        }
+        let target = if ui_state.pause_menu_open { 1.0 } else { 0.0 };
+        let follow = 1.0 - (-13.0 * time.delta_secs()).exp();
+        reveal.progress += (target - reveal.progress) * follow;
+        node.margin.top = px(-160.0 - reveal.progress * 30.0);
+        if !ui_state.pause_menu_open && reveal.progress < 0.01 {
+            *visibility = Visibility::Hidden;
+        }
     }
 }
 
-fn passport_toggle_button_system(
-    mut interactions: Query<
-        (&Interaction, &mut BackgroundColor),
-        (Changed<Interaction>, With<PassportToggleButton>),
-    >,
+fn passport_toggle_action_system(
+    interactions: Query<&Interaction, (Changed<Interaction>, With<PassportToggleButton>)>,
     selected: Res<SelectedCell>,
     mut ui_state: ResMut<GameUiState>,
 ) {
-    for (interaction, mut background) in &mut interactions {
-        match *interaction {
-            Interaction::Pressed => {
-                if selected.cell_id.is_some() {
-                    ui_state.passport_open = !ui_state.passport_open;
-                }
-                background.0 = Color::srgb(0.10, 0.20, 0.22);
-            }
-            Interaction::Hovered => {
-                background.0 = Color::srgb(0.10, 0.18, 0.20);
-            }
-            Interaction::None => {
-                background.0 = Color::srgb(0.07, 0.12, 0.14);
-            }
+    for interaction in &interactions {
+        if *interaction == Interaction::Pressed && selected.cell_id.is_some() {
+            ui_state.passport_open = !ui_state.passport_open;
         }
+    }
+}
+
+fn passport_toggle_button_style_system(
+    time: Res<Time>,
+    mut interactions: Query<(&Interaction, &mut BackgroundColor), With<PassportToggleButton>>,
+) {
+    let follow = 1.0 - (-14.0 * time.delta_secs()).exp();
+    for (interaction, mut background) in &mut interactions {
+        let target = match *interaction {
+            Interaction::Pressed => Color::srgb(0.10, 0.20, 0.22),
+            Interaction::Hovered => Color::srgb(0.10, 0.18, 0.20),
+            Interaction::None => Color::srgb(0.07, 0.12, 0.14),
+        };
+        background.0 = background.0.mix(&target, follow);
+    }
+}
+
+fn animate_game_buttons(
+    time: Res<Time>,
+    mut buttons: Query<(&Interaction, &mut UiTransform), With<Button>>,
+) {
+    let follow = 1.0 - (-18.0 * time.delta_secs()).exp();
+    for (interaction, mut transform) in &mut buttons {
+        let (target_scale, target_y) = match *interaction {
+            Interaction::Pressed => (0.965, 1.0),
+            Interaction::Hovered => (1.025, -1.0),
+            Interaction::None => (1.0, 0.0),
+        };
+        transform.scale = transform.scale.lerp(Vec2::splat(target_scale), follow);
+        let current_y = match transform.translation.y {
+            Val::Px(value) => value,
+            _ => 0.0,
+        };
+        transform.translation = Val2::px(0.0, current_y + (target_y - current_y) * follow);
     }
 }
 
@@ -2434,17 +2628,17 @@ fn pause_menu_button_system(
 }
 
 fn pause_menu_button_style_system(
-    mut interactions: Query<
-        (&Interaction, &mut BackgroundColor),
-        (Changed<Interaction>, With<PauseMenuAction>),
-    >,
+    time: Res<Time>,
+    mut interactions: Query<(&Interaction, &mut BackgroundColor), With<PauseMenuAction>>,
 ) {
+    let follow = 1.0 - (-14.0 * time.delta_secs()).exp();
     for (interaction, mut background) in &mut interactions {
-        background.0 = match *interaction {
+        let target = match *interaction {
             Interaction::Pressed => Color::srgb(0.12, 0.23, 0.25),
             Interaction::Hovered => Color::srgb(0.09, 0.17, 0.19),
             Interaction::None => Color::srgb(0.06, 0.10, 0.12),
         };
+        background.0 = background.0.mix(&target, follow);
     }
 }
 

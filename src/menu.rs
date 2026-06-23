@@ -22,6 +22,7 @@ impl Plugin for MenuPlugin {
                     sync_menu_values_system,
                     menu_section_visibility_system,
                     menu_button_style_system,
+                    animate_menu_buttons,
                     shape_weight_slider_system,
                     sync_shape_weight_sliders,
                     menu_audio_slider_system,
@@ -57,6 +58,7 @@ struct PresetButton(MenuPreset);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum MenuPreset {
+    Simulator,
     Balanced,
     Performance,
     Stress,
@@ -85,6 +87,7 @@ enum MenuTextValue {
     FoodGrowers,
     Seed,
     Vsync,
+    SegmentedCells,
     Arena,
     ArenaShape,
     RandomGeometry,
@@ -108,6 +111,9 @@ struct MenuSectionBody {
 
 #[derive(Component)]
 struct VsyncToggle;
+
+#[derive(Component)]
+struct SegmentedCellsToggle;
 
 #[derive(Component)]
 struct ArenaShapeToggle;
@@ -370,6 +376,7 @@ fn spawn_settings_column(
                         MenuAudioKind::Ambient,
                         config.ambient_volume,
                     );
+                    spawn_segmented_cells_row(advanced, font.clone(), config.segmented_cells);
                     spawn_vsync_row(advanced, font, config.vsync);
                 });
         });
@@ -602,9 +609,16 @@ fn spawn_launch_column(parent: &mut ChildSpawnerCommands, font: Handle<Font>, co
             spawn_preset_button(
                 column,
                 font.clone(),
+                MenuPreset::Simulator,
+                "Симулятор · 10K",
+                "Основной сценарий, полный баланс",
+            );
+            spawn_preset_button(
+                column,
+                font.clone(),
                 MenuPreset::Balanced,
                 "Баланс",
-                "10 000 клеток, 2 000 еды",
+                "8 000 клеток, просторная среда",
             );
             spawn_preset_button(
                 column,
@@ -866,6 +880,59 @@ fn spawn_vsync_row(parent: &mut ChildSpawnerCommands, font: Handle<Font>, enable
         });
 }
 
+fn spawn_segmented_cells_row(parent: &mut ChildSpawnerCommands, font: Handle<Font>, enabled: bool) {
+    parent
+        .spawn((Node {
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::SpaceBetween,
+            width: percent(100),
+            column_gap: px(14),
+            ..default()
+        },))
+        .with_children(|row| {
+            row.spawn((
+                Text::new("Сегментированные клетки"),
+                TextFont {
+                    font: font.clone(),
+                    font_size: 16.0,
+                    ..default()
+                },
+                TextColor(Color::srgb(0.70, 0.75, 0.80)),
+                Node {
+                    width: px(250),
+                    ..default()
+                },
+            ));
+            row.spawn((
+                Button,
+                Node {
+                    width: px(220),
+                    height: px(38),
+                    justify_content: JustifyContent::Center,
+                    align_items: AlignItems::Center,
+                    border: UiRect::all(px(1)),
+                    ..default()
+                },
+                BorderColor::all(NORMAL_BORDER),
+                BackgroundColor(NORMAL_BG),
+                SegmentedCellsToggle,
+            ))
+            .with_child((
+                Text::new(binary_label(enabled)),
+                TextFont {
+                    font,
+                    font_size: 17.0,
+                    ..default()
+                },
+                TextColor(Color::srgb(0.90, 0.95, 0.96)),
+                MenuValueLabel {
+                    value_type: MenuTextValue::SegmentedCells,
+                },
+            ));
+        });
+}
+
 fn spawn_arena_shape_row(parent: &mut ChildSpawnerCommands, font: Handle<Font>, shape: ArenaShape) {
     parent
         .spawn((Node {
@@ -1013,6 +1080,7 @@ fn menu_interaction_system(
             Option<&PresetButton>,
             Option<&MenuSectionToggle>,
             Option<&VsyncToggle>,
+            Option<&SegmentedCellsToggle>,
             Option<&ArenaShapeToggle>,
             Option<&RandomizeSeedButton>,
             Option<&RandomGeometryToggle>,
@@ -1032,6 +1100,7 @@ fn menu_interaction_system(
         preset,
         section_toggle,
         vsync_toggle,
+        segmented_cells_toggle,
         arena_shape_toggle,
         randomize_seed,
         random_geometry,
@@ -1063,6 +1132,8 @@ fn menu_interaction_system(
             }
         } else if vsync_toggle.is_some() {
             config.vsync = !config.vsync;
+        } else if segmented_cells_toggle.is_some() {
+            config.segmented_cells = !config.segmented_cells;
         } else if arena_shape_toggle.is_some() {
             config.arena_shape = config.arena_shape.next();
         } else if randomize_seed.is_some() {
@@ -1082,6 +1153,7 @@ fn menu_interaction_system(
 }
 
 fn menu_button_style_system(
+    time: Res<Time>,
     focused_query: Query<Entity, With<FocusedInput>>,
     mut buttons: Query<
         (
@@ -1095,6 +1167,7 @@ fn menu_button_style_system(
         With<Button>,
     >,
 ) {
+    let follow = 1.0 - (-14.0 * time.delta_secs()).exp();
     for (entity, interaction, input_field, start_button, mut border, mut background) in &mut buttons
     {
         let focused = focused_query.get(entity).is_ok();
@@ -1108,7 +1181,7 @@ fn menu_button_style_system(
             BorderColor::all(Color::srgb(0.28, 0.50, 0.56))
         };
 
-        background.0 = if focused {
+        let target_background = if focused {
             Color::srgb(0.075, 0.135, 0.150)
         } else if start_button.is_some() {
             match *interaction {
@@ -1123,6 +1196,27 @@ fn menu_button_style_system(
                 Interaction::None => NORMAL_BG,
             }
         };
+        background.0 = background.0.mix(&target_background, follow);
+    }
+}
+
+fn animate_menu_buttons(
+    time: Res<Time>,
+    mut buttons: Query<(&Interaction, &mut UiTransform), With<Button>>,
+) {
+    let follow = 1.0 - (-18.0 * time.delta_secs()).exp();
+    for (interaction, mut transform) in &mut buttons {
+        let (target_scale, target_y) = match *interaction {
+            Interaction::Pressed => (0.965, 1.0),
+            Interaction::Hovered => (1.018, -1.0),
+            Interaction::None => (1.0, 0.0),
+        };
+        transform.scale = transform.scale.lerp(Vec2::splat(target_scale), follow);
+        let current_y = match transform.translation.y {
+            Val::Px(value) => value,
+            _ => 0.0,
+        };
+        transform.translation = Val2::px(0.0, current_y + (target_y - current_y) * follow);
     }
 }
 
@@ -1196,7 +1290,8 @@ fn keyboard_input_system(
         MenuTextValue::Vsync
         | MenuTextValue::Arena
         | MenuTextValue::ArenaShape
-        | MenuTextValue::RandomGeometry => {}
+        | MenuTextValue::RandomGeometry
+        | MenuTextValue::SegmentedCells => {}
     }
 }
 
@@ -1221,6 +1316,7 @@ fn sync_menu_values_system(
             MenuTextValue::FoodGrowers => config.food_growers.to_string(),
             MenuTextValue::Seed => config.seed.to_string(),
             MenuTextValue::Vsync => vsync_label(config.vsync),
+            MenuTextValue::SegmentedCells => binary_label(config.segmented_cells),
             MenuTextValue::Arena => format!("{:.0} x {:.0}", config.width, config.height),
             MenuTextValue::ArenaShape => arena_shape_label(config.arena_shape),
             MenuTextValue::RandomGeometry => {
@@ -1266,15 +1362,19 @@ fn shape_weight_slider_system(
 }
 
 fn sync_shape_weight_sliders(
+    time: Res<Time>,
     config: Res<SimConfig>,
     mut fills: Query<(&ShapeWeightFill, &mut Node, &mut BackgroundColor)>,
     mut values: Query<(&ShapeWeightValue, &mut Text, &mut TextColor)>,
 ) {
-    if !config.is_changed() {
-        return;
-    }
+    let follow = 1.0 - (-12.0 * time.delta_secs()).exp();
     for (fill, mut node, mut color) in &mut fills {
-        node.width = percent(config.cell_shape_weights[fill.0]);
+        let target = config.cell_shape_weights[fill.0];
+        let current = match node.width {
+            Val::Percent(value) => value,
+            _ => target,
+        };
+        node.width = percent(current + (target - current) * follow);
         color.0 = if config.random_cell_geometry {
             Color::srgb(0.18, 0.25, 0.25)
         } else {
@@ -1354,15 +1454,19 @@ fn menu_audio_slider_system(
 }
 
 fn sync_menu_audio_sliders(
+    time: Res<Time>,
     config: Res<SimConfig>,
     mut fills: Query<(&MenuAudioFill, &mut Node)>,
     mut values: Query<(&MenuAudioValue, &mut Text)>,
 ) {
-    if !config.is_changed() {
-        return;
-    }
+    let follow = 1.0 - (-12.0 * time.delta_secs()).exp();
     for (fill, mut node) in &mut fills {
-        node.width = percent(menu_audio_volume(&config, fill.0) * 100.0);
+        let target = menu_audio_volume(&config, fill.0) * 100.0;
+        let current = match node.width {
+            Val::Percent(value) => value,
+            _ => target,
+        };
+        node.width = percent(current + (target - current) * follow);
     }
     for (value, mut text) in &mut values {
         **text = format!("{:.0}%", menu_audio_volume(&config, value.0) * 100.0);
@@ -1371,13 +1475,26 @@ fn sync_menu_audio_sliders(
 
 fn apply_preset(preset: MenuPreset, config: &mut SimConfig) {
     match preset {
-        MenuPreset::Balanced => {
+        MenuPreset::Simulator => {
             config.cells = 10_000;
-            config.food = 2_000;
-            config.width = 24_000.0;
-            config.height = 13_500.0;
-            config.obstacles = 26;
-            config.food_growers = 4;
+            config.food = 3_000;
+            config.width = 18_000.0;
+            config.height = 10_000.0;
+            config.arena_shape = ArenaShape::Rectangle;
+            config.obstacles = 30;
+            config.food_growers = 6;
+            config.collision_stiffness = 500.0;
+            config.collision_damping = 15.0;
+            config.random_cell_geometry = false;
+            config.segmented_cells = true;
+        }
+        MenuPreset::Balanced => {
+            config.cells = 8_000;
+            config.food = 2_400;
+            config.width = 20_000.0;
+            config.height = 11_250.0;
+            config.obstacles = 24;
+            config.food_growers = 5;
         }
         MenuPreset::Performance => {
             config.cells = 5_000;
@@ -1408,6 +1525,14 @@ fn clamp_launch_config(config: &mut SimConfig) {
 }
 
 fn vsync_label(enabled: bool) -> String {
+    if enabled {
+        "Вкл".to_string()
+    } else {
+        "Выкл".to_string()
+    }
+}
+
+fn binary_label(enabled: bool) -> String {
     if enabled {
         "Вкл".to_string()
     } else {
