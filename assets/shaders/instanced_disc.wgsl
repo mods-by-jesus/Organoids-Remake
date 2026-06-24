@@ -382,16 +382,19 @@ fn food_particle_fragment(
     shape: vec4<f32>
 ) -> vec4<f32> {
     let life = clamp(motion.z, 0.0, 1.0);
-    let mitosis_style = step(0.5, shape.y);
+    let mitosis_style = step(0.5, shape.y) * (1.0 - step(1.5, shape.y));
+    let lysis_style = step(1.5, shape.y);
     let velocity_angle = atan2(motion.y, motion.x);
     let p = rotate2d(local, -velocity_angle);
     let speed = clamp(length(motion.xy) / 110.0, 0.0, 1.0);
     let stretched = length(vec2<f32>(
-        p.x * mix(mix(0.72, 0.48, speed), 0.72, mitosis_style),
-        p.y * mix(1.18, 1.02, mitosis_style)
+        p.x * mix(mix(mix(0.72, 0.48, speed), 0.72, mitosis_style), 0.38, lysis_style),
+        p.y * mix(mix(1.18, 1.02, mitosis_style), 1.34, lysis_style)
     ));
-    let wobble = 1.0 + mix(0.08, 0.14, mitosis_style)
-        * sin(atan2(p.y, p.x) * mix(5.0, 7.0, mitosis_style) + motion.w + globals.time * 8.0);
+    let wobble_strength = mix(mix(0.08, 0.14, mitosis_style), 0.20, lysis_style);
+    let wobble_frequency = mix(mix(5.0, 7.0, mitosis_style), 4.0, lysis_style);
+    let wobble = 1.0 + wobble_strength
+        * sin(atan2(p.y, p.x) * wobble_frequency + motion.w + globals.time * 8.0);
     let body = 1.0 - smoothstep(0.48, 1.0, stretched * wobble);
     let hot_core = 1.0 - smoothstep(0.0, 0.38, length(local));
     let sparkle = pow(max(hot_core, 0.0), 1.8) * (0.72 + 0.28 * sin(globals.time * 13.0 + motion.w));
@@ -400,7 +403,8 @@ fn food_particle_fragment(
     if (alpha < 0.01) {
         discard;
     }
-    let rgb = mix(color.rgb * 0.78, vec3<f32>(1.0), sparkle * 0.72 + halo * 0.24);
+    let hot_color = mix(vec3<f32>(1.0), vec3<f32>(1.0, 0.72, 0.82), lysis_style);
+    let rgb = mix(color.rgb * mix(0.78, 0.62, lysis_style), hot_color, sparkle * 0.72 + halo * 0.24);
     return vec4<f32>(rgb, alpha * color.a);
 }
 

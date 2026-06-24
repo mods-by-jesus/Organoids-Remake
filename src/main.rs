@@ -17,11 +17,12 @@ use rendering::{
     spawn_simulation_layers, sync_instance_data,
 };
 use simulation::{
-    CELL_DIVISION_THRESHOLD_DISPLAY_MAX, CELL_MUTATION_DISPLAY_MAX, CELL_PERCEPTION_DISPLAY_MAX,
-    CELL_PERSISTENCE_DISPLAY_MAX, CELL_SIZE_GENE_MAX, CELL_SIZE_GENE_MIN, CELL_SPEED_DISPLAY_MAX,
-    CELL_TURN_DISPLAY_MAX, CELL_VIABILITY_MAX, FrameStats, PERCEPTION_GENE_MAX,
-    PERCEPTION_GENE_MIN, SPEED_GENE_MAX, SPEED_GENE_MIN, SimConfig, TURN_GENE_MAX, TURN_GENE_MIN,
-    WorldState,
+    CELL_AGGRESSIVENESS_DISPLAY_MAX, CELL_DIVISION_THRESHOLD_DISPLAY_MAX, CELL_LYSIS_DISPLAY_MAX,
+    CELL_MUTATION_DISPLAY_MAX, CELL_PERCEPTION_DISPLAY_MAX, CELL_PERSISTENCE_DISPLAY_MAX,
+    CELL_SIZE_GENE_MAX, CELL_SIZE_GENE_MIN, CELL_SPEED_DISPLAY_MAX, CELL_TURN_DISPLAY_MAX,
+    CELL_VIABILITY_MAX, FrameStats, PERCEPTION_GENE_MAX, PERCEPTION_GENE_MIN, SPEED_GENE_MAX,
+    SPEED_GENE_MIN, SimConfig, TURN_GENE_MAX, TURN_GENE_MIN, WorldState, lysis_combat_profile,
+    meat_energy_multiplier,
 };
 use std::time::Instant;
 
@@ -34,6 +35,24 @@ pub enum AppState {
 
 #[derive(Component)]
 struct StatsText;
+
+#[derive(Component)]
+struct EnergyBalanceText;
+
+#[derive(Clone, Copy)]
+enum PopulationCounterKind {
+    Cells,
+    Food,
+}
+
+#[derive(Component)]
+struct PopulationCountText(PopulationCounterKind);
+
+#[derive(Component)]
+struct PopulationDeltaText(PopulationCounterKind);
+
+#[derive(Component)]
+struct StatsBodyText;
 
 #[derive(Component)]
 struct MainCamera;
@@ -78,6 +97,8 @@ enum GeneStatId {
     Turn,
     Perception,
     Persistence,
+    Aggressiveness,
+    Lysis,
     Mutation,
     Size,
 }
@@ -108,6 +129,25 @@ struct DivisionTooltipText;
 
 #[derive(Component)]
 struct DivisionTooltipValueText;
+
+#[derive(Component)]
+struct GeneTooltipTarget {
+    kind: GeneStatId,
+}
+
+#[derive(Component, Default)]
+struct GeneTooltip {
+    reveal: f32,
+}
+
+#[derive(Component)]
+struct GeneTooltipTitle;
+
+#[derive(Component)]
+struct GeneTooltipValue;
+
+#[derive(Component)]
+struct GeneTooltipBody;
 
 #[derive(Component)]
 struct PassportPanel;
@@ -289,6 +329,12 @@ fn main() {
                 update_speed_button_styles,
             )
                 .chain()
+                .run_if(in_state(AppState::Running)),
+        )
+        .add_systems(
+            Update,
+            update_gene_tooltip
+                .after(update_selection_ui)
                 .run_if(in_state(AppState::Running)),
         )
         .run();
@@ -558,24 +604,70 @@ fn setup_ui(mut commands: Commands) {
 }
 
 fn setup_game_stats_ui(mut commands: Commands, asset_server: Res<AssetServer>) {
-    commands.spawn((
-        Text::new("Загрузка"),
-        TextFont {
-            font: asset_server.load(UI_FONT),
-            font_size: 16.0,
-            ..default()
-        },
-        TextColor(Color::srgb(0.86, 0.91, 0.95)),
-        TextShadow::default(),
-        Node {
-            position_type: PositionType::Absolute,
-            top: px(10),
-            left: px(12),
-            ..default()
-        },
-        StatsText,
-        RunningUiEntity,
-    ));
+    let font = asset_server.load(UI_FONT);
+    commands
+        .spawn((
+            Text::new("Загрузка"),
+            TextFont {
+                font: font.clone(),
+                font_size: 16.0,
+                ..default()
+            },
+            TextColor(Color::srgb(0.86, 0.91, 0.95)),
+            TextShadow::default(),
+            Node {
+                position_type: PositionType::Absolute,
+                top: px(10),
+                left: px(12),
+                ..default()
+            },
+            StatsText,
+            RunningUiEntity,
+        ))
+        .with_children(|text| {
+            let span_font = TextFont {
+                font: font.clone(),
+                font_size: 16.0,
+                ..default()
+            };
+            text.spawn((TextSpan::new("\nклетки: "), span_font.clone()));
+            text.spawn((
+                TextSpan::new("0"),
+                span_font.clone(),
+                TextColor(Color::srgb(0.86, 0.91, 0.95)),
+                PopulationCountText(PopulationCounterKind::Cells),
+            ));
+            text.spawn((
+                TextSpan::new(" +0"),
+                span_font.clone(),
+                TextColor(Color::srgb(0.66, 0.72, 0.76)),
+                PopulationDeltaText(PopulationCounterKind::Cells),
+            ));
+            text.spawn((TextSpan::new("\nеда: "), span_font.clone()));
+            text.spawn((
+                TextSpan::new("0"),
+                span_font.clone(),
+                TextColor(Color::srgb(0.86, 0.91, 0.95)),
+                PopulationCountText(PopulationCounterKind::Food),
+            ));
+            text.spawn((
+                TextSpan::new(" +0"),
+                span_font.clone(),
+                TextColor(Color::srgb(0.66, 0.72, 0.76)),
+                PopulationDeltaText(PopulationCounterKind::Food),
+            ));
+            text.spawn((TextSpan::new(""), span_font, StatsBodyText));
+            text.spawn((
+                TextSpan::new("\nИТОГО       0.0 ед/с"),
+                TextFont {
+                    font,
+                    font_size: 17.0,
+                    ..default()
+                },
+                TextColor(Color::srgb(0.92, 0.78, 0.34)),
+                EnergyBalanceText,
+            ));
+        });
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -604,7 +696,7 @@ fn gene_stat_descriptors() -> Vec<GeneStatDescriptor> {
             icon: "sprites/gene-viability.png",
             category: GeneCategory::State,
             compact: true,
-            color: Color::srgb(0.35, 0.95, 0.46),
+            color: gene_stat_color(GeneStatId::Viability),
         },
         GeneStatDescriptor {
             id: GeneStatId::Speed,
@@ -612,7 +704,7 @@ fn gene_stat_descriptors() -> Vec<GeneStatDescriptor> {
             icon: "sprites/gene-speed.png",
             category: GeneCategory::Movement,
             compact: true,
-            color: Color::srgb(0.42, 0.72, 1.0),
+            color: gene_stat_color(GeneStatId::Speed),
         },
         GeneStatDescriptor {
             id: GeneStatId::Turn,
@@ -620,7 +712,7 @@ fn gene_stat_descriptors() -> Vec<GeneStatDescriptor> {
             icon: "sprites/gene-maneuverability.png",
             category: GeneCategory::Movement,
             compact: true,
-            color: Color::srgb(0.95, 0.78, 0.36),
+            color: gene_stat_color(GeneStatId::Turn),
         },
         GeneStatDescriptor {
             id: GeneStatId::Perception,
@@ -628,7 +720,7 @@ fn gene_stat_descriptors() -> Vec<GeneStatDescriptor> {
             icon: "sprites/gene-perception.png",
             category: GeneCategory::Behavior,
             compact: true,
-            color: Color::srgb(0.38, 0.88, 0.86),
+            color: gene_stat_color(GeneStatId::Perception),
         },
         GeneStatDescriptor {
             id: GeneStatId::Persistence,
@@ -636,7 +728,23 @@ fn gene_stat_descriptors() -> Vec<GeneStatDescriptor> {
             icon: "sprites/gene-persistence.png",
             category: GeneCategory::Behavior,
             compact: true,
-            color: Color::srgb(0.96, 0.62, 0.42),
+            color: gene_stat_color(GeneStatId::Persistence),
+        },
+        GeneStatDescriptor {
+            id: GeneStatId::Aggressiveness,
+            label: "Агрессивность",
+            icon: "sprites/gene-aggressiveness.png",
+            category: GeneCategory::Behavior,
+            compact: true,
+            color: gene_stat_color(GeneStatId::Aggressiveness),
+        },
+        GeneStatDescriptor {
+            id: GeneStatId::Lysis,
+            label: "Лизис",
+            icon: "sprites/gene-lysis.png",
+            category: GeneCategory::Behavior,
+            compact: true,
+            color: gene_stat_color(GeneStatId::Lysis),
         },
         GeneStatDescriptor {
             id: GeneStatId::Mutation,
@@ -644,7 +752,7 @@ fn gene_stat_descriptors() -> Vec<GeneStatDescriptor> {
             icon: "sprites/gene-mutation.png",
             category: GeneCategory::Heredity,
             compact: true,
-            color: Color::srgb(0.77, 0.56, 1.0),
+            color: gene_stat_color(GeneStatId::Mutation),
         },
         GeneStatDescriptor {
             id: GeneStatId::Size,
@@ -652,9 +760,23 @@ fn gene_stat_descriptors() -> Vec<GeneStatDescriptor> {
             icon: "sprites/gene-size.png",
             category: GeneCategory::Morphology,
             compact: true,
-            color: Color::srgb(0.70, 0.95, 0.86),
+            color: gene_stat_color(GeneStatId::Size),
         },
     ]
+}
+
+fn gene_stat_color(kind: GeneStatId) -> Color {
+    match kind {
+        GeneStatId::Viability => Color::srgb(0.35, 0.95, 0.46),
+        GeneStatId::Speed => Color::srgb(0.42, 0.72, 1.0),
+        GeneStatId::Turn => Color::srgb(0.95, 0.78, 0.36),
+        GeneStatId::Perception => Color::srgb(0.38, 0.88, 0.86),
+        GeneStatId::Persistence => Color::srgb(0.96, 0.62, 0.42),
+        GeneStatId::Aggressiveness => Color::srgb(1.0, 0.42, 0.30),
+        GeneStatId::Lysis => Color::srgb(0.94, 0.30, 0.48),
+        GeneStatId::Mutation => Color::srgb(0.77, 0.56, 1.0),
+        GeneStatId::Size => Color::srgb(0.70, 0.95, 0.86),
+    }
 }
 
 fn setup_biolab_ui_v2(mut commands: Commands, asset_server: Res<AssetServer>) {
@@ -664,6 +786,7 @@ fn setup_biolab_ui_v2(mut commands: Commands, asset_server: Res<AssetServer>) {
     spawn_compact_selection_panel(&mut commands, &asset_server, font.clone(), &stats);
     spawn_passport_panel(&mut commands, &asset_server, font.clone(), &stats);
     spawn_division_tooltip(&mut commands, font.clone());
+    spawn_gene_tooltip(&mut commands, font.clone());
     spawn_pause_indicator(&mut commands, font.clone());
     spawn_pause_menu(&mut commands, font.clone());
     spawn_speed_panel(&mut commands, font);
@@ -933,6 +1056,8 @@ fn spawn_biolab_stat_row(
             },
             BorderColor::all(fill_color),
             BackgroundColor(Color::srgb(0.04, 0.065, 0.075)),
+            Interaction::default(),
+            GeneTooltipTarget { kind },
         ))
         .with_children(|row| {
             row.spawn((
@@ -1147,6 +1272,62 @@ fn spawn_division_tooltip(commands: &mut Commands, font: Handle<Font>) {
                 },
                 TextColor(Color::srgb(0.84, 0.94, 0.88)),
                 DivisionTooltipText,
+            ));
+        });
+}
+
+fn spawn_gene_tooltip(commands: &mut Commands, font: Handle<Font>) {
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                top: px(0),
+                left: px(0),
+                width: px(370),
+                padding: UiRect::all(px(13)),
+                border: UiRect::all(px(3)),
+                flex_direction: FlexDirection::Column,
+                row_gap: px(5),
+                ..default()
+            },
+            BorderColor::all(Color::srgb(0.38, 0.88, 0.86)),
+            BackgroundColor(Color::srgb(0.020, 0.035, 0.040)),
+            GlobalZIndex(90),
+            UiTransform::default(),
+            Visibility::Hidden,
+            GeneTooltip::default(),
+            RunningUiEntity,
+        ))
+        .with_children(|tooltip| {
+            tooltip.spawn((
+                Text::new("ГЕН"),
+                TextFont {
+                    font: font.clone(),
+                    font_size: 13.0,
+                    ..default()
+                },
+                TextColor(Color::srgb(0.70, 0.98, 0.88)),
+                GeneTooltipTitle,
+            ));
+            tooltip.spawn((
+                Text::new("0"),
+                TextFont {
+                    font: font.clone(),
+                    font_size: 24.0,
+                    ..default()
+                },
+                TextColor(Color::srgb(0.38, 0.88, 0.86)),
+                GeneTooltipValue,
+            ));
+            tooltip.spawn((
+                Text::new("Описание"),
+                TextFont {
+                    font,
+                    font_size: 14.0,
+                    ..default()
+                },
+                TextColor(Color::srgb(0.84, 0.94, 0.88)),
+                GeneTooltipBody,
             ));
         });
 }
@@ -2161,6 +2342,12 @@ fn update_stats_overlay(
     stats: Res<FrameStats>,
     config: Res<SimConfig>,
     mut text: Query<&mut Text, With<StatsText>>,
+    mut stats_spans: ParamSet<(
+        Query<(&PopulationCountText, &mut TextSpan)>,
+        Query<(&PopulationDeltaText, &mut TextSpan, &mut TextColor)>,
+        Query<&mut TextSpan, With<StatsBodyText>>,
+        Query<(&mut TextSpan, &mut TextColor), With<EnergyBalanceText>>,
+    )>,
 ) {
     let fps = diagnostics
         .get(&FrameTimeDiagnosticsPlugin::FPS)
@@ -2174,18 +2361,68 @@ fn update_stats_overlay(
     let Ok(mut text) = text.single_mut() else {
         return;
     };
+    **text = format!("FPS {fps:>6.1} | кадр {frame_ms:>5.2} мс");
 
-    **text = format!(
-        "FPS {fps:>6.1} | кадр {frame_ms:>5.2} мс\nклетки {:>5} | еда {:>5}\nпрепят. {:>4} | корм. {:>4}\nсим {:>5.2} мс | ренд {:>5.2} мс\nарена {:.0} x {:.0}",
-        world.cells.len(),
-        world.food.active_count(),
-        world.obstacles.len(),
-        world.food_growers.len(),
-        stats.sim_time.as_secs_f64() * 1_000.0,
-        stats.upload_time.as_secs_f64() * 1_000.0,
-        config.width,
-        config.height,
-    );
+    for (counter, mut span) in &mut stats_spans.p0() {
+        **span = match counter.0 {
+            PopulationCounterKind::Cells => world.cells.len().to_string(),
+            PopulationCounterKind::Food => world.food.active_count().to_string(),
+        };
+    }
+    for (counter, mut span, mut color) in &mut stats_spans.p1() {
+        let delta = match counter.0 {
+            PopulationCounterKind::Cells => world.cell_count_delta,
+            PopulationCounterKind::Food => world.food_count_delta,
+        };
+        **span = format!(" {delta:+}");
+        color.0 = if delta > 0 {
+            Color::srgb(0.38, 1.0, 0.56)
+        } else if delta < 0 {
+            Color::srgb(1.0, 0.38, 0.34)
+        } else {
+            Color::srgb(0.66, 0.72, 0.76)
+        };
+    }
+
+    let flow = world.energy_flow;
+    let (wild_food, feeder_food, carrion) = world.active_food_counts();
+    if let Ok(mut body) = stats_spans.p2().single_mut() {
+        **body = format!(
+            "\nдикая {:>4} | корм. {:>4} | мясо {:>4}\nпрепят. {:>4} | кормилки {:>2}\nсим {:>5.2} мс | ренд {:>5.2} мс\nарена {:.0} x {:.0}\n\nЭНЕРГЕТИКА, ед/с\n+ дикая трава  {:>8.1}\n+ кормушки     {:>8.1}\n= общий приток {:>8.1}\n~ съедено      {:>8.1}\n~ падаль       {:>8.1}\n- метаболизм   {:>8.1}\n- порча        {:>8.1}\n- митоз        {:>8.1}\n- лизис        {:>8.1}\n= общий отток  {:>8.1}",
+            wild_food,
+            feeder_food,
+            carrion,
+            world.obstacles.len(),
+            world.food_growers.len(),
+            stats.sim_time.as_secs_f64() * 1_000.0,
+            stats.upload_time.as_secs_f64() * 1_000.0,
+            config.width,
+            config.height,
+            flow.wild_food_input,
+            flow.feeder_input,
+            flow.external_input(),
+            flow.food_consumed,
+            flow.carrion_transfer,
+            flow.metabolism,
+            flow.spoilage,
+            flow.mitosis_cost,
+            flow.lysis_loss,
+            flow.total_outflow(),
+        );
+    }
+
+    if let Ok((mut balance, mut color)) = stats_spans.p3().single_mut() {
+        let net = flow.net_external_balance();
+        let (state, target_color) = if net > 1.0 {
+            ("ПЛЮС", Color::srgb(0.38, 1.0, 0.56))
+        } else if net < -1.0 {
+            ("МИНУС", Color::srgb(1.0, 0.38, 0.34))
+        } else {
+            ("БАЛАНС", Color::srgb(0.96, 0.80, 0.34))
+        };
+        **balance = format!("\nИТОГО {net:+8.1} ед/с  {state}");
+        color.0 = target_color;
+    }
 }
 
 fn animate_panel_reveal(
@@ -2502,6 +2739,30 @@ fn stat_ui_value(world: &WorldState, cell_index: usize, id: GeneStatId) -> StatU
                 range: "0-100%".to_string(),
             }
         }
+        GeneStatId::Aggressiveness => {
+            let aggressiveness = cells.aggressiveness[cell_index];
+            let meat_multiplier = meat_energy_multiplier(aggressiveness);
+            StatUiValue {
+                normalized: aggressiveness / CELL_AGGRESSIVENESS_DISPLAY_MAX,
+                display: format!("{aggressiveness:.0}%"),
+                range: format!("инициатива 0-100% · мясо x{meat_multiplier:.2}"),
+            }
+        }
+        GeneStatId::Lysis => {
+            let lysis = cells.lysis[cell_index];
+            let (damage, self_cost, cooldown, reach) = lysis_combat_profile(lysis);
+            StatUiValue {
+                normalized: lysis / CELL_LYSIS_DISPLAY_MAX,
+                display: if lysis < 8.0 {
+                    "нет".to_string()
+                } else {
+                    format!("{lysis:.0}%")
+                },
+                range: format!(
+                    "урон {damage:.1} · цена {self_cost:.2} · КД {cooldown:.2}с · радиус {reach:.1}"
+                ),
+            }
+        }
         GeneStatId::Mutation => {
             let mutation = cells.mutation_susceptibility[cell_index];
             StatUiValue {
@@ -2517,6 +2778,141 @@ fn stat_ui_value(world: &WorldState, cell_index: usize, id: GeneStatId) -> StatU
             display: format!("{membrane_size:.1}/{radius:.1}"),
             range: format!("{CELL_SIZE_GENE_MIN:.1}-{CELL_SIZE_GENE_MAX:.1}"),
         },
+    }
+}
+
+fn gene_tooltip_copy(kind: GeneStatId) -> (&'static str, &'static str) {
+    match kind {
+        GeneStatId::Viability => (
+            "ЖИЗНЕСПОСОБНОСТЬ",
+            "Общий запас энергии и здоровья. Расходуется метаболизмом, движением и уроном; восстанавливается пищей. При нуле клетка погибает.",
+        ),
+        GeneStatId::Size => (
+            "РАЗМЕР",
+            "Физический масштаб тела. Крупная клетка устойчивее в столкновениях и хранит больше запаса, но требует больше энергии и хуже проходит в тесных местах.",
+        ),
+        GeneStatId::Speed => (
+            "СКОРОСТЬ",
+            "Предельная скорость движения вперёд. Форма тела изменяет реальный результат, а быстрые клетки платят повышенным метаболизмом.",
+        ),
+        GeneStatId::Turn => (
+            "ПОВОРОТЛИВОСТЬ",
+            "Скорость изменения направления головы. Вытянутая и многосегментная геометрия снижает эффективный поворот и усиливает занос хвоста.",
+        ),
+        GeneStatId::Perception => (
+            "ВОСПРИЯТИЕ",
+            "Радиус обнаружения пищи и других клеток. Большое восприятие расширяет поиск целей, но не гарантирует выбор конкретной цели.",
+        ),
+        GeneStatId::Persistence => (
+            "НАСТОЙЧИВОСТЬ",
+            "Определяет верность выбранной цели, частоту её смены и длительность преследования последней известной позиции.",
+        ),
+        GeneStatId::Aggressiveness => (
+            "АГРЕССИВНОСТЬ",
+            "Желание самостоятельно начинать охоту и эффективность усвоения мяса. Учитывает голод, дистанцию, слабость и размер жертвы, а также риск ответного лизиса. Чем выше ген, тем больше жизнеспособности клетка получает из мяса; трава остаётся без бонуса.",
+        ),
+        GeneStatId::Lysis => (
+            "ЛИЗИС",
+            "Контактная атака по жизнеспособности жертвы. Развитие повышает урон и частоту ударов, но увеличивает цену и уменьшает дистанцию атаки.",
+        ),
+        GeneStatId::Mutation => (
+            "МУТАЦИИ",
+            "Вероятность и сила наследственных изменений при делении: генов, формы лучей и топологии многосегментного тела.",
+        ),
+    }
+}
+
+fn update_gene_tooltip(
+    time: Res<Time>,
+    windows: Query<&Window, With<PrimaryWindow>>,
+    selected: Res<SelectedCell>,
+    world: Res<WorldState>,
+    targets: Query<(&Interaction, &GeneTooltipTarget)>,
+    division_markers: Query<&Interaction, With<DivisionThresholdMarker>>,
+    mut tooltip: Query<(
+        &mut Visibility,
+        &mut Node,
+        &mut UiTransform,
+        &mut GeneTooltip,
+        &mut BorderColor,
+    )>,
+    mut tooltip_text: ParamSet<(
+        Query<(&mut Text, &mut TextColor), With<GeneTooltipTitle>>,
+        Query<(&mut Text, &mut TextColor), With<GeneTooltipValue>>,
+        Query<&mut Text, With<GeneTooltipBody>>,
+    )>,
+) {
+    let marker_hovered = division_markers
+        .iter()
+        .any(|interaction| *interaction != Interaction::None);
+    let hovered = (!marker_hovered)
+        .then(|| {
+            targets
+                .iter()
+                .find(|(interaction, _)| **interaction != Interaction::None)
+                .map(|(_, target)| target.kind)
+        })
+        .flatten();
+    let selected_index = selected
+        .cell_id
+        .and_then(|cell_id| world.cell_index_by_id(cell_id));
+    let show = hovered.is_some() && selected_index.is_some();
+    let Ok((mut visibility, mut node, mut transform, mut reveal, mut border_color)) =
+        tooltip.single_mut()
+    else {
+        return;
+    };
+    if show {
+        *visibility = Visibility::Visible;
+    }
+    let target_reveal = if show { 1.0 } else { 0.0 };
+    let follow = 1.0 - (-18.0 * time.delta_secs()).exp();
+    reveal.reveal += (target_reveal - reveal.reveal) * follow;
+    transform.scale = Vec2::splat(0.96 + reveal.reveal * 0.04);
+    if !show && reveal.reveal < 0.01 {
+        *visibility = Visibility::Hidden;
+        return;
+    }
+
+    let (Some(kind), Some(cell_index)) = (hovered, selected_index) else {
+        return;
+    };
+    let (heading, description) = gene_tooltip_copy(kind);
+    let value = stat_ui_value(&world, cell_index, kind);
+    let accent = gene_stat_color(kind);
+    *border_color = BorderColor::all(accent);
+    if let Ok((mut text, mut color)) = tooltip_text.p0().single_mut() {
+        **text = heading.to_string();
+        *color = TextColor(accent);
+    }
+    if let Ok((mut text, mut color)) = tooltip_text.p1().single_mut() {
+        **text = value.display;
+        *color = TextColor(accent);
+    }
+    if let Ok(mut text) = tooltip_text.p2().single_mut() {
+        **text = format!("{description}\nДиапазон: {}", value.range);
+    }
+
+    if let Ok(window) = windows.single()
+        && let Some(cursor) = window.cursor_position()
+    {
+        let width = 370.0;
+        let height = 205.0;
+        let gap = 18.0;
+        let x = if cursor.x + width + gap > window.width() {
+            cursor.x - width - gap
+        } else {
+            cursor.x + gap
+        }
+        .clamp(8.0, (window.width() - width - 8.0).max(8.0));
+        let y = if cursor.y + height + gap > window.height() {
+            cursor.y - height - gap
+        } else {
+            cursor.y + gap
+        }
+        .clamp(8.0, (window.height() - height - 8.0).max(8.0));
+        node.left = px(x);
+        node.top = px(y);
     }
 }
 

@@ -326,7 +326,8 @@ pub fn sync_instance_data(
         let move_dir_x = heading.cos();
         let move_dir_y = heading.sin();
         let jelly = world.cells.jelly_intensity[i];
-        let base_visual_radius = world.cells.visual_radii[i]
+        let soft_radii = world.cells.lysis_visual_radii(i, 0);
+        let base_visual_radius = soft_radii
             .iter()
             .copied()
             .fold(world.cells.radius[i] * 0.25, f32::max)
@@ -335,7 +336,6 @@ pub fn sync_instance_data(
         let mitosis_split = mitosis * mitosis * (3.0 - 2.0 * mitosis);
         let visual_radius = base_visual_radius * (1.0 + mitosis_split * 1.20);
         let inv_visual_radius = visual_radius.recip();
-        let soft_radii = world.cells.visual_radii[i];
         let cell_color = species_color(world.cells.species[i], world.cells.viability_ratio(i));
 
         let velocity = Vec2::new(world.cells.vx[i], world.cells.vy[i]);
@@ -392,6 +392,10 @@ pub fn sync_instance_data(
                     );
                 }
             }
+        }
+
+        if !is_visible {
+            continue;
         }
 
         if world.cells.section_count[i] >= 2 {
@@ -509,8 +513,11 @@ pub fn sync_instance_data(
                             0.0
                         }
                     }
+                    CellTargetKind::Cell => 2.0,
                 };
-                let target_color = if target.remembered {
+                let target_color = if target.kind == CellTargetKind::Cell {
+                    [1.0, 0.30, 0.26, 0.94]
+                } else if target.remembered {
                     [1.0, 0.76, 0.38, 0.72]
                 } else {
                     [0.54, 1.0, 0.58, 0.90]
@@ -674,6 +681,12 @@ pub fn sync_instance_data(
         let z_layer = 3.0;
         let render_x = world.food.x[i];
         let render_y = world.food.y[i];
+        let food_margin = FOOD_RADIUS * 2.0;
+        if (render_x - view_center.x).abs() > view_half_size.x + food_margin
+            || (render_y - view_center.y).abs() > view_half_size.y + food_margin
+        {
+            continue;
+        }
         let mut z_layer_adjusted = z_layer;
         if world.food.feeder[i] >= 0 {
             let branch_index = world.food.anchor_branch[i];
@@ -719,6 +732,14 @@ pub fn sync_instance_data(
     }
 
     for i in 0..world.visual_particles.len() {
+        let particle_x = world.visual_particles.x[i];
+        let particle_y = world.visual_particles.y[i];
+        let particle_margin = world.visual_particles.radius[i] * 2.0 + 4.0;
+        if (particle_x - view_center.x).abs() > view_half_size.x + particle_margin
+            || (particle_y - view_center.y).abs() > view_half_size.y + particle_margin
+        {
+            continue;
+        }
         let life =
             (world.visual_particles.life[i] / world.visual_particles.lifetime[i]).clamp(0.0, 1.0);
         let mut color = world.visual_particles.color[i];
@@ -752,6 +773,11 @@ pub fn sync_instance_data(
 
     for i in 0..world.obstacles.len() {
         let radius = world.obstacles.radius[i];
+        if (world.obstacles.x[i] - view_center.x).abs() > view_half_size.x + radius
+            || (world.obstacles.y[i] - view_center.y).abs() > view_half_size.y + radius
+        {
+            continue;
+        }
         particles.push(InstanceData {
             pos_radius: [world.obstacles.x[i], world.obstacles.y[i], 1.5, radius],
             color: [0.58, 0.72, 0.95, 0.22],
@@ -780,6 +806,12 @@ pub fn sync_instance_data(
 
     for i in 0..world.food_growers.len() {
         let radius = world.food_growers.radius[i];
+        let extent = world.food_growers.extent_radius(i) + radius;
+        if (world.food_growers.x[i] - view_center.x).abs() > view_half_size.x + extent
+            || (world.food_growers.y[i] - view_center.y).abs() > view_half_size.y + extent
+        {
+            continue;
+        }
         for branch_index in world.food_growers.branch_range(i) {
             let branch_base_z = branch_z[branch_index];
             let solid_branch = world.food_growers.branch_has_collision(branch_index);
@@ -907,6 +939,11 @@ pub fn sync_instance_data(
                 let stem_width = (FOOD_RADIUS * 0.34 * growth.clamp(0.55, 1.0)).max(0.9);
                 let instance_radius = half_length + stem_width * 2.0;
                 let stem_center = stem_start + stem * 0.5;
+                if (stem_center.x - view_center.x).abs() > view_half_size.x + instance_radius
+                    || (stem_center.y - view_center.y).abs() > view_half_size.y + instance_radius
+                {
+                    continue;
+                }
                 let stem_angle = stem.y.atan2(stem.x);
 
                 let is_solid = world.food_growers.branch_has_collision(branch_index);
@@ -976,18 +1013,23 @@ fn segmented_cell_instance(
         positions[extra_index + 2] = Vec2::new(extra.x, extra.y);
     }
     let mut radii = [world.cells.core_radius[index]; 4];
-    radii[0] = world.cells.visual_radii[index]
+    radii[0] = world
+        .cells
+        .lysis_visual_radii(index, 0)
         .iter()
         .copied()
         .fold(world.cells.core_radius[index], f32::max);
-    radii[1] = world.cells.tail_visual_radii[index]
+    radii[1] = world
+        .cells
+        .lysis_visual_radii(index, 1)
         .iter()
         .copied()
         .fold(world.cells.tail_core_radius[index], f32::max);
     for extra_index in 0..2 {
         let extra = world.cells.extra_sections[index][extra_index];
-        radii[extra_index + 2] = extra
-            .visual_radii
+        radii[extra_index + 2] = world
+            .cells
+            .lysis_visual_radii(index, extra_index as u8 + 2)
             .iter()
             .copied()
             .fold(extra.core_radius, f32::max);
@@ -1018,16 +1060,10 @@ fn segmented_cell_instance(
     let nucleus_local = (nucleus_world - center) * inv_radius;
     let local = positions.map(|position| (position - center) * inv_radius);
     let section_radii = [
-        pack_section_radii(world.cells.visual_radii[index], inv_radius),
-        pack_section_radii(world.cells.tail_visual_radii[index], inv_radius),
-        pack_section_radii(
-            world.cells.extra_sections[index][0].visual_radii,
-            inv_radius,
-        ),
-        pack_section_radii(
-            world.cells.extra_sections[index][1].visual_radii,
-            inv_radius,
-        ),
+        pack_section_radii(world.cells.lysis_visual_radii(index, 0), inv_radius),
+        pack_section_radii(world.cells.lysis_visual_radii(index, 1), inv_radius),
+        pack_section_radii(world.cells.lysis_visual_radii(index, 2), inv_radius),
+        pack_section_radii(world.cells.lysis_visual_radii(index, 3), inv_radius),
     ];
 
     InstanceData {

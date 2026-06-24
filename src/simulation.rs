@@ -37,12 +37,12 @@ pub const SOFT_BODY_BASE_ANGLES: [f32; SOFT_BODY_POINTS] = [
     std::f32::consts::FRAC_PI_4 * 7.0,
 ];
 const SOFT_BODY_SECTOR_ANGLE: f32 = std::f32::consts::FRAC_PI_4;
-const VIABILITY_DECAY_BASE: f32 = 0.38;
-const VIABILITY_DECAY_SPEED: f32 = 0.62;
+const VIABILITY_DECAY_BASE: f32 = 0.12;
+const VIABILITY_DECAY_SPEED: f32 = 0.05;
 const SOFT_BODY_ELASTICITY_SPEED: f32 = 8.0;
 const SOFT_BODY_VISUAL_FOLLOW_SPEED: f32 = 12.0;
 const SOFT_BODY_COMPRESSION_RESPONSE: f32 = 0.58;
-const SOFT_BODY_BIOMASS_DRAIN_RATE: f32 = 0.007;
+const SOFT_BODY_BIOMASS_DRAIN_RATE: f32 = 0.00045;
 const CORE_RADIUS_FACTOR: f32 = 0.30;
 const HARD_CORE_STIFFNESS_MULTIPLIER: f32 = 10.0;
 const SOFT_BODY_BASE_MIN_FACTOR: f32 = CORE_RADIUS_FACTOR;
@@ -55,8 +55,17 @@ const SOFT_BODY_COMPRESSION_IMPULSE: f32 = 0.45;
 const SOFT_BODY_SOLID_PUSH_FACTOR: f32 = 0.62;
 const SOFT_BODY_SOLID_PUSH_MAX: f32 = 5.5;
 const MUTATION_FACTOR_DELTA_SCALE: f32 = 100.0 / (0.3 - 0.005);
-const FOOD_VIABILITY_GAIN: f32 = 13.0;
-const FEEDER_FOOD_VIABILITY_GAIN: f32 = 11.0;
+const WORLD_GRASS_ENERGY: f32 = 10.0;
+const FEEDER_FOOD_ENERGY: f32 = 11.0;
+const FOOD_GROWER_BATCH_SIZE: usize = 12;
+const GRASS_SPOILAGE_RATE: f32 = 0.0025;
+const MEAT_SPOILAGE_RATE: f32 = 0.018;
+const CELL_STRUCTURE_ENERGY_PER_BIOMASS: f32 = 0.16;
+const DEATH_VIABILITY_RECOVERY: f32 = 0.62;
+const DEATH_STRUCTURE_RECOVERY: f32 = 0.58;
+const MEAT_CHUNK_ENERGY_MAX: f32 = 8.0;
+const WILD_GRASS_REGROW_MIN: f32 = 3.0;
+const WILD_GRASS_REGROW_SPREAD: f32 = 2.5;
 const MIN_VIABILITY_MOVE_FACTOR: f32 = 0.35;
 const TURN_IN_PLACE_ANGLE: f32 = 1.35;
 const TURN_IN_PLACE_THROTTLE: f32 = 0.08;
@@ -65,6 +74,17 @@ const STUCK_SPEED_FACTOR: f32 = 0.08;
 const STUCK_REVERSE_DELAY: f32 = 0.75;
 const EMERGENCY_REVERSE_DURATION: f32 = 0.38;
 const EMERGENCY_REVERSE_THROTTLE: f32 = 0.18;
+const INITIAL_LYSIS_CHANCE: f64 = 0.075;
+const LYSIS_ACTIVE_THRESHOLD: f32 = 8.0;
+const LYSIS_COOLDOWN_MIN: f32 = 0.34;
+const LYSIS_COOLDOWN_MAX: f32 = 1.05;
+const LYSIS_REACH_MIN: f32 = 0.65;
+const LYSIS_REACH_MAX: f32 = 5.0;
+const LYSIS_HUNT_PAUSE_AFTER_KILL: f32 = 2.4;
+const LYSIS_ATTACK_DEFORM_DURATION: f32 = 0.38;
+const LYSIS_HIT_DEFORM_DURATION: f32 = 0.46;
+const LYSIS_PARTICLES_PER_HIT: usize = 8;
+const NO_CELL_TARGET: u64 = u64::MAX;
 const TAIL_LONGITUDINAL_STIFFNESS: f32 = 12.0;
 const TAIL_LATERAL_STIFFNESS: f32 = 5.2;
 const TAIL_LONGITUDINAL_DAMPING: f32 = 4.8;
@@ -92,7 +112,6 @@ const MITOSIS_DURATION: f32 = 2.15;
 const MITOSIS_RECOVERY_DURATION: f32 = 0.75;
 const MAX_VISUAL_PARTICLES: usize = 4_096;
 const FOOD_PARTICLES_PER_BITE: usize = 7;
-const MEAT_CHUNKS_MIN: usize = 3;
 const MEAT_CHUNKS_MAX: usize = 6;
 const MUTATION_CHANCE_MIN: f32 = 0.05;
 const MUTATION_CHANCE_MAX: f32 = 0.48;
@@ -100,8 +119,8 @@ const MUTATION_STRENGTH_MIN: f32 = 0.01;
 const MUTATION_STRENGTH_MAX: f32 = 0.13;
 const MUTATION_POWER_MIN: f32 = 0.25;
 const MUTATION_POWER_MAX: f32 = 0.85;
-pub const CELL_SIZE_GENE_MIN: f32 = 4.2;
-pub const CELL_SIZE_GENE_MAX: f32 = 8.8;
+pub const CELL_SIZE_GENE_MIN: f32 = 4.0;
+pub const CELL_SIZE_GENE_MAX: f32 = 11.0;
 pub const SPEED_GENE_MIN: f32 = 24.0;
 pub const SPEED_GENE_MAX: f32 = 96.0;
 pub const TURN_GENE_MIN: f32 = 0.45;
@@ -109,6 +128,8 @@ pub const TURN_GENE_MAX: f32 = 3.6;
 pub const PERCEPTION_GENE_MIN: f32 = 100.0;
 pub const PERCEPTION_GENE_MAX: f32 = CELL_PERCEPTION_DISPLAY_MAX;
 pub const CELL_PERSISTENCE_DISPLAY_MAX: f32 = 100.0;
+pub const CELL_AGGRESSIVENESS_DISPLAY_MAX: f32 = 100.0;
+pub const CELL_LYSIS_DISPLAY_MAX: f32 = 100.0;
 const PERSISTENCE_GENE_MIN: f32 = 0.0;
 const PERSISTENCE_GENE_MAX: f32 = CELL_PERSISTENCE_DISPLAY_MAX;
 const MUTATION_GENE_MIN: f32 = 0.0;
@@ -333,6 +354,32 @@ fn feeder_food_capacity(total_food: usize, floor_food: usize, food_growers: usiz
     }
 }
 
+fn signed_count_delta(current: usize, previous: usize) -> i32 {
+    let delta = current as i128 - previous as i128;
+    delta.clamp(i32::MIN as i128, i32::MAX as i128) as i32
+}
+
+pub fn lysis_combat_profile(lysis: f32) -> (f32, f32, f32, f32) {
+    let power = (lysis / CELL_LYSIS_DISPLAY_MAX).clamp(0.0, 1.0);
+    let damage = 5.0 + power * 6.0;
+    let self_cost = 0.20 + power * 0.22;
+    let cooldown = LYSIS_COOLDOWN_MAX + (LYSIS_COOLDOWN_MIN - LYSIS_COOLDOWN_MAX) * power;
+    let reach = LYSIS_REACH_MAX + (LYSIS_REACH_MIN - LYSIS_REACH_MAX) * power;
+    (damage, self_cost, cooldown, reach)
+}
+
+pub fn meat_energy_multiplier(aggressiveness: f32) -> f32 {
+    let aggression = (aggressiveness / CELL_AGGRESSIVENESS_DISPLAY_MAX).clamp(0.0, 1.0);
+    1.0 + aggression * 3.0
+}
+
+fn digested_food_energy(kind: FoodKind, raw_energy: f32, aggressiveness: f32) -> f32 {
+    match kind {
+        FoodKind::Grass => raw_energy,
+        FoodKind::Meat => raw_energy * meat_energy_multiplier(aggressiveness),
+    }
+}
+
 fn arena_circle_radius(width: f32, height: f32) -> f32 {
     width.min(height) * 0.5
 }
@@ -471,16 +518,61 @@ pub struct WorldState {
     collision_pairs: Vec<(usize, usize)>,
     rng: SmallRng,
     elapsed: f32,
-    max_food: usize,
+    max_feeder_food: usize,
+    max_carrion: usize,
     collision_stiffness: f32,
     collision_damping: f32,
     pub cell_sound_events: Vec<Vec2>,
+    pub energy_flow: EnergyFlowStats,
+    pub cell_count_delta: i32,
+    pub food_count_delta: i32,
+    energy_accumulator: EnergyFlowAccumulator,
+    count_baseline: (usize, usize),
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct EnergyFlowStats {
+    pub wild_food_input: f32,
+    pub feeder_input: f32,
+    pub carrion_transfer: f32,
+    pub food_consumed: f32,
+    pub metabolism: f32,
+    pub spoilage: f32,
+    pub mitosis_cost: f32,
+    pub lysis_loss: f32,
+}
+
+impl EnergyFlowStats {
+    pub fn external_input(self) -> f32 {
+        self.wild_food_input + self.feeder_input
+    }
+
+    pub fn net_external_balance(self) -> f32 {
+        self.external_input() - self.total_outflow()
+    }
+
+    pub fn total_outflow(self) -> f32 {
+        self.metabolism + self.spoilage + self.mitosis_cost + self.lysis_loss
+    }
+}
+
+#[derive(Default)]
+struct EnergyFlowAccumulator {
+    values: EnergyFlowStats,
+    elapsed: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FoodKind {
     Grass,
     Meat,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FoodSource {
+    Wild,
+    Feeder,
+    Carrion,
 }
 
 pub struct VisualParticleStore {
@@ -533,6 +625,7 @@ impl VisualParticleStore {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CellTargetKind {
     Food,
+    Cell,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -598,14 +691,6 @@ impl FoodKind {
             FoodKind::Meat => -1.0,
         }
     }
-
-    fn random(rng: &mut SmallRng) -> Self {
-        if rng.random_bool(0.5) {
-            FoodKind::Grass
-        } else {
-            FoodKind::Meat
-        }
-    }
 }
 
 impl WorldState {
@@ -665,14 +750,22 @@ impl WorldState {
             collision_pairs: Vec::with_capacity(config.cells.saturating_mul(4)),
             rng,
             elapsed: 0.0,
-            max_food: floor_food_count.saturating_add(feeder_food_capacity),
+            max_feeder_food: feeder_food_capacity,
+            max_carrion: config.cells.saturating_mul(2).clamp(8, 5_000),
             collision_stiffness: config.collision_stiffness.max(0.0),
             collision_damping: config.collision_damping.max(0.0),
             cell_sound_events: Vec::new(),
+            energy_flow: EnergyFlowStats::default(),
+            cell_count_delta: 0,
+            food_count_delta: 0,
+            energy_accumulator: EnergyFlowAccumulator::default(),
+            count_baseline: (0, 0),
         };
         world.relocate_world_food_away_from_solids();
         world.seed_feeder_food(feeder_food_capacity);
         world.grid.rebuild(&world.food);
+        world.energy_accumulator = EnergyFlowAccumulator::default();
+        world.count_baseline = (world.cells.len(), world.food.active_count());
 
         world
     }
@@ -682,9 +775,12 @@ impl WorldState {
         self.elapsed += dt;
         self.update_visual_particles(dt);
         self.remove_dead_cells();
+        self.cell_grid.rebuild(&self.cells);
         self.advect_obstacles(dt);
         self.advect_food_growers(dt);
         self.resolve_obstacle_food_growers();
+        self.decay_food(dt);
+        self.grow_wild_food(dt);
         self.grow_food(dt);
         self.advect_food(dt);
         self.push_food_from_obstacles(dt);
@@ -695,6 +791,15 @@ impl WorldState {
         self.cells.relax_soft_body(dt);
 
         for i in 0..self.cells.len() {
+            if self.cells.viability[i] <= 0.0 {
+                continue;
+            }
+            self.cells.lysis_cooldown[i] = (self.cells.lysis_cooldown[i] - dt).max(0.0);
+            for section in 0..self.cells.section_count[i] as usize {
+                self.cells.lysis_deform_time[i][section] =
+                    (self.cells.lysis_deform_time[i][section] - dt).max(0.0);
+            }
+            self.cells.hunt_pause[i] = (self.cells.hunt_pause[i] - dt).max(0.0);
             let x = self.cells.x[i];
             let y = self.cells.y[i];
             let speed = self.effective_cell_speed(i);
@@ -756,19 +861,36 @@ impl WorldState {
                     let eaten_kind = self.food.kind[food_index];
                     let eater_velocity = Vec2::new(self.cells.vx[i], self.cells.vy[i]);
                     self.spawn_food_particles(eaten_position, eaten_kind, eater_velocity);
+                    let raw_food_energy =
+                        self.food.energy[food_index] * self.food.growth[food_index].clamp(0.0, 1.0);
+                    let food_energy = digested_food_energy(
+                        eaten_kind,
+                        raw_food_energy,
+                        self.cells.aggressiveness[i],
+                    );
+                    let viability_before = self.cells.viability[i];
                     if self.food.is_feeder_food(food_index) {
                         self.clear_branchlet_food_association(food_index);
-                        self.food.deactivate(food_index);
-                        self.cells.add_viability(i, FEEDER_FOOD_VIABILITY_GAIN);
-                    } else {
-                        self.respawn_world_food(food_index);
-                        self.cells.add_viability(i, FOOD_VIABILITY_GAIN);
                     }
+                    self.food.deactivate(food_index);
+                    self.cells.add_viability(i, food_energy);
+                    self.energy_accumulator.values.food_consumed +=
+                        self.cells.viability[i] - viability_before;
                     self.cells.target_food[i] = -1;
                     self.cells.target_memory[i] = 0.0;
                     self.cell_sound_events
                         .push(Vec2::new(self.cells.x[i], self.cells.y[i]));
                 }
+            }
+
+            if let Some(CellTarget {
+                kind: CellTargetKind::Cell,
+                index: victim_index,
+                remembered: false,
+                ..
+            }) = target
+            {
+                self.try_lysis_attack(i, victim_index);
             }
         }
 
@@ -778,6 +900,48 @@ impl WorldState {
         self.decay_viability(dt);
         self.advance_mitosis(dt);
         self.process_cell_lifecycle();
+        self.finish_energy_flow_window(dt);
+    }
+
+    fn finish_energy_flow_window(&mut self, dt: f32) {
+        self.energy_accumulator.elapsed += dt;
+        if self.energy_accumulator.elapsed < 0.5 {
+            return;
+        }
+        let inv_window = self.energy_accumulator.elapsed.recip();
+        let sample = EnergyFlowStats {
+            wild_food_input: self.energy_accumulator.values.wild_food_input * inv_window,
+            feeder_input: self.energy_accumulator.values.feeder_input * inv_window,
+            carrion_transfer: self.energy_accumulator.values.carrion_transfer * inv_window,
+            food_consumed: self.energy_accumulator.values.food_consumed * inv_window,
+            metabolism: self.energy_accumulator.values.metabolism * inv_window,
+            spoilage: self.energy_accumulator.values.spoilage * inv_window,
+            mitosis_cost: self.energy_accumulator.values.mitosis_cost * inv_window,
+            lysis_loss: self.energy_accumulator.values.lysis_loss * inv_window,
+        };
+        let follow = if self.energy_flow.metabolism <= 0.0 {
+            1.0
+        } else {
+            0.32
+        };
+        self.energy_flow.wild_food_input +=
+            (sample.wild_food_input - self.energy_flow.wild_food_input) * follow;
+        self.energy_flow.feeder_input +=
+            (sample.feeder_input - self.energy_flow.feeder_input) * follow;
+        self.energy_flow.carrion_transfer +=
+            (sample.carrion_transfer - self.energy_flow.carrion_transfer) * follow;
+        self.energy_flow.food_consumed +=
+            (sample.food_consumed - self.energy_flow.food_consumed) * follow;
+        self.energy_flow.metabolism += (sample.metabolism - self.energy_flow.metabolism) * follow;
+        self.energy_flow.spoilage += (sample.spoilage - self.energy_flow.spoilage) * follow;
+        self.energy_flow.mitosis_cost +=
+            (sample.mitosis_cost - self.energy_flow.mitosis_cost) * follow;
+        self.energy_flow.lysis_loss += (sample.lysis_loss - self.energy_flow.lysis_loss) * follow;
+        let counts = (self.cells.len(), self.food.active_count());
+        self.cell_count_delta = signed_count_delta(counts.0, self.count_baseline.0);
+        self.food_count_delta = signed_count_delta(counts.1, self.count_baseline.1);
+        self.count_baseline = counts;
+        self.energy_accumulator = EnergyFlowAccumulator::default();
     }
 
     fn spawn_food_particles(&mut self, position: Vec2, kind: FoodKind, eater_velocity: Vec2) {
@@ -865,6 +1029,60 @@ impl WorldState {
         }
     }
 
+    fn spawn_lysis_particles(
+        &mut self,
+        contact: Vec2,
+        normal: Vec2,
+        victim: usize,
+        victim_section: u8,
+    ) {
+        let available = MAX_VISUAL_PARTICLES.saturating_sub(self.visual_particles.len());
+        let count = LYSIS_PARTICLES_PER_HIT.min(available);
+        if count == 0 {
+            return;
+        }
+
+        let victim_velocity = self.cells.section_velocity(victim, victim_section);
+        let base_color = species_color(self.cells.species[victim], 1.0);
+        let color = [
+            base_color[0] * 0.28 + 0.72,
+            base_color[1] * 0.18 + 0.18,
+            base_color[2] * 0.24 + 0.34,
+            1.0,
+        ];
+        let tangent = Vec2::new(-normal.y, normal.x);
+        for particle_index in 0..count {
+            let spread = self.rng.random_range(-0.92..0.92);
+            let direction = (normal * self.rng.random_range(0.55..1.0) + tangent * spread)
+                .try_normalize()
+                .unwrap_or(normal);
+            let speed = if particle_index < 2 {
+                self.rng.random_range(78.0..126.0)
+            } else {
+                self.rng.random_range(34.0..88.0)
+            };
+            let lifetime = self.rng.random_range(0.30..0.62);
+            let offset = direction * self.rng.random_range(0.0..2.5);
+            let velocity = direction * speed + victim_velocity * 0.12;
+            self.visual_particles.x.push(contact.x + offset.x);
+            self.visual_particles.y.push(contact.y + offset.y);
+            self.visual_particles.vx.push(velocity.x);
+            self.visual_particles.vy.push(velocity.y);
+            self.visual_particles.radius.push(if particle_index < 2 {
+                self.rng.random_range(1.35..2.25)
+            } else {
+                self.rng.random_range(0.65..1.40)
+            });
+            self.visual_particles.life.push(lifetime);
+            self.visual_particles.lifetime.push(lifetime);
+            self.visual_particles
+                .phase
+                .push(self.rng.random_range(0.0..std::f32::consts::TAU));
+            self.visual_particles.color.push(color);
+            self.visual_particles.style.push(2.0);
+        }
+    }
+
     fn update_visual_particles(&mut self, dt: f32) {
         let mut index = 0;
         while index < self.visual_particles.len() {
@@ -902,10 +1120,206 @@ impl WorldState {
             * mitosis_slowdown
     }
 
+    fn is_lysis_capable(&self, cell_index: usize) -> bool {
+        self.cells.lysis[cell_index] >= LYSIS_ACTIVE_THRESHOLD
+    }
+
+    fn best_lysis_target(&self, attacker: usize) -> Option<(usize, f32)> {
+        if !self.is_lysis_capable(attacker) {
+            return None;
+        }
+        let position = Vec2::new(self.cells.x[attacker], self.cells.y[attacker]);
+        let perception = self.cells.perception[attacker].max(0.0);
+        let aggression =
+            (self.cells.aggressiveness[attacker] / CELL_AGGRESSIVENESS_DISPLAY_MAX).clamp(0.0, 1.0);
+        let hunger = 1.0 - self.cells.viability_ratio(attacker);
+        let attack_drive = aggression * (0.58 + hunger * 0.42);
+        if attack_drive < 0.10 {
+            return None;
+        }
+
+        let (min_x, max_x, min_y, max_y) = self.cell_grid.bucket_range(position, perception);
+        let radius_sq = perception * perception;
+        let attacker_size = self.cells.collision_bound_radius(attacker).max(0.1);
+        let mut best = None;
+        let mut best_score = 0.34;
+        for gy in min_y..=max_y {
+            for gx in min_x..=max_x {
+                for &candidate in &self.cell_grid.buckets[gy * self.cell_grid.cols + gx] {
+                    if candidate == attacker || self.cells.viability[candidate] <= 0.0 {
+                        continue;
+                    }
+                    let target_position =
+                        Vec2::new(self.cells.x[candidate], self.cells.y[candidate]);
+                    let distance_squared = position.distance_squared(target_position);
+                    if distance_squared > radius_sq {
+                        continue;
+                    }
+                    let proximity = 1.0 - distance_squared.sqrt() / perception.max(0.001);
+                    let vulnerability = 1.0 - self.cells.viability_ratio(candidate);
+                    let prey_size = self.cells.collision_bound_radius(candidate).max(0.1);
+                    let size_advantage =
+                        ((attacker_size / prey_size - 0.72) / 0.85).clamp(0.0, 1.0);
+                    let retaliation =
+                        (self.cells.lysis[candidate] / CELL_LYSIS_DISPLAY_MAX).clamp(0.0, 1.0);
+                    let score = attack_drive * 0.54
+                        + proximity * 0.20
+                        + vulnerability * 0.18
+                        + size_advantage * 0.16
+                        - retaliation * (0.08 + (1.0 - aggression) * 0.16);
+                    if score > best_score {
+                        best_score = score;
+                        best = Some((candidate, distance_squared.max(0.0001)));
+                    }
+                }
+            }
+        }
+        best
+    }
+
+    fn update_lysis_target(&mut self, attacker: usize, dt: f32) -> Option<CellTarget> {
+        if !self.is_lysis_capable(attacker) || self.cells.hunt_pause[attacker] > 0.0 {
+            return None;
+        }
+        let position = Vec2::new(self.cells.x[attacker], self.cells.y[attacker]);
+        let perception_sq = self.cells.perception[attacker].powi(2);
+        let persistence = (self.cells.persistence[attacker] / PERSISTENCE_GENE_MAX).clamp(0.0, 1.0);
+        let memory_duration = 0.20 + persistence * 2.80;
+        let stored = self.cells.target_cell[attacker];
+        if stored >= 0 {
+            let victim = stored as usize;
+            let valid = victim < self.cells.len()
+                && victim != attacker
+                && self.cells.id[victim] == self.cells.target_cell_id[attacker]
+                && self.cells.viability[victim] > 0.0;
+            if valid {
+                let target_position = Vec2::new(self.cells.x[victim], self.cells.y[victim]);
+                let distance_squared = position.distance_squared(target_position);
+                if distance_squared <= perception_sq {
+                    self.cells.target_last_x[attacker] = target_position.x;
+                    self.cells.target_last_y[attacker] = target_position.y;
+                    self.cells.target_memory[attacker] = memory_duration;
+                    return Some(CellTarget {
+                        kind: CellTargetKind::Cell,
+                        index: victim,
+                        position: target_position,
+                        distance_squared,
+                        remembered: false,
+                    });
+                }
+                self.cells.target_memory[attacker] -= dt;
+                if self.cells.target_memory[attacker] > 0.0 {
+                    let last = Vec2::new(
+                        self.cells.target_last_x[attacker],
+                        self.cells.target_last_y[attacker],
+                    );
+                    return Some(CellTarget {
+                        kind: CellTargetKind::Cell,
+                        index: victim,
+                        position: last,
+                        distance_squared: position.distance_squared(last).max(0.0001),
+                        remembered: true,
+                    });
+                }
+            } else {
+                self.cells.hunt_pause[attacker] = LYSIS_HUNT_PAUSE_AFTER_KILL;
+            }
+            self.cells.target_cell[attacker] = -1;
+            self.cells.target_cell_id[attacker] = NO_CELL_TARGET;
+            self.cells.target_memory[attacker] = 0.0;
+        }
+
+        let (victim, distance_squared) = self.best_lysis_target(attacker)?;
+        let target_position = Vec2::new(self.cells.x[victim], self.cells.y[victim]);
+        self.cells.target_cell[attacker] = victim as i32;
+        self.cells.target_cell_id[attacker] = self.cells.id[victim];
+        self.cells.target_food[attacker] = -1;
+        self.cells.target_last_x[attacker] = target_position.x;
+        self.cells.target_last_y[attacker] = target_position.y;
+        self.cells.target_memory[attacker] = memory_duration;
+        Some(CellTarget {
+            kind: CellTargetKind::Cell,
+            index: victim,
+            position: target_position,
+            distance_squared,
+            remembered: false,
+        })
+    }
+
+    fn try_lysis_attack(&mut self, attacker: usize, victim: usize) -> bool {
+        if attacker >= self.cells.len()
+            || victim >= self.cells.len()
+            || attacker == victim
+            || !self.is_lysis_capable(attacker)
+            || self.cells.lysis_cooldown[attacker] > 0.0
+            || self.cells.viability[attacker] <= 0.0
+            || self.cells.viability[victim] <= 0.0
+        {
+            return false;
+        }
+
+        let (damage, self_cost, cooldown, reach) = lysis_combat_profile(self.cells.lysis[attacker]);
+        let Some(contact) = compound_cells_lysis_contact(&self.cells, attacker, victim, reach)
+        else {
+            return false;
+        };
+        let victim_before = self.cells.viability[victim];
+        let attacker_before = self.cells.viability[attacker];
+        self.cells.viability[victim] = (self.cells.viability[victim] - damage).max(0.0);
+        self.cells.viability[attacker] = (self.cells.viability[attacker] - self_cost).max(0.0);
+        self.energy_accumulator.values.lysis_loss += victim_before - self.cells.viability[victim]
+            + attacker_before
+            - self.cells.viability[attacker];
+        self.cells.lysis_cooldown[attacker] = cooldown;
+        self.cells.begin_lysis_deformation(
+            attacker,
+            contact.section_a,
+            contact.normal,
+            LYSIS_ATTACK_DEFORM_DURATION,
+            0.58,
+        );
+        self.cells.begin_lysis_deformation(
+            victim,
+            contact.section_b,
+            -contact.normal,
+            LYSIS_HIT_DEFORM_DURATION,
+            -0.34,
+        );
+        self.spawn_lysis_particles(contact.point, contact.normal, victim, contact.section_b);
+        self.cells.jelly_intensity[attacker] =
+            (self.cells.jelly_intensity[attacker] + 0.16).min(1.0);
+        self.cells.jelly_intensity[victim] = (self.cells.jelly_intensity[victim] + 0.38).min(1.0);
+        if self.cells.viability[victim] <= 0.0 {
+            self.cells.target_cell[attacker] = -1;
+            self.cells.target_cell_id[attacker] = NO_CELL_TARGET;
+            self.cells.hunt_pause[attacker] = LYSIS_HUNT_PAUSE_AFTER_KILL;
+        }
+        true
+    }
+
     pub fn cell_target(&self, cell_index: usize) -> Option<CellTarget> {
-        if cell_index >= self.cells.len()
-            || self.cells.viability[cell_index]
-                >= self.cells.max_viability[cell_index] - HUNGER_EPSILON
+        if cell_index >= self.cells.len() {
+            return None;
+        }
+        let victim = self.cells.target_cell[cell_index];
+        if victim >= 0 {
+            let victim = victim as usize;
+            if victim < self.cells.len()
+                && self.cells.id[victim] == self.cells.target_cell_id[cell_index]
+                && self.cells.viability[victim] > 0.0
+            {
+                let position = Vec2::new(self.cells.x[cell_index], self.cells.y[cell_index]);
+                let target_position = Vec2::new(self.cells.x[victim], self.cells.y[victim]);
+                return Some(CellTarget {
+                    kind: CellTargetKind::Cell,
+                    index: victim,
+                    position: target_position,
+                    distance_squared: position.distance_squared(target_position),
+                    remembered: false,
+                });
+            }
+        }
+        if self.cells.viability[cell_index] >= self.cells.max_viability[cell_index] - HUNGER_EPSILON
         {
             return None;
         }
@@ -961,6 +1375,9 @@ impl WorldState {
     }
 
     fn update_cell_target(&mut self, cell_index: usize, dt: f32) -> Option<CellTarget> {
+        if let Some(target) = self.update_lysis_target(cell_index, dt) {
+            return Some(target);
+        }
         if self.cells.viability[cell_index] >= self.cells.max_viability[cell_index] - HUNGER_EPSILON
         {
             self.cells.target_food[cell_index] = -1;
@@ -1484,7 +1901,7 @@ impl WorldState {
         for i in 0..self.food_growers.len() {
             self.food_growers.timer[i] -= dt;
             if self.food_growers.timer[i] > 0.0
-                || (self.food.len() >= self.max_food && !self.food.has_inactive_slot())
+                || self.food.active_count_for(FoodSource::Feeder) >= self.max_feeder_food
             {
                 continue;
             }
@@ -1495,9 +1912,57 @@ impl WorldState {
                 continue;
             }
 
-            if self.try_spawn_feeder_food(i) {
+            for _ in 0..FOOD_GROWER_BATCH_SIZE {
+                if !self.try_spawn_feeder_food(i) {
+                    break;
+                }
+            }
+        }
+    }
+
+    fn grow_wild_food(&mut self, dt: f32) {
+        for index in 0..self.food.len() {
+            if self.food.active[index] || self.food.source[index] != FoodSource::Wild {
                 continue;
             }
+            self.food.regrow_timer[index] -= dt;
+            if self.food.regrow_timer[index] > 0.0 {
+                continue;
+            }
+            let position = self.safe_random_food_position();
+            self.food.respawn_wild_at(index, position, &mut self.rng);
+            self.energy_accumulator.values.wild_food_input +=
+                self.food.energy[index] * self.food.growth[index];
+        }
+    }
+
+    fn decay_food(&mut self, dt: f32) {
+        let mut expired = Vec::new();
+        for index in 0..self.food.len() {
+            if !self.food.active[index] {
+                continue;
+            }
+            self.food.age[index] += dt;
+            let spoilage_rate = match self.food.kind[index] {
+                FoodKind::Grass => GRASS_SPOILAGE_RATE,
+                FoodKind::Meat => MEAT_SPOILAGE_RATE,
+            };
+            let growth = self.food.growth[index].clamp(0.0, 1.0);
+            let before = self.food.energy[index] * growth;
+            self.food.energy[index] *= (-spoilage_rate * dt).exp();
+            let after = self.food.energy[index] * growth;
+            self.energy_accumulator.values.spoilage += (before - after).max(0.0);
+            if self.food.age[index] >= self.food.lifetime[index] || self.food.energy[index] < 0.05 {
+                self.energy_accumulator.values.spoilage += after;
+                expired.push(index);
+            }
+        }
+
+        for index in expired {
+            if self.food.is_feeder_food(index) {
+                self.clear_branchlet_food_association(index);
+            }
+            self.food.deactivate(index);
         }
     }
 
@@ -1526,7 +1991,7 @@ impl WorldState {
     }
 
     fn try_spawn_feeder_food(&mut self, grower_index: usize) -> bool {
-        if self.food.len() >= self.max_food && !self.food.has_inactive_slot() {
+        if self.food.active_count_for(FoodSource::Feeder) >= self.max_feeder_food {
             return false;
         }
 
@@ -1707,6 +2172,8 @@ impl WorldState {
                 self.arena_shape,
                 &mut self.rng,
             );
+            self.energy_accumulator.values.feeder_input +=
+                self.food.energy[food_idx] * self.food.growth[food_idx];
             if let Some(branchlet_index) = chosen_branchlet_idx {
                 self.food_growers.branchlet_food_index[branchlet_index] = Some(food_idx);
             }
@@ -1758,7 +2225,10 @@ impl WorldState {
                             + s * self.food.anchor_distance[i]
                             + c * self.food.anchor_lateral[i];
                     }
-                    self.food.growth[i] = (self.food.growth[i] + dt * 1.7).min(1.0);
+                    let previous_growth = self.food.growth[i];
+                    self.food.growth[i] = (previous_growth + dt * 1.7).min(1.0);
+                    self.energy_accumulator.values.feeder_input +=
+                        (self.food.growth[i] - previous_growth) * self.food.energy[i];
                     self.food.rotation[i] += self.food.spin[i] * dt;
                 } else {
                     self.clear_branchlet_food_association(i);
@@ -1767,6 +2237,12 @@ impl WorldState {
                 continue;
             }
 
+            if self.food.source[i] == FoodSource::Wild {
+                let previous_growth = self.food.growth[i];
+                self.food.growth[i] = (previous_growth + dt * 0.72).min(1.0);
+                self.energy_accumulator.values.wild_food_input +=
+                    (self.food.growth[i] - previous_growth) * self.food.energy[i];
+            }
             let position = Vec2::new(self.food.x[i], self.food.y[i]);
             let current = liquid_current_at(position, self.elapsed) * FOOD_CURRENT_SPEED;
             self.food.x[i] += current.x * dt;
@@ -2116,25 +2592,6 @@ impl WorldState {
         }
     }
 
-    fn respawn_world_food(&mut self, food_index: usize) {
-        let safe = self.safe_random_food_position();
-        self.food.x[food_index] = safe.x;
-        self.food.y[food_index] = safe.y;
-        self.food.kind[food_index] = FoodKind::random(&mut self.rng);
-        self.food.shape[food_index] = FoodShape::random(&mut self.rng);
-        self.food.phase[food_index] = self.rng.random_range(0.0..std::f32::consts::TAU);
-        self.food.rotation[food_index] = self.rng.random_range(0.0..std::f32::consts::TAU);
-        self.food.spin[food_index] = random_food_spin(&mut self.rng);
-        self.food.growth[food_index] = 1.0;
-        self.food.active[food_index] = true;
-        self.food.feeder[food_index] = -1;
-        self.food.anchor_branch[food_index] = -1;
-        self.food.anchor_angle[food_index] = 0.0;
-        self.food.anchor_distance[food_index] = 0.0;
-        self.food.anchor_lateral[food_index] = 0.0;
-        self.food.generation[food_index] = self.food.generation[food_index].wrapping_add(1);
-    }
-
     fn safe_random_food_position(&mut self) -> Vec2 {
         for _ in 0..96 {
             let point = random_point_in_arena(
@@ -2295,14 +2752,22 @@ impl WorldState {
     }
 
     fn decay_viability(&mut self, dt: f32) {
+        let mut total_drain = 0.0;
         for i in 0..self.cells.len() {
-            let speed_cost = (self.cells.speed[i] / CELL_SPEED_DISPLAY_MAX).clamp(0.0, 1.5);
-            let biomass_cost = self.cells.biomass_sum(i) * SOFT_BODY_BIOMASS_DRAIN_RATE;
-            let drain = (VIABILITY_DECAY_BASE + speed_cost * VIABILITY_DECAY_SPEED + biomass_cost)
-                * self.cells.morphology_metabolism_factor(i)
-                * dt;
-            self.cells.viability[i] = (self.cells.viability[i] - drain).max(0.0);
+            let drain = self.cell_metabolic_drain_rate(i) * dt;
+            let before = self.cells.viability[i];
+            self.cells.viability[i] = (before - drain).max(0.0);
+            total_drain += before - self.cells.viability[i];
         }
+        self.energy_accumulator.values.metabolism += total_drain;
+    }
+
+    fn cell_metabolic_drain_rate(&self, index: usize) -> f32 {
+        let speed_cost = (self.cells.speed[index] / CELL_SPEED_DISPLAY_MAX).clamp(0.0, 1.5);
+        let biomass_cost = self.cells.biomass_sum(index) * SOFT_BODY_BIOMASS_DRAIN_RATE;
+        let lysis_cost = (self.cells.lysis[index] / CELL_LYSIS_DISPLAY_MAX).clamp(0.0, 1.0) * 0.012;
+        (VIABILITY_DECAY_BASE + speed_cost * VIABILITY_DECAY_SPEED + biomass_cost + lysis_cost)
+            * self.cells.morphology_metabolism_factor(index)
     }
 
     fn remove_dead_cells(&mut self) {
@@ -2376,7 +2841,11 @@ impl WorldState {
                 self.cells.extra_sections[parent_index][extra_index].y += parent_shift.y;
             }
         }
-        let split_viability = (self.cells.viability[parent_index] * 0.5)
+        let construction_cost = (self.cells.biomass_sum(parent_index)
+            * CELL_STRUCTURE_ENERGY_PER_BIOMASS)
+            .min(self.cells.viability[parent_index] * 0.25);
+        self.energy_accumulator.values.mitosis_cost += construction_cost;
+        let split_viability = ((self.cells.viability[parent_index] - construction_cost) * 0.5)
             .clamp(0.0, self.cells.max_viability[parent_index]);
         self.cells.viability[parent_index] = split_viability;
         self.cells.push_child_from(
@@ -2396,9 +2865,23 @@ impl WorldState {
     }
 
     fn spawn_meat_from_cell(&mut self, cell_index: usize) {
-        let chunk_count = self.rng.random_range(MEAT_CHUNKS_MIN..=MEAT_CHUNKS_MAX);
+        let recoverable_energy = self.cells.viability[cell_index] * DEATH_VIABILITY_RECOVERY
+            + self.cells.biomass_sum(cell_index)
+                * CELL_STRUCTURE_ENERGY_PER_BIOMASS
+                * DEATH_STRUCTURE_RECOVERY;
+        let available_slots = self
+            .max_carrion
+            .saturating_sub(self.food.active_count_for(FoodSource::Carrion));
+        let chunk_count = ((recoverable_energy / MEAT_CHUNK_ENERGY_MAX).ceil() as usize)
+            .clamp(1, MEAT_CHUNKS_MAX)
+            .min(available_slots);
         let origin = Vec2::new(self.cells.x[cell_index], self.cells.y[cell_index]);
         self.cell_sound_events.push(origin);
+        if chunk_count == 0 || recoverable_energy <= 0.05 {
+            return;
+        }
+        let chunk_energy = (recoverable_energy / chunk_count as f32).min(MEAT_CHUNK_ENERGY_MAX);
+        self.energy_accumulator.values.carrion_transfer += chunk_energy * chunk_count as f32;
         let spread = (self.cells.radius[cell_index] * 3.2).max(18.0);
 
         for _ in 0..chunk_count {
@@ -2412,6 +2895,7 @@ impl WorldState {
                 self.width,
                 self.height,
                 self.arena_shape,
+                chunk_energy,
                 &mut self.rng,
             );
         }
@@ -2419,6 +2903,14 @@ impl WorldState {
 
     pub fn cell_index_by_id(&self, cell_id: u64) -> Option<usize> {
         self.cells.id.iter().position(|id| *id == cell_id)
+    }
+
+    pub fn active_food_counts(&self) -> (usize, usize, usize) {
+        (
+            self.food.active_count_for(FoodSource::Wild),
+            self.food.active_count_for(FoodSource::Feeder),
+            self.food.active_count_for(FoodSource::Carrion),
+        )
     }
 
     #[allow(dead_code)]
@@ -2469,7 +2961,6 @@ impl WorldState {
     }
 
     fn solve_cell_collisions(&mut self, dt: f32) {
-        self.cell_grid.rebuild(&self.cells);
         self.collision_pairs.clear();
         let max_bound = (0..self.cells.len())
             .map(|index| self.cells.collision_bound_radius(index))
@@ -2872,6 +3363,83 @@ fn find_compound_contact(cells: &CellStore, a: usize, b: usize) -> Option<Compou
         }
     }
     best
+}
+
+#[derive(Clone, Copy)]
+struct LysisContact {
+    section_a: u8,
+    section_b: u8,
+    normal: Vec2,
+    point: Vec2,
+}
+
+fn section_near_body_t(cells: &CellStore, index: usize, t: f32) -> u8 {
+    if cells.section_count[index] < 2 {
+        return 0;
+    }
+    let edge_count = cells.section_count[index] as usize - 1;
+    let scaled = t.clamp(0.0, 1.0) * edge_count as f32;
+    let edge = scaled.floor().min((edge_count - 1) as f32) as usize;
+    let local = (scaled - edge as f32).clamp(0.0, 1.0);
+    if local < 0.5 {
+        cells.section_parents[index][edge]
+    } else {
+        edge as u8 + 1
+    }
+}
+
+fn compound_cells_lysis_contact(
+    cells: &CellStore,
+    a: usize,
+    b: usize,
+    margin: f32,
+) -> Option<LysisContact> {
+    let segments_a = if cells.section_count[a] >= 2 {
+        (cells.section_count[a] as usize - 1) * 2
+    } else {
+        1
+    };
+    let segments_b = if cells.section_count[b] >= 2 {
+        (cells.section_count[b] as usize - 1) * 2
+    } else {
+        1
+    };
+    let samples_a = compound_curve_samples(cells, a, segments_a);
+    let samples_b = compound_curve_samples(cells, b, segments_b);
+    let mut best: Option<(f32, LysisContact)> = None;
+    for segment_a in 0..segments_a {
+        for segment_b in 0..segments_b {
+            let (local_a, local_b, point_a, point_b) = closest_segment_points(
+                samples_a[segment_a].center,
+                samples_a[segment_a + 1].center,
+                samples_b[segment_b].center,
+                samples_b[segment_b + 1].center,
+            );
+            let delta = point_b - point_a;
+            let distance = delta.length();
+            let direction = delta.try_normalize().unwrap_or(Vec2::X);
+            let t_a = (segment_a as f32 + local_a) / segments_a as f32;
+            let t_b = (segment_b as f32 + local_b) / segments_b as f32;
+            let radius_a = compound_membrane_radius(cells, a, t_a, direction);
+            let radius_b = compound_membrane_radius(cells, b, t_b, -direction);
+            let surface_distance = radius_a + radius_b + margin.max(0.0);
+            if distance <= surface_distance {
+                let surface_a = point_a + direction * radius_a;
+                let surface_b = point_b - direction * radius_b;
+                let contact = LysisContact {
+                    section_a: section_near_body_t(cells, a, t_a),
+                    section_b: section_near_body_t(cells, b, t_b),
+                    normal: direction,
+                    point: (surface_a + surface_b) * 0.5,
+                };
+                let gap = distance - radius_a - radius_b;
+                if best.is_none_or(|(previous_gap, _)| gap < previous_gap) {
+                    best = Some((gap, contact));
+                }
+            }
+        }
+    }
+    best.map(|(_, contact)| contact)
 }
 
 fn compound_membrane_radius(cells: &CellStore, index: usize, t: f32, direction: Vec2) -> f32 {
@@ -3631,12 +4199,22 @@ pub struct CellStore {
     pub turn_speed: Vec<f32>,
     pub perception: Vec<f32>,
     pub persistence: Vec<f32>,
+    pub aggressiveness: Vec<f32>,
+    pub lysis: Vec<f32>,
+    lysis_cooldown: Vec<f32>,
+    lysis_deform_time: Vec<[f32; 4]>,
+    lysis_deform_duration: Vec<[f32; 4]>,
+    lysis_deform_angle: Vec<[f32; 4]>,
+    lysis_deform_amount: Vec<[f32; 4]>,
+    hunt_pause: Vec<f32>,
     target_food: Vec<i32>,
     target_food_generation: Vec<u32>,
     target_last_x: Vec<f32>,
     target_last_y: Vec<f32>,
     target_memory: Vec<f32>,
     target_recheck: Vec<f32>,
+    target_cell: Vec<i32>,
+    target_cell_id: Vec<u64>,
     pub section_count: Vec<u8>,
     pub section_spacing: Vec<f32>,
     pub section_bend: Vec<f32>,
@@ -3771,6 +4349,70 @@ impl CellStore {
         (parent.y - center.y).atan2(parent.x - center.x)
     }
 
+    fn begin_lysis_deformation(
+        &mut self,
+        index: usize,
+        section: u8,
+        direction: Vec2,
+        duration: f32,
+        amount: f32,
+    ) {
+        let slot = section.min(3) as usize;
+        self.lysis_deform_time[index][slot] = duration;
+        self.lysis_deform_duration[index][slot] = duration.max(0.001);
+        self.lysis_deform_angle[index][slot] = direction.y.atan2(direction.x);
+        self.lysis_deform_amount[index][slot] = amount;
+    }
+
+    pub(crate) fn lysis_visual_radii(&self, index: usize, section: u8) -> [f32; SOFT_BODY_POINTS] {
+        let (mut radii, offsets, core_radius) = match section {
+            0 => (
+                self.visual_radii[index],
+                self.angle_offsets[index],
+                self.core_radius[index],
+            ),
+            1 => (
+                self.tail_visual_radii[index],
+                self.tail_angle_offsets[index],
+                self.tail_core_radius[index],
+            ),
+            _ => {
+                let extra = self.extra_sections[index][section as usize - 2];
+                (extra.visual_radii, extra.angle_offsets, extra.core_radius)
+            }
+        };
+        let slot = section.min(3) as usize;
+        let remaining = self.lysis_deform_time[index][slot];
+        if remaining <= 0.0 {
+            return radii;
+        }
+
+        let duration = self.lysis_deform_duration[index][slot].max(0.001);
+        let progress = (1.0 - remaining / duration).clamp(0.0, 1.0);
+        let amount = self.lysis_deform_amount[index][slot];
+        let base_pulse = (progress * std::f32::consts::PI).sin().max(0.0).powf(0.72);
+        let spring = if amount > 0.0 {
+            1.0 + (progress * std::f32::consts::TAU * 1.5).sin() * 0.16 * (1.0 - progress)
+        } else {
+            1.0
+        };
+        let pulse = base_pulse * spring;
+        let impact_angle = self.lysis_deform_angle[index][slot];
+        let heading = self.section_heading(index, section);
+        let width = if amount > 0.0 { 1.02 } else { 1.28 };
+        let scale = radii.iter().copied().fold(core_radius, f32::max);
+        for ray in 0..SOFT_BODY_POINTS {
+            let ray_angle = heading + SOFT_BODY_BASE_ANGLES[ray] + offsets[ray];
+            let delta = (ray_angle - impact_angle + std::f32::consts::PI)
+                .rem_euclid(std::f32::consts::TAU)
+                - std::f32::consts::PI;
+            let linear = (1.0 - delta.abs() / width).clamp(0.0, 1.0);
+            let weight = linear * linear * (3.0 - 2.0 * linear);
+            radii[ray] = (radii[ray] + scale * amount * pulse * weight).max(core_radius);
+        }
+        radii
+    }
+
     fn apply_section_impulse(&mut self, index: usize, section: u8, impulse: Vec2) {
         match section {
             0 => {
@@ -3897,12 +4539,22 @@ impl CellStore {
             turn_speed: Vec::with_capacity(count),
             perception: Vec::with_capacity(count),
             persistence: Vec::with_capacity(count),
+            aggressiveness: Vec::with_capacity(count),
+            lysis: Vec::with_capacity(count),
+            lysis_cooldown: Vec::with_capacity(count),
+            lysis_deform_time: Vec::with_capacity(count),
+            lysis_deform_duration: Vec::with_capacity(count),
+            lysis_deform_angle: Vec::with_capacity(count),
+            lysis_deform_amount: Vec::with_capacity(count),
+            hunt_pause: Vec::with_capacity(count),
             target_food: Vec::with_capacity(count),
             target_food_generation: Vec::with_capacity(count),
             target_last_x: Vec::with_capacity(count),
             target_last_y: Vec::with_capacity(count),
             target_memory: Vec::with_capacity(count),
             target_recheck: Vec::with_capacity(count),
+            target_cell: Vec::with_capacity(count),
+            target_cell_id: Vec::with_capacity(count),
             section_count: Vec::with_capacity(count),
             section_spacing: Vec::with_capacity(count),
             section_bend: Vec::with_capacity(count),
@@ -3961,7 +4613,8 @@ impl CellStore {
         };
 
         for _cell_index in 0..count {
-            let radius = rng.random_range(CELL_SIZE_GENE_MIN..CELL_SIZE_GENE_MAX);
+            let size_gene = rng.random_range(0.0_f32..1.0).powf(1.12);
+            let radius = CELL_SIZE_GENE_MIN + (CELL_SIZE_GENE_MAX - CELL_SIZE_GENE_MIN) * size_gene;
             let angle = rng.random_range(0.0..std::f32::consts::TAU);
             let speed = rng.random_range(42.0..72.0);
             let turn_speed = rng.random_range(0.85..2.35);
@@ -3987,12 +4640,33 @@ impl CellStore {
             store.turn_speed.push(turn_speed);
             store.perception.push(rng.random_range(260.0..520.0));
             store.persistence.push(rng.random_range(18.0..62.0));
+            let lysis = if rng.random_bool(INITIAL_LYSIS_CHANCE) {
+                rng.random_range(28.0..72.0)
+            } else {
+                0.0
+            };
+            store
+                .aggressiveness
+                .push(if lysis >= LYSIS_ACTIVE_THRESHOLD {
+                    rng.random_range(32.0..82.0)
+                } else {
+                    rng.random_range(0.0..42.0)
+                });
+            store.lysis.push(lysis);
+            store.lysis_cooldown.push(0.0);
+            store.lysis_deform_time.push([0.0; 4]);
+            store.lysis_deform_duration.push([1.0; 4]);
+            store.lysis_deform_angle.push([0.0; 4]);
+            store.lysis_deform_amount.push([0.0; 4]);
+            store.hunt_pause.push(0.0);
             store.target_food.push(-1);
             store.target_food_generation.push(0);
             store.target_last_x.push(position.x);
             store.target_last_y.push(position.y);
             store.target_memory.push(0.0);
             store.target_recheck.push(rng.random_range(0.0..0.24));
+            store.target_cell.push(-1);
+            store.target_cell_id.push(NO_CELL_TARGET);
             let section_count = if segmented_cells && rng.random_bool(INITIAL_SEGMENTED_CHANCE) {
                 let topology_roll = rng.random::<f32>();
                 if topology_roll < 0.70 {
@@ -4259,12 +4933,42 @@ impl CellStore {
             susceptibility,
             rng,
         ));
+        self.aggressiveness.push(mutate_gene(
+            self.aggressiveness[parent_index],
+            0.0,
+            CELL_AGGRESSIVENESS_DISPLAY_MAX,
+            susceptibility,
+            rng,
+        ));
+        let parent_lysis = self.lysis[parent_index];
+        let child_lysis = if parent_lysis >= LYSIS_ACTIVE_THRESHOLD {
+            mutate_gene(
+                parent_lysis,
+                0.0,
+                CELL_LYSIS_DISPLAY_MAX,
+                susceptibility,
+                rng,
+            )
+        } else if rng.random_bool(0.002 + susceptibility as f64 * 0.00008) {
+            rng.random_range(18.0..38.0)
+        } else {
+            0.0
+        };
+        self.lysis.push(child_lysis);
+        self.lysis_cooldown.push(0.0);
+        self.lysis_deform_time.push([0.0; 4]);
+        self.lysis_deform_duration.push([1.0; 4]);
+        self.lysis_deform_angle.push([0.0; 4]);
+        self.lysis_deform_amount.push([0.0; 4]);
+        self.hunt_pause.push(0.0);
         self.target_food.push(-1);
         self.target_food_generation.push(0);
         self.target_last_x.push(position.x);
         self.target_last_y.push(position.y);
         self.target_memory.push(0.0);
         self.target_recheck.push(rng.random_range(0.0..0.24));
+        self.target_cell.push(-1);
+        self.target_cell_id.push(NO_CELL_TARGET);
         let mut child_section_count = self.section_count[parent_index];
         let topology_mutation_chance = 0.015 + susceptibility as f64 / 100.0 * 0.055;
         if self.segmented_enabled && rng.random_bool(topology_mutation_chance) {
@@ -4445,8 +5149,11 @@ impl CellStore {
         self.morphology_metabolism.push(1.0);
         self.ray_dir_x.push([0.0; SOFT_BODY_POINTS]);
         self.ray_dir_y.push([0.0; SOFT_BODY_POINTS]);
-        self.rebuild_soft_body_cache(self.len() - 1);
-        self.rebuild_tail_cache(self.len() - 1);
+        let child_index = self.len() - 1;
+        self.rebuild_soft_body_cache(child_index);
+        self.rebuild_tail_cache(child_index);
+        // Morphology changes capacity, but may not mint or erase the inherited energy split.
+        self.viability[child_index] = viability.clamp(0.0, self.max_viability[child_index]);
         self.shape_wave_a.push(self.shape_wave_a[parent_index]);
         self.shape_wave_b.push(self.shape_wave_b[parent_index]);
         self.shape_phase
@@ -4478,12 +5185,22 @@ impl CellStore {
         self.turn_speed.swap_remove(index);
         self.perception.swap_remove(index);
         self.persistence.swap_remove(index);
+        self.aggressiveness.swap_remove(index);
+        self.lysis.swap_remove(index);
+        self.lysis_cooldown.swap_remove(index);
+        self.lysis_deform_time.swap_remove(index);
+        self.lysis_deform_duration.swap_remove(index);
+        self.lysis_deform_angle.swap_remove(index);
+        self.lysis_deform_amount.swap_remove(index);
+        self.hunt_pause.swap_remove(index);
         self.target_food.swap_remove(index);
         self.target_food_generation.swap_remove(index);
         self.target_last_x.swap_remove(index);
         self.target_last_y.swap_remove(index);
         self.target_memory.swap_remove(index);
         self.target_recheck.swap_remove(index);
+        self.target_cell.swap_remove(index);
+        self.target_cell_id.swap_remove(index);
         self.section_count.swap_remove(index);
         self.section_spacing.swap_remove(index);
         self.section_bend.swap_remove(index);
@@ -5020,6 +5737,11 @@ pub struct FoodStore {
     pub rotation: Vec<f32>,
     pub spin: Vec<f32>,
     pub growth: Vec<f32>,
+    pub energy: Vec<f32>,
+    pub age: Vec<f32>,
+    pub lifetime: Vec<f32>,
+    source: Vec<FoodSource>,
+    regrow_timer: Vec<f32>,
     pub active: Vec<bool>,
     generation: Vec<u32>,
     pub feeder: Vec<i32>,
@@ -5046,6 +5768,11 @@ impl FoodStore {
             rotation: Vec::with_capacity(count),
             spin: Vec::with_capacity(count),
             growth: Vec::with_capacity(count),
+            energy: Vec::with_capacity(count),
+            age: Vec::with_capacity(count),
+            lifetime: Vec::with_capacity(count),
+            source: Vec::with_capacity(count),
+            regrow_timer: Vec::with_capacity(count),
             active: Vec::with_capacity(count),
             generation: Vec::with_capacity(count),
             feeder: Vec::with_capacity(count),
@@ -5055,13 +5782,8 @@ impl FoodStore {
             anchor_lateral: Vec::with_capacity(count),
         };
 
-        for index in 0..count {
-            let kind = if index % 2 == 0 {
-                FoodKind::Grass
-            } else {
-                FoodKind::Meat
-            };
-            store.push_random(arena_w, arena_h, arena_shape, kind, rng);
+        for _ in 0..count {
+            store.push_random(arena_w, arena_h, arena_shape, rng);
         }
 
         store
@@ -5072,9 +5794,9 @@ impl FoodStore {
         arena_w: f32,
         arena_h: f32,
         arena_shape: ArenaShape,
-        kind: FoodKind,
         rng: &mut SmallRng,
     ) {
+        let kind = FoodKind::Grass;
         let position = random_point_in_arena(arena_w, arena_h, arena_shape, FOOD_RADIUS, rng);
         self.x.push(position.x);
         self.y.push(position.y);
@@ -5086,6 +5808,11 @@ impl FoodStore {
             .push(rng.random_range(0.0..std::f32::consts::TAU));
         self.spin.push(random_food_spin(rng));
         self.growth.push(1.0);
+        self.energy.push(WORLD_GRASS_ENERGY);
+        self.age.push(0.0);
+        self.lifetime.push(food_lifetime(kind, rng));
+        self.source.push(FoodSource::Wild);
+        self.regrow_timer.push(0.0);
         self.active.push(true);
         self.generation.push(1);
         self.feeder.push(-1);
@@ -5114,7 +5841,7 @@ impl FoodStore {
         let x = point.x;
         let y = point.y;
 
-        if let Some(index) = self.inactive_slot() {
+        if let Some(index) = self.inactive_slot_for(FoodSource::Feeder) {
             self.generation[index] = self.generation[index].wrapping_add(1);
             self.x[index] = x;
             self.y[index] = y;
@@ -5124,6 +5851,11 @@ impl FoodStore {
             self.rotation[index] = anchor_angle;
             self.spin[index] = 0.0;
             self.growth[index] = 0.24;
+            self.energy[index] = FEEDER_FOOD_ENERGY;
+            self.age[index] = 0.0;
+            self.lifetime[index] = rng.random_range(55.0..90.0);
+            self.source[index] = FoodSource::Feeder;
+            self.regrow_timer[index] = 0.0;
             self.active[index] = true;
             self.feeder[index] = grower_index;
             self.anchor_branch[index] = branch_index;
@@ -5142,6 +5874,11 @@ impl FoodStore {
         self.rotation.push(anchor_angle);
         self.spin.push(0.0);
         self.growth.push(0.24);
+        self.energy.push(FEEDER_FOOD_ENERGY);
+        self.age.push(0.0);
+        self.lifetime.push(rng.random_range(55.0..90.0));
+        self.source.push(FoodSource::Feeder);
+        self.regrow_timer.push(0.0);
         self.active.push(true);
         self.generation.push(1);
         self.feeder.push(grower_index);
@@ -5159,6 +5896,7 @@ impl FoodStore {
         arena_w: f32,
         arena_h: f32,
         arena_shape: ArenaShape,
+        energy: f32,
         rng: &mut SmallRng,
     ) {
         let point =
@@ -5166,7 +5904,7 @@ impl FoodStore {
         let x = point.x;
         let y = point.y;
 
-        if let Some(index) = self.inactive_slot() {
+        if let Some(index) = self.inactive_slot_for(FoodSource::Carrion) {
             self.generation[index] = self.generation[index].wrapping_add(1);
             self.x[index] = x;
             self.y[index] = y;
@@ -5176,6 +5914,11 @@ impl FoodStore {
             self.rotation[index] = rng.random_range(0.0..std::f32::consts::TAU);
             self.spin[index] = random_food_spin(rng);
             self.growth[index] = 1.0;
+            self.energy[index] = energy.max(0.0);
+            self.age[index] = 0.0;
+            self.lifetime[index] = food_lifetime(FoodKind::Meat, rng);
+            self.source[index] = FoodSource::Carrion;
+            self.regrow_timer[index] = 0.0;
             self.active[index] = true;
             self.feeder[index] = -1;
             self.anchor_branch[index] = -1;
@@ -5195,6 +5938,11 @@ impl FoodStore {
             .push(rng.random_range(0.0..std::f32::consts::TAU));
         self.spin.push(random_food_spin(rng));
         self.growth.push(1.0);
+        self.energy.push(energy.max(0.0));
+        self.age.push(0.0);
+        self.lifetime.push(food_lifetime(FoodKind::Meat, rng));
+        self.source.push(FoodSource::Carrion);
+        self.regrow_timer.push(0.0);
         self.active.push(true);
         self.generation.push(1);
         self.feeder.push(-1);
@@ -5212,12 +5960,19 @@ impl FoodStore {
         self.active.iter().filter(|active| **active).count()
     }
 
-    fn inactive_slot(&self) -> Option<usize> {
-        self.active.iter().position(|active| !*active)
+    fn active_count_for(&self, source: FoodSource) -> usize {
+        self.active
+            .iter()
+            .zip(&self.source)
+            .filter(|(active, item_source)| **active && **item_source == source)
+            .count()
     }
 
-    fn has_inactive_slot(&self) -> bool {
-        self.inactive_slot().is_some()
+    fn inactive_slot_for(&self, source: FoodSource) -> Option<usize> {
+        self.active
+            .iter()
+            .zip(&self.source)
+            .position(|(active, item_source)| !*active && *item_source == source)
     }
 
     fn is_feeder_food(&self, index: usize) -> bool {
@@ -5232,11 +5987,49 @@ impl FoodStore {
         self.generation[index] = self.generation[index].wrapping_add(1);
         self.active[index] = false;
         self.growth[index] = 0.0;
+        self.energy[index] = 0.0;
+        self.age[index] = 0.0;
+        self.lifetime[index] = 0.0;
+        self.regrow_timer[index] = if self.source[index] == FoodSource::Wild {
+            WILD_GRASS_REGROW_MIN + self.phase[index].sin().abs() * WILD_GRASS_REGROW_SPREAD
+        } else {
+            0.0
+        };
         self.feeder[index] = -1;
         self.anchor_branch[index] = -1;
         self.anchor_angle[index] = 0.0;
         self.anchor_distance[index] = 0.0;
         self.anchor_lateral[index] = 0.0;
+    }
+
+    fn respawn_wild_at(&mut self, index: usize, position: Vec2, rng: &mut SmallRng) {
+        debug_assert_eq!(self.source[index], FoodSource::Wild);
+        self.generation[index] = self.generation[index].wrapping_add(1);
+        self.x[index] = position.x;
+        self.y[index] = position.y;
+        self.kind[index] = FoodKind::Grass;
+        self.shape[index] = FoodShape::random(rng);
+        self.phase[index] = rng.random_range(0.0..std::f32::consts::TAU);
+        self.rotation[index] = rng.random_range(0.0..std::f32::consts::TAU);
+        self.spin[index] = random_food_spin(rng);
+        self.growth[index] = rng.random_range(0.18..0.34);
+        self.energy[index] = WORLD_GRASS_ENERGY;
+        self.age[index] = 0.0;
+        self.lifetime[index] = food_lifetime(FoodKind::Grass, rng);
+        self.regrow_timer[index] = 0.0;
+        self.active[index] = true;
+        self.feeder[index] = -1;
+        self.anchor_branch[index] = -1;
+        self.anchor_angle[index] = 0.0;
+        self.anchor_distance[index] = 0.0;
+        self.anchor_lateral[index] = 0.0;
+    }
+}
+
+fn food_lifetime(kind: FoodKind, rng: &mut SmallRng) -> f32 {
+    match kind {
+        FoodKind::Grass => rng.random_range(70.0..120.0),
+        FoodKind::Meat => rng.random_range(22.0..42.0),
     }
 }
 
@@ -6032,6 +6825,39 @@ mod tests {
         );
     }
 
+    #[test]
+    fn simulator_10k_primary_production_matches_metabolic_demand() {
+        let world = WorldState::new(&SimConfig::default());
+        let demand = (0..world.cells.len())
+            .map(|index| world.cell_metabolic_drain_rate(index))
+            .sum::<f32>();
+        let feeder_production = world
+            .food_growers
+            .interval
+            .iter()
+            .map(|interval| {
+                FOOD_GROWER_BATCH_SIZE as f32 * FEEDER_FOOD_ENERGY / interval.max(0.001)
+            })
+            .sum::<f32>();
+        let average_wild_regrow =
+            WILD_GRASS_REGROW_MIN + WILD_GRASS_REGROW_SPREAD * 2.0 / std::f32::consts::PI;
+        let wild_production = world
+            .food
+            .source
+            .iter()
+            .filter(|source| **source == FoodSource::Wild)
+            .count() as f32
+            * WORLD_GRASS_ENERGY
+            / average_wild_regrow;
+        let production = feeder_production + wild_production;
+        let ratio = production / demand.max(0.001);
+
+        assert!(
+            (1.02..=1.20).contains(&ratio),
+            "10k energy ratio must stay near equilibrium: production={production:.2}, demand={demand:.2}, ratio={ratio:.3}"
+        );
+    }
+
     fn complete_test_mitosis(world: &mut WorldState) {
         world.process_cell_lifecycle();
         assert!(world.cells.mitosis_progress[0] > 0.0);
@@ -6193,6 +7019,7 @@ mod tests {
         };
         let mut world = WorldState::new(&config);
         let initial_food = world.food.len();
+        assert!(world.food.kind.iter().all(|kind| *kind == FoodKind::Grass));
         let max_food = config.food + world.food_growers.len() * 80;
 
         for _ in 0..120 {
@@ -6204,16 +7031,194 @@ mod tests {
     }
 
     #[test]
-    fn food_spawns_as_grass_and_meat() {
+    fn initial_and_grown_food_is_grass_only() {
         let config = SimConfig {
             cells: 0,
             food: 12,
             ..default()
         };
-        let world = WorldState::new(&config);
+        let mut world = WorldState::new(&config);
 
-        assert!(world.food.kind.contains(&FoodKind::Grass));
-        assert!(world.food.kind.contains(&FoodKind::Meat));
+        assert!(world.food.kind.iter().all(|kind| *kind == FoodKind::Grass));
+        let wild_index = world
+            .food
+            .source
+            .iter()
+            .position(|source| *source == FoodSource::Wild)
+            .expect("wild grass slot");
+        world.food.deactivate(wild_index);
+        world.food.regrow_timer[wild_index] = 0.0;
+        world.grow_wild_food(0.0);
+
+        assert!(world.food.active[wild_index]);
+        assert_eq!(world.food.kind[wild_index], FoodKind::Grass);
+    }
+
+    #[test]
+    fn resting_cell_always_spends_viability() {
+        let mut world = WorldState::new(&SimConfig {
+            cells: 1,
+            food: 0,
+            obstacles: 0,
+            food_growers: 0,
+            ..default()
+        });
+        world.cells.vx[0] = 0.0;
+        world.cells.vy[0] = 0.0;
+        let before = world.cells.viability[0];
+
+        world.decay_viability(1.0);
+
+        let spent = before - world.cells.viability[0];
+        assert!(spent >= VIABILITY_DECAY_BASE * 0.75);
+    }
+
+    #[test]
+    fn aggressiveness_controls_whether_lysis_seeks_prey() {
+        let mut world = WorldState::new(&SimConfig {
+            cells: 2,
+            food: 0,
+            obstacles: 0,
+            food_growers: 0,
+            segmented_cells: false,
+            ..default()
+        });
+        world.cells.x[0] = 0.0;
+        world.cells.y[0] = 0.0;
+        world.cells.x[1] = 40.0;
+        world.cells.y[1] = 0.0;
+        world.cells.perception[0] = 300.0;
+        world.cells.lysis[0] = 70.0;
+        world.cells.aggressiveness[0] = 100.0;
+        world.cell_grid.rebuild(&world.cells);
+
+        assert_eq!(world.best_lysis_target(0).map(|target| target.0), Some(1));
+        world.cells.aggressiveness[0] = 0.0;
+        assert!(world.best_lysis_target(0).is_none());
+    }
+
+    #[test]
+    fn aggressiveness_increases_meat_energy_without_buffing_grass() {
+        let raw_energy = 8.0;
+        let passive_meat = digested_food_energy(FoodKind::Meat, raw_energy, 0.0);
+        let aggressive_meat =
+            digested_food_energy(FoodKind::Meat, raw_energy, CELL_AGGRESSIVENESS_DISPLAY_MAX);
+
+        assert_eq!(passive_meat, raw_energy);
+        assert!((aggressive_meat - raw_energy * 4.0).abs() < 0.001);
+        assert_eq!(
+            digested_food_energy(FoodKind::Grass, raw_energy, CELL_AGGRESSIVENESS_DISPLAY_MAX),
+            raw_energy
+        );
+    }
+
+    #[test]
+    fn contact_lysis_damages_both_cells_and_respects_cooldown() {
+        let mut world = WorldState::new(&SimConfig {
+            cells: 2,
+            food: 0,
+            obstacles: 0,
+            food_growers: 0,
+            segmented_cells: false,
+            ..default()
+        });
+        set_test_cell_soft_radius(&mut world, 0, 8.0);
+        set_test_cell_soft_radius(&mut world, 1, 8.0);
+        world.cells.x[0] = 0.0;
+        world.cells.y[0] = 0.0;
+        world.cells.x[1] = 14.0;
+        world.cells.y[1] = 0.0;
+        world.cells.heading[0] = 0.0;
+        world.cells.heading[1] = 0.0;
+        world.cells.viability[0] = 50.0;
+        world.cells.viability[1] = 50.0;
+        world.cells.lysis[0] = 100.0;
+
+        assert!(world.try_lysis_attack(0, 1));
+        let attacker_after = world.cells.viability[0];
+        let victim_after = world.cells.viability[1];
+        assert!(50.0 - victim_after > 50.0 - attacker_after);
+        assert!(world.cells.lysis_cooldown[0] > 0.0);
+        assert_eq!(world.visual_particles.len(), LYSIS_PARTICLES_PER_HIT);
+        world.cells.lysis_deform_time[0][0] *= 0.55;
+        world.cells.lysis_deform_time[1][0] *= 0.55;
+        let attacker_radii = world.cells.lysis_visual_radii(0, 0);
+        let victim_radii = world.cells.lysis_visual_radii(1, 0);
+        assert!(attacker_radii[0] > world.cells.visual_radii[0][0]);
+        assert!(victim_radii[4] < world.cells.visual_radii[1][4]);
+        assert!(victim_radii[4] >= world.cells.core_radius[1]);
+        assert!(!world.try_lysis_attack(0, 1));
+        assert_eq!(world.cells.viability[0], attacker_after);
+        assert_eq!(world.cells.viability[1], victim_after);
+    }
+
+    #[test]
+    fn developed_lysis_attacks_faster_but_at_shorter_range() {
+        let weak = lysis_combat_profile(20.0);
+        let strong = lysis_combat_profile(100.0);
+        assert!(strong.2 < weak.2);
+        assert!(strong.3 < weak.3);
+
+        let mut world = WorldState::new(&SimConfig {
+            cells: 2,
+            food: 0,
+            obstacles: 0,
+            food_growers: 0,
+            segmented_cells: false,
+            ..default()
+        });
+        set_test_cell_soft_radius(&mut world, 0, 8.0);
+        set_test_cell_soft_radius(&mut world, 1, 8.0);
+        world.cells.x[0] = 0.0;
+        world.cells.x[1] = 19.0;
+        world.cells.y[0] = 0.0;
+        world.cells.y[1] = 0.0;
+        world.cells.lysis[0] = 20.0;
+        assert!(world.try_lysis_attack(0, 1));
+
+        world.cells.lysis_cooldown[0] = 0.0;
+        world.cells.lysis[0] = 100.0;
+        assert!(!world.try_lysis_attack(0, 1));
+    }
+
+    #[test]
+    fn size_gene_has_a_visibly_exaggerated_physical_range() {
+        assert!(CELL_SIZE_GENE_MAX / CELL_SIZE_GENE_MIN >= 2.5);
+        let world = WorldState::new(&SimConfig {
+            cells: 2_048,
+            food: 0,
+            obstacles: 0,
+            food_growers: 0,
+            ..default()
+        });
+        let min = world
+            .cells
+            .radius
+            .iter()
+            .copied()
+            .fold(f32::INFINITY, f32::min);
+        let max = world.cells.radius.iter().copied().fold(0.0, f32::max);
+        assert!(max / min > 2.4);
+    }
+
+    #[test]
+    fn energy_flow_reports_total_resting_metabolism_per_second() {
+        let mut world = WorldState::new(&SimConfig {
+            cells: 32,
+            food: 0,
+            obstacles: 0,
+            food_growers: 0,
+            ..default()
+        });
+        let expected = (0..world.cells.len())
+            .map(|index| world.cell_metabolic_drain_rate(index))
+            .sum::<f32>();
+
+        world.decay_viability(0.5);
+        world.finish_energy_flow_window(0.5);
+
+        assert!((world.energy_flow.metabolism - expected).abs() < 0.01);
+        assert_eq!(world.energy_flow.external_input(), 0.0);
     }
 
     #[test]
@@ -7205,20 +8210,28 @@ mod tests {
         };
         let mut world = WorldState::new(&config);
         let initial_food = world.food.len();
+        let recoverable = world.cells.biomass_sum(0)
+            * CELL_STRUCTURE_ENERGY_PER_BIOMASS
+            * DEATH_STRUCTURE_RECOVERY;
         world.cells.viability[0] = 0.0;
 
         world.remove_dead_cells();
 
         assert_eq!(world.cells.len(), 0);
-        assert!(world.food.len() >= initial_food + MEAT_CHUNKS_MIN);
+        assert!(world.food.len() > initial_food);
         assert!(
-            world
-                .food
-                .kind
+            world.food.kind[initial_food..]
                 .iter()
-                .skip(initial_food)
-                .any(|kind| *kind == FoodKind::Meat)
+                .all(|kind| *kind == FoodKind::Meat)
         );
+        assert!(
+            world.food.source[initial_food..]
+                .iter()
+                .all(|source| *source == FoodSource::Carrion)
+        );
+        let carrion_energy = world.food.energy[initial_food..].iter().sum::<f32>();
+        assert!(carrion_energy > 0.0);
+        assert!(carrion_energy <= recoverable + 0.001);
     }
 
     #[test]
@@ -7263,6 +8276,9 @@ mod tests {
         world.cells.viability[0] = 80.0;
         world.cells.division_threshold[0] = 80.0;
         world.cells.mutation_susceptibility[0] = 0.0;
+        let construction_cost = (world.cells.biomass_sum(0) * CELL_STRUCTURE_ENERGY_PER_BIOMASS)
+            .min(world.cells.viability[0] * 0.25);
+        let expected_split = (80.0 - construction_cost) * 0.5;
 
         world.process_cell_lifecycle();
         assert_eq!(world.cells.len(), 1);
@@ -7276,8 +8292,8 @@ mod tests {
 
         assert_eq!(world.cells.len(), 2);
         assert_eq!(world.visual_particles.len(), 26);
-        assert!((world.cells.viability[0] - 40.0).abs() < 0.001);
-        assert!((world.cells.viability[1] - 40.0).abs() < 0.001);
+        assert!((world.cells.viability[0] - expected_split).abs() < 0.001);
+        assert!((world.cells.viability[1] - expected_split).abs() < 0.001);
     }
 
     #[test]
@@ -8044,15 +9060,39 @@ mod tests {
         world.food.x[0] = 5000.0;
         world.food.y[0] = 5000.0;
         world.food.feeder[0] = -1;
+        let available_energy = world.food.energy[0];
 
         world.update(1.0 / 60.0);
 
         assert!(world.cells.viability[0] > 10.0);
+        assert!(world.cells.viability[0] <= 10.0 + available_energy);
+        assert!(!world.food.active[0], "eaten world food must not respawn");
         assert_eq!(world.visual_particles.len(), FOOD_PARTICLES_PER_BITE);
         assert!(world.visual_particles.life.iter().all(|life| *life > 0.0));
 
         world.update_visual_particles(1.0);
         assert_eq!(world.visual_particles.len(), 0);
+    }
+
+    #[test]
+    fn uneaten_food_spoils_and_despawns() {
+        let mut world = WorldState::new(&SimConfig {
+            cells: 0,
+            food: 1,
+            obstacles: 0,
+            food_growers: 0,
+            ..default()
+        });
+        world.food.lifetime[0] = 0.5;
+        let initial_energy = world.food.energy[0];
+
+        world.decay_food(0.25);
+        assert!(world.food.active[0]);
+        assert!(world.food.energy[0] < initial_energy);
+        world.decay_food(0.25);
+
+        assert!(!world.food.active[0]);
+        assert_eq!(world.food.energy[0], 0.0);
     }
 
     #[test]
@@ -8319,5 +9359,21 @@ mod tests {
         ] {
             assert_eq!(world.cells.shape_radius_at(0, angle), 1.0);
         }
+    }
+
+    #[test]
+    #[ignore]
+    fn profile_default_10k_update() {
+        let mut world = WorldState::new(&SimConfig::default());
+        for _ in 0..5 {
+            world.update(1.0 / 60.0);
+        }
+        let started = std::time::Instant::now();
+        let frames = 30;
+        for _ in 0..frames {
+            world.update(1.0 / 60.0);
+        }
+        let frame_ms = started.elapsed().as_secs_f64() * 1_000.0 / frames as f64;
+        println!("default 10k simulation: {frame_ms:.3} ms/update");
     }
 }
