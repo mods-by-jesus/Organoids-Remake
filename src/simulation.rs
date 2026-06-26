@@ -12,6 +12,7 @@ pub const GRASS_FOOD_COLOR: [f32; 4] = [0.25, 1.0, 0.34, 0.94];
 pub const MEAT_FOOD_COLOR: [f32; 4] = [1.0, 0.23, 0.18, 0.95];
 const GRID_CELL_SIZE: f32 = 240.0;
 const CELL_GRID_SIZE: f32 = 96.0;
+const OBSTACLE_GRID_SIZE: f32 = 480.0;
 const CELL_ACCELERATION_GAIN: f32 = 1.75;
 const CELL_LINEAR_DRAG: f32 = 0.11;
 const CELL_LATERAL_GRIP: f32 = 0.58;
@@ -76,6 +77,8 @@ const EMERGENCY_REVERSE_DURATION: f32 = 0.38;
 const EMERGENCY_REVERSE_THROTTLE: f32 = 0.18;
 const INITIAL_LYSIS_CHANCE: f64 = 0.075;
 const LYSIS_ACTIVE_THRESHOLD: f32 = 8.0;
+const SPECIES_EPITHET_SLOTS: u32 = 200;
+const SPECIES_GENUS_SLOTS: u32 = 5_000;
 const LYSIS_COOLDOWN_MIN: f32 = 0.34;
 const LYSIS_COOLDOWN_MAX: f32 = 1.05;
 const LYSIS_REACH_MIN: f32 = 0.65;
@@ -368,14 +371,37 @@ pub fn lysis_combat_profile(lysis: f32) -> (f32, f32, f32, f32) {
     (damage, self_cost, cooldown, reach)
 }
 
+pub fn trophic_aggression_ratio(aggressiveness: f32) -> f32 {
+    (aggressiveness / CELL_AGGRESSIVENESS_DISPLAY_MAX).clamp(0.0, 1.0)
+}
+
+pub fn grass_energy_multiplier(aggressiveness: f32) -> f32 {
+    let aggression = trophic_aggression_ratio(aggressiveness);
+    1.25 - aggression * 0.95
+}
+
 pub fn meat_energy_multiplier(aggressiveness: f32) -> f32 {
-    let aggression = (aggressiveness / CELL_AGGRESSIVENESS_DISPLAY_MAX).clamp(0.0, 1.0);
-    1.0 + aggression * 3.0
+    let aggression = trophic_aggression_ratio(aggressiveness);
+    0.30 + aggression * 3.70
+}
+
+fn strict_gene_bin(value: f32, min: f32, max: f32, bins: u32) -> u32 {
+    if bins == 0 {
+        return 0;
+    }
+    let normalized = ((value - min) / (max - min).max(0.001)).clamp(0.0, 1.0);
+    (normalized * bins as f32).round() as u32
+}
+
+fn lysis_size_damage_multiplier(attacker_biomass: f32, victim_biomass: f32) -> f32 {
+    (attacker_biomass.max(0.1) / victim_biomass.max(0.1))
+        .powf(0.65)
+        .clamp(0.35, 2.50)
 }
 
 fn digested_food_energy(kind: FoodKind, raw_energy: f32, aggressiveness: f32) -> f32 {
     match kind {
-        FoodKind::Grass => raw_energy,
+        FoodKind::Grass => raw_energy * grass_energy_multiplier(aggressiveness),
         FoodKind::Meat => raw_energy * meat_energy_multiplier(aggressiveness),
     }
 }
@@ -515,6 +541,8 @@ pub struct WorldState {
     pub arena_shape: ArenaShape,
     grid: SpatialGrid,
     cell_grid: CellGrid,
+    obstacle_grid: CellGrid,
+    max_obstacle_radius: f32,
     collision_pairs: Vec<(usize, usize)>,
     rng: SmallRng,
     elapsed: f32,
@@ -700,7 +728,7 @@ impl WorldState {
         let floor_food_count = floor_food_count(config.food);
         let feeder_food_capacity =
             feeder_food_capacity(config.food, floor_food_count, food_grower_count);
-        let cells = CellStore::new(
+        let mut cells = CellStore::new(
             config.cells,
             config.width,
             config.height,
@@ -710,6 +738,7 @@ impl WorldState {
             &config.cell_shape_weights,
             &mut rng,
         );
+        cells.refresh_taxonomy();
         let food = FoodStore::new(
             floor_food_count,
             config.width,
@@ -735,6 +764,9 @@ impl WorldState {
         grid.rebuild(&food);
         let mut cell_grid = CellGrid::new(config.width, config.height, CELL_GRID_SIZE);
         cell_grid.rebuild(&cells);
+        let mut obstacle_grid = CellGrid::new(config.width, config.height, OBSTACLE_GRID_SIZE);
+        obstacle_grid.rebuild_points(&obstacles.x, &obstacles.y);
+        let max_obstacle_radius = obstacles.radius.iter().copied().fold(0.0, f32::max);
 
         let mut world = Self {
             cells,
@@ -747,6 +779,8 @@ impl WorldState {
             arena_shape: config.arena_shape,
             grid,
             cell_grid,
+            obstacle_grid,
+            max_obstacle_radius,
             collision_pairs: Vec::with_capacity(config.cells.saturating_mul(4)),
             rng,
             elapsed: 0.0,
@@ -777,6 +811,8 @@ impl WorldState {
         self.remove_dead_cells();
         self.cell_grid.rebuild(&self.cells);
         self.advect_obstacles(dt);
+        self.obstacle_grid
+            .rebuild_points(&self.obstacles.x, &self.obstacles.y);
         self.advect_food_growers(dt);
         self.resolve_obstacle_food_growers();
         self.decay_food(dt);
@@ -803,6 +839,7 @@ impl WorldState {
             let x = self.cells.x[i];
             let y = self.cells.y[i];
             let speed = self.effective_cell_speed(i);
+            let collision_bound = self.cells.collision_bound_radius(i);
             let target = self.update_cell_target(i, dt);
 
             let (desired_x, desired_y) = if let Some(target) = target {
@@ -819,7 +856,12 @@ impl WorldState {
             };
 
             let desired_velocity = (Vec2::new(desired_x, desired_y)
-                + self.cell_avoidance_velocity(i, Vec2::new(desired_x, desired_y)))
+                + self.cell_avoidance_velocity(
+                    i,
+                    Vec2::new(desired_x, desired_y),
+                    speed,
+                    collision_bound,
+                ))
             .clamp_length_max(speed * 1.2);
             let current = liquid_current_at(Vec2::new(x, y), self.elapsed) * CELL_CURRENT_SPEED;
             self.drive_cell(i, desired_velocity, current, dt);
@@ -839,8 +881,8 @@ impl WorldState {
             self.cells.y[i] += self.cells.vy[i] * dt;
 
             self.bounce_cell(i);
-            self.resolve_cell_obstacles(i);
-            self.resolve_cell_food_growers(i);
+            self.resolve_cell_obstacles(i, collision_bound);
+            self.resolve_cell_food_growers(i, collision_bound);
 
             if let Some(CellTarget {
                 kind: CellTargetKind::Food,
@@ -893,7 +935,6 @@ impl WorldState {
                 self.try_lysis_attack(i, victim_index);
             }
         }
-
         self.update_tail_sections(dt);
 
         self.solve_cell_collisions(dt);
@@ -1043,13 +1084,12 @@ impl WorldState {
         }
 
         let victim_velocity = self.cells.section_velocity(victim, victim_section);
-        let base_color = species_color(self.cells.species[victim], 1.0);
-        let color = [
-            base_color[0] * 0.28 + 0.72,
-            base_color[1] * 0.18 + 0.18,
-            base_color[2] * 0.24 + 0.34,
-            1.0,
-        ];
+        let color = cell_display_color(
+            self.cells.species[victim],
+            self.cells.viability_ratio(victim),
+            self.cells.aggressiveness[victim],
+            self.cells.lysis[victim],
+        );
         let tangent = Vec2::new(-normal.y, normal.x);
         for particle_index in 0..count {
             let spread = self.rng.random_range(-0.92..0.92);
@@ -1258,11 +1298,17 @@ impl WorldState {
             return false;
         }
 
-        let (damage, self_cost, cooldown, reach) = lysis_combat_profile(self.cells.lysis[attacker]);
+        let (base_damage, self_cost, cooldown, reach) =
+            lysis_combat_profile(self.cells.lysis[attacker]);
         let Some(contact) = compound_cells_lysis_contact(&self.cells, attacker, victim, reach)
         else {
             return false;
         };
+        let damage = base_damage
+            * lysis_size_damage_multiplier(
+                self.cells.biomass_sum(attacker),
+                self.cells.biomass_sum(victim),
+            );
         let victim_before = self.cells.viability[victim];
         let attacker_before = self.cells.viability[attacker];
         self.cells.viability[victim] = (self.cells.viability[victim] - damage).max(0.0);
@@ -1330,7 +1376,8 @@ impl WorldState {
             let index = target_index as usize;
             let same_food = index < self.food.len()
                 && self.food.active[index]
-                && self.cells.target_food_generation[cell_index] == self.food.generation[index];
+                && self.cells.target_food_generation[cell_index] == self.food.generation[index]
+                && self.food_is_edible_for_cell(cell_index, index);
             if same_food {
                 let target_position = Vec2::new(self.food.x[index], self.food.y[index]);
                 let distance_squared = position.distance_squared(target_position);
@@ -1358,13 +1405,7 @@ impl WorldState {
                 });
             }
         }
-        self.grid
-            .nearest_food(
-                position.x,
-                position.y,
-                &self.food,
-                self.cells.perception[cell_index],
-            )
+        self.nearest_edible_food(cell_index, position, self.cells.perception[cell_index])
             .map(|(index, dx, dy, distance_squared)| CellTarget {
                 kind: CellTargetKind::Food,
                 index,
@@ -1372,6 +1413,27 @@ impl WorldState {
                 distance_squared,
                 remembered: false,
             })
+    }
+
+    fn food_is_edible_for_cell(&self, cell_index: usize, food_index: usize) -> bool {
+        self.food.kind[food_index] != FoodKind::Meat
+            || self.food.origin_species[food_index] < 0
+            || self.food.origin_species[food_index] as u32 != self.cells.species[cell_index]
+    }
+
+    fn nearest_edible_food(
+        &self,
+        cell_index: usize,
+        position: Vec2,
+        perception: f32,
+    ) -> Option<(usize, f32, f32, f32)> {
+        self.grid.nearest_food_filtered(
+            position.x,
+            position.y,
+            &self.food,
+            perception,
+            Some(self.cells.species[cell_index]),
+        )
     }
 
     fn update_cell_target(&mut self, cell_index: usize, dt: f32) -> Option<CellTarget> {
@@ -1399,7 +1461,8 @@ impl WorldState {
             let index = stored as usize;
             let same_food = index < self.food.len()
                 && self.food.active[index]
-                && self.cells.target_food_generation[cell_index] == self.food.generation[index];
+                && self.cells.target_food_generation[cell_index] == self.food.generation[index]
+                && self.food_is_edible_for_cell(cell_index, index);
             if same_food {
                 let target_position = Vec2::new(self.food.x[index], self.food.y[index]);
                 let distance_squared = position.distance_squared(target_position);
@@ -1409,9 +1472,8 @@ impl WorldState {
                     self.cells.target_memory[cell_index] = memory_duration;
                     if self.cells.target_recheck[cell_index] <= 0.0 {
                         self.cells.target_recheck[cell_index] = recheck_interval;
-                        if let Some((new_index, dx, dy, new_distance_squared)) = self
-                            .grid
-                            .nearest_food(position.x, position.y, &self.food, perception)
+                        if let Some((new_index, dx, dy, new_distance_squared)) =
+                            self.nearest_edible_food(cell_index, position, perception)
                         {
                             if new_index != index
                                 && new_distance_squared
@@ -1463,9 +1525,8 @@ impl WorldState {
             self.cells.target_food[cell_index] = -1;
         }
 
-        let (index, dx, dy, distance_squared) = self
-            .grid
-            .nearest_food(position.x, position.y, &self.food, perception)?;
+        let (index, dx, dy, distance_squared) =
+            self.nearest_edible_food(cell_index, position, perception)?;
         let target_position = position + Vec2::new(dx, dy);
         self.cells.target_food[cell_index] = index as i32;
         self.cells.target_food_generation[cell_index] = self.food.generation[index];
@@ -2380,59 +2441,71 @@ impl WorldState {
         }
     }
 
-    fn resolve_cell_obstacles(&mut self, cell_index: usize) {
-        for obstacle_index in 0..self.obstacles.len() {
-            let dx = self.cells.x[cell_index] - self.obstacles.x[obstacle_index];
-            let dy = self.cells.y[cell_index] - self.obstacles.y[obstacle_index];
-            let dist_sq = dx * dx + dy * dy;
-            let obstacle_radius = self.obstacles.radius[obstacle_index];
-            let broad_min_dist = self.cells.collision_bound_radius(cell_index) + obstacle_radius;
-            if dist_sq >= broad_min_dist * broad_min_dist {
-                continue;
-            }
+    fn resolve_cell_obstacles(&mut self, cell_index: usize, cell_bound: f32) {
+        let center = Vec2::new(self.cells.x[cell_index], self.cells.y[cell_index]);
+        let search_radius = cell_bound + self.max_obstacle_radius;
+        let (min_x, max_x, min_y, max_y) = self.obstacle_grid.bucket_range(center, search_radius);
+        for gy in min_y..=max_y {
+            for gx in min_x..=max_x {
+                let bucket = gy * self.obstacle_grid.cols + gx;
+                for &obstacle_index in &self.obstacle_grid.buckets[bucket] {
+                    let dx = self.cells.x[cell_index] - self.obstacles.x[obstacle_index];
+                    let dy = self.cells.y[cell_index] - self.obstacles.y[obstacle_index];
+                    let dist_sq = dx * dx + dy * dy;
+                    let obstacle_radius = self.obstacles.radius[obstacle_index];
+                    let broad_min_dist = cell_bound + obstacle_radius;
+                    if dist_sq >= broad_min_dist * broad_min_dist {
+                        continue;
+                    }
 
-            let (nx, ny, dist) = if dist_sq > 0.0001 {
-                let dist = dist_sq.sqrt();
-                (dx / dist, dy / dist, dist)
-            } else {
-                (1.0, 0.0, 0.001)
-            };
-            let normal = Vec2::new(nx, ny);
-            let ray_index = self.cells.soft_ray_index_for_direction(cell_index, normal);
-            let cell_radius = self.cells.current_radii[cell_index][ray_index];
-            let min_dist = cell_radius + obstacle_radius;
-            if dist_sq >= min_dist * min_dist {
-                continue;
-            }
+                    let (nx, ny, dist) = if dist_sq > 0.0001 {
+                        let dist = dist_sq.sqrt();
+                        (dx / dist, dy / dist, dist)
+                    } else {
+                        (1.0, 0.0, 0.001)
+                    };
+                    let normal = Vec2::new(nx, ny);
+                    let ray_index = self.cells.soft_ray_index_for_direction(cell_index, normal);
+                    let cell_radius = self.cells.current_radii[cell_index][ray_index];
+                    let min_dist = cell_radius + obstacle_radius;
+                    if dist_sq >= min_dist * min_dist {
+                        continue;
+                    }
 
-            let compression =
-                self.cells
-                    .compress_ray(cell_index, ray_index, dist - obstacle_radius);
-            let push =
-                ((min_dist - dist) * SOFT_BODY_SOLID_PUSH_FACTOR).min(SOFT_BODY_SOLID_PUSH_MAX);
-            self.cells.x[cell_index] += nx * push;
-            self.cells.y[cell_index] += ny * push;
-            if compression > 0.0 {
-                self.cells.vx[cell_index] += nx * compression * SOFT_BODY_COMPRESSION_IMPULSE;
-                self.cells.vy[cell_index] += ny * compression * SOFT_BODY_COMPRESSION_IMPULSE;
-            }
+                    let compression =
+                        self.cells
+                            .compress_ray(cell_index, ray_index, dist - obstacle_radius);
+                    let push = ((min_dist - dist) * SOFT_BODY_SOLID_PUSH_FACTOR)
+                        .min(SOFT_BODY_SOLID_PUSH_MAX);
+                    self.cells.x[cell_index] += nx * push;
+                    self.cells.y[cell_index] += ny * push;
+                    if compression > 0.0 {
+                        self.cells.vx[cell_index] +=
+                            nx * compression * SOFT_BODY_COMPRESSION_IMPULSE;
+                        self.cells.vy[cell_index] +=
+                            ny * compression * SOFT_BODY_COMPRESSION_IMPULSE;
+                    }
 
-            let into_obstacle = self.cells.vx[cell_index] * nx + self.cells.vy[cell_index] * ny;
-            if into_obstacle < 0.0 {
-                self.cells.vx[cell_index] -= into_obstacle * nx * (1.0 + CELL_OBSTACLE_RESTITUTION);
-                self.cells.vy[cell_index] -= into_obstacle * ny * (1.0 + CELL_OBSTACLE_RESTITUTION);
-                self.cells.jelly_intensity[cell_index] =
-                    (self.cells.jelly_intensity[cell_index] + 0.35).min(1.0);
-                self.cells.jelly_dir_x[cell_index] = nx;
-                self.cells.jelly_dir_y[cell_index] = ny;
+                    let into_obstacle =
+                        self.cells.vx[cell_index] * nx + self.cells.vy[cell_index] * ny;
+                    if into_obstacle < 0.0 {
+                        self.cells.vx[cell_index] -=
+                            into_obstacle * nx * (1.0 + CELL_OBSTACLE_RESTITUTION);
+                        self.cells.vy[cell_index] -=
+                            into_obstacle * ny * (1.0 + CELL_OBSTACLE_RESTITUTION);
+                        self.cells.jelly_intensity[cell_index] =
+                            (self.cells.jelly_intensity[cell_index] + 0.35).min(1.0);
+                        self.cells.jelly_dir_x[cell_index] = nx;
+                        self.cells.jelly_dir_y[cell_index] = ny;
+                    }
+                }
             }
         }
     }
 
-    fn resolve_cell_food_growers(&mut self, cell_index: usize) {
+    fn resolve_cell_food_growers(&mut self, cell_index: usize, broad_cell_radius: f32) {
         let mut cell_x = self.cells.x[cell_index];
         let mut cell_y = self.cells.y[cell_index];
-        let broad_cell_radius = self.cells.collision_bound_radius(cell_index);
 
         for grower_index in 0..self.food_growers.len() {
             let grower_x = self.food_growers.x[grower_index];
@@ -2624,14 +2697,21 @@ impl WorldState {
             return true;
         }
 
-        for obstacle_index in 0..self.obstacles.len() {
-            let center = Vec2::new(
-                self.obstacles.x[obstacle_index],
-                self.obstacles.y[obstacle_index],
-            );
-            let min_dist = self.obstacles.radius[obstacle_index] + radius;
-            if point.distance_squared(center) < min_dist * min_dist {
-                return true;
+        let search_radius = radius + self.max_obstacle_radius;
+        let (min_x, max_x, min_y, max_y) = self.obstacle_grid.bucket_range(point, search_radius);
+        for gy in min_y..=max_y {
+            for gx in min_x..=max_x {
+                let bucket = gy * self.obstacle_grid.cols + gx;
+                for &obstacle_index in &self.obstacle_grid.buckets[bucket] {
+                    let center = Vec2::new(
+                        self.obstacles.x[obstacle_index],
+                        self.obstacles.y[obstacle_index],
+                    );
+                    let min_dist = self.obstacles.radius[obstacle_index] + radius;
+                    if point.distance_squared(center) < min_dist * min_dist {
+                        return true;
+                    }
+                }
             }
         }
 
@@ -2652,10 +2732,9 @@ impl WorldState {
             }
 
             for branch_index in self.food_growers.branch_range(grower_index) {
-                if branch_index == ignore_branch {
-                    continue;
-                }
-                if !self.food_growers.branch_has_collision(branch_index) {
+                if branch_index == ignore_branch
+                    || !self.food_growers.branch_has_collision(branch_index)
+                {
                     continue;
                 }
 
@@ -2673,10 +2752,14 @@ impl WorldState {
         false
     }
 
-    fn cell_avoidance_velocity(&self, cell_index: usize, desired_velocity: Vec2) -> Vec2 {
+    fn cell_avoidance_velocity(
+        &self,
+        cell_index: usize,
+        desired_velocity: Vec2,
+        speed: f32,
+        cell_radius: f32,
+    ) -> Vec2 {
         let position = Vec2::new(self.cells.x[cell_index], self.cells.y[cell_index]);
-        let cell_radius = self.cells.collision_bound_radius(cell_index);
-        let speed = self.effective_cell_speed(cell_index);
         let desired_dir = if desired_velocity.length_squared() > 0.0001 {
             desired_velocity.normalize()
         } else {
@@ -2686,20 +2769,27 @@ impl WorldState {
         };
         let mut avoidance = Vec2::ZERO;
 
-        for obstacle_index in 0..self.obstacles.len() {
-            let center = Vec2::new(
-                self.obstacles.x[obstacle_index],
-                self.obstacles.y[obstacle_index],
-            );
-            let influence =
-                self.obstacles.radius[obstacle_index] + cell_radius + CELL_AVOIDANCE_MARGIN;
-            add_avoidance(
-                &mut avoidance,
-                position - center,
-                influence,
-                desired_dir,
-                speed,
-            );
+        let search_radius = cell_radius + CELL_AVOIDANCE_MARGIN + self.max_obstacle_radius;
+        let (min_x, max_x, min_y, max_y) = self.obstacle_grid.bucket_range(position, search_radius);
+        for gy in min_y..=max_y {
+            for gx in min_x..=max_x {
+                let bucket = gy * self.obstacle_grid.cols + gx;
+                for &obstacle_index in &self.obstacle_grid.buckets[bucket] {
+                    let center = Vec2::new(
+                        self.obstacles.x[obstacle_index],
+                        self.obstacles.y[obstacle_index],
+                    );
+                    let influence =
+                        self.obstacles.radius[obstacle_index] + cell_radius + CELL_AVOIDANCE_MARGIN;
+                    add_avoidance(
+                        &mut avoidance,
+                        position - center,
+                        influence,
+                        desired_dir,
+                        speed,
+                    );
+                }
+            }
         }
 
         for grower_index in 0..self.food_growers.len() {
@@ -2728,7 +2818,7 @@ impl WorldState {
                     .closest_point_on_branch(branch_index, position);
                 let influence = self.food_growers.branch_collision_width_at(branch_index, t)
                     + cell_radius
-                    + CELL_AVOIDANCE_MARGIN * 1.0;
+                    + CELL_AVOIDANCE_MARGIN;
                 add_avoidance(
                     &mut avoidance,
                     position - closest,
@@ -2896,6 +2986,7 @@ impl WorldState {
                 self.height,
                 self.arena_shape,
                 chunk_energy,
+                self.cells.species[cell_index],
                 &mut self.rng,
             );
         }
@@ -2961,6 +3052,7 @@ impl WorldState {
     }
 
     fn solve_cell_collisions(&mut self, dt: f32) {
+        self.cell_grid.rebuild(&self.cells);
         self.collision_pairs.clear();
         let max_bound = (0..self.cells.len())
             .map(|index| self.cells.collision_bound_radius(index))
@@ -3321,10 +3413,11 @@ fn find_compound_contact(cells: &CellStore, a: usize, b: usize) -> Option<Compou
             let sample_b = b0.lerp(b1, local_b, point_b);
             let delta = point_b - point_a;
             let distance_sq = delta.length_squared();
-            let distance = distance_sq.sqrt();
-            if sample_a.radius + sample_b.radius <= distance {
+            let sample_radius = sample_a.radius + sample_b.radius;
+            if distance_sq >= sample_radius * sample_radius {
                 continue;
             }
+            let distance = distance_sq.sqrt();
             let normal = if distance_sq > 0.0001 {
                 delta / distance
             } else {
@@ -3771,19 +3864,19 @@ pub enum CellShapeClass {
 impl CellShapeClass {
     pub const fn label_ru(self) -> &'static str {
         match self {
-            Self::Triquetrum => "Триквитрум / Тригональная клетка",
-            Self::Stauromorph => "Ставроморф / Круциформ",
+            Self::Triquetrum => "Триквитрум / тригональная клетка",
+            Self::Stauromorph => "Ставроморф / круциформ",
             Self::Lancetiform => "Ланцетовидная клетка",
-            Self::Placoid => "Плакоид / Кутикулярный щит",
+            Self::Placoid => "Плакоид / кутикулярный щит",
             Self::Coccus => "Кокк",
             Self::Bacillus => "Бацилла",
-            Self::Filament => "Филамент / Нематода",
+            Self::Filament => "Филамент / нематода",
             Self::Spirillum => "Спирилла",
             Self::Vibrio => "Вибрион",
             Self::Diplococcus => "Диплококк",
             Self::Fusiform => "Веретено",
             Self::Cuboid => "Кубоид",
-            Self::Lobatum => "Лобатум / Амеба",
+            Self::Lobatum => "Лобатум / амеба",
         }
     }
 }
@@ -4236,7 +4329,7 @@ pub struct CellStore {
     tail_ray_dir_y: Vec<[f32; SOFT_BODY_POINTS]>,
     stuck_time: Vec<f32>,
     reverse_time: Vec<f32>,
-    pub species: Vec<u8>,
+    pub species: Vec<u32>,
     pub viability: Vec<f32>,
     pub max_viability: Vec<f32>,
     pub mutation_susceptibility: Vec<f32>,
@@ -4773,7 +4866,7 @@ impl CellStore {
             store.extra_sections.push(extras);
             store.stuck_time.push(0.0);
             store.reverse_time.push(0.0);
-            store.species.push(rng.random_range(0..12));
+            store.species.push(0);
             store.max_viability.push(CELL_VIABILITY_MAX);
             store
                 .viability
@@ -4852,14 +4945,198 @@ impl CellStore {
         }
     }
 
+    pub fn refresh_taxonomy(&mut self) {
+        for index in 0..self.len() {
+            self.species[index] = self.taxonomy_species_id(index);
+        }
+    }
+
+    fn taxonomy_hash_step(hash: &mut u32, value: u32) {
+        *hash ^= value;
+        *hash = hash.wrapping_mul(16777619);
+    }
+
+    fn taxonomy_species_id(&self, index: usize) -> u32 {
+        let avg = (self.base_radii[index].iter().sum::<f32>() / SOFT_BODY_POINTS as f32).max(0.1);
+        let class = if self.section_count[index] >= 2 {
+            let aspect = self.section_spacing[index]
+                / (self.max_base_radius(index) + self.tail_collision_radius[index]).max(0.1);
+            if self.section_bend[index].abs() > 0.20 {
+                CellShapeClass::Spirillum
+            } else if aspect > 1.55 {
+                CellShapeClass::Filament
+            } else {
+                CellShapeClass::Bacillus
+            }
+        } else {
+            analyze_cell_shape_class(&self.soft_body_profile(index))
+        };
+        let class_bin: u32 = match class {
+            CellShapeClass::Coccus => 0,
+            CellShapeClass::Bacillus => 1,
+            CellShapeClass::Filament => 2,
+            CellShapeClass::Spirillum => 3,
+            CellShapeClass::Vibrio => 4,
+            CellShapeClass::Diplococcus => 5,
+            CellShapeClass::Fusiform => 6,
+            CellShapeClass::Cuboid => 7,
+            CellShapeClass::Triquetrum => 8,
+            CellShapeClass::Stauromorph => 9,
+            CellShapeClass::Lancetiform => 10,
+            CellShapeClass::Placoid => 11,
+            CellShapeClass::Lobatum => 12,
+        };
+        let mut species_hash = 2166136261u32;
+        let mut genus_hash = 2166136261u32;
+        for radius in self.base_radii[index] {
+            let normalized = radius / avg;
+            let quantized = (normalized * 14.0).round().clamp(4.0, 28.0) as u32;
+            let genus_quantized = (normalized * 9.0).round().clamp(3.0, 18.0) as u32;
+            Self::taxonomy_hash_step(&mut species_hash, quantized);
+            Self::taxonomy_hash_step(&mut genus_hash, genus_quantized);
+        }
+        for offset in self.angle_offsets[index] {
+            let quantized =
+                ((offset + SOFT_BODY_MAX_ANGLE_OFFSET) / (SOFT_BODY_MAX_ANGLE_OFFSET * 2.0) * 10.0)
+                    .round()
+                    .clamp(0.0, 10.0) as u32;
+            let genus_quantized =
+                ((offset + SOFT_BODY_MAX_ANGLE_OFFSET) / (SOFT_BODY_MAX_ANGLE_OFFSET * 2.0) * 5.0)
+                    .round()
+                    .clamp(0.0, 5.0) as u32;
+            Self::taxonomy_hash_step(&mut species_hash, quantized + 31);
+            Self::taxonomy_hash_step(&mut genus_hash, genus_quantized + 31);
+        }
+        let gene_bins = [
+            strict_gene_bin(self.speed[index], SPEED_GENE_MIN, SPEED_GENE_MAX, 31),
+            strict_gene_bin(self.turn_speed[index], TURN_GENE_MIN, TURN_GENE_MAX, 31),
+            strict_gene_bin(
+                self.perception[index],
+                PERCEPTION_GENE_MIN,
+                PERCEPTION_GENE_MAX,
+                31,
+            ),
+            strict_gene_bin(
+                self.persistence[index],
+                PERSISTENCE_GENE_MIN,
+                PERSISTENCE_GENE_MAX,
+                31,
+            ),
+            strict_gene_bin(
+                self.aggressiveness[index],
+                0.0,
+                CELL_AGGRESSIVENESS_DISPLAY_MAX,
+                31,
+            ),
+            strict_gene_bin(self.lysis[index], 0.0, CELL_LYSIS_DISPLAY_MAX, 31),
+            strict_gene_bin(
+                self.mutation_susceptibility[index],
+                0.0,
+                CELL_MUTATION_DISPLAY_MAX,
+                31,
+            ),
+            strict_gene_bin(
+                self.max_base_radius(index),
+                CELL_SIZE_GENE_MIN,
+                CELL_SIZE_GENE_MAX,
+                31,
+            ),
+            self.section_count[index] as u32,
+        ];
+        for bin in gene_bins {
+            Self::taxonomy_hash_step(&mut species_hash, bin.clamp(0, 31) + 97);
+        }
+
+        let trophic_bin = if self.aggressiveness[index] < 40.0 {
+            0
+        } else if self.aggressiveness[index] < 70.0 {
+            1
+        } else {
+            2
+        };
+        let genus_bins = [
+            strict_gene_bin(self.speed[index], SPEED_GENE_MIN, SPEED_GENE_MAX, 15),
+            strict_gene_bin(self.turn_speed[index], TURN_GENE_MIN, TURN_GENE_MAX, 15),
+            strict_gene_bin(
+                self.perception[index],
+                PERCEPTION_GENE_MIN,
+                PERCEPTION_GENE_MAX,
+                15,
+            ),
+            strict_gene_bin(
+                self.persistence[index],
+                PERSISTENCE_GENE_MIN,
+                PERSISTENCE_GENE_MAX,
+                7,
+            ),
+            trophic_bin,
+            if self.lysis[index] >= LYSIS_ACTIVE_THRESHOLD {
+                1 + strict_gene_bin(
+                    self.lysis[index],
+                    LYSIS_ACTIVE_THRESHOLD,
+                    CELL_LYSIS_DISPLAY_MAX,
+                    7,
+                )
+            } else {
+                0
+            },
+            strict_gene_bin(
+                self.mutation_susceptibility[index],
+                0.0,
+                CELL_MUTATION_DISPLAY_MAX,
+                7,
+            ),
+            strict_gene_bin(
+                self.max_base_radius(index),
+                CELL_SIZE_GENE_MIN,
+                CELL_SIZE_GENE_MAX,
+                15,
+            ),
+            self.section_count[index] as u32,
+        ];
+        for bin in genus_bins {
+            Self::taxonomy_hash_step(&mut genus_hash, bin + 97);
+        }
+        Self::taxonomy_hash_step(
+            &mut species_hash,
+            strict_gene_bin(
+                self.section_spacing[index],
+                CELL_SIZE_GENE_MIN * 0.15,
+                CELL_SIZE_GENE_MAX * 4.8,
+                31,
+            ) + 151,
+        );
+        Self::taxonomy_hash_step(
+            &mut genus_hash,
+            strict_gene_bin(
+                self.section_spacing[index],
+                CELL_SIZE_GENE_MIN * 0.15,
+                CELL_SIZE_GENE_MAX * 4.8,
+                15,
+            ) + 151,
+        );
+        Self::taxonomy_hash_step(
+            &mut species_hash,
+            strict_gene_bin(self.section_bend[index].abs(), 0.0, 1.4, 15) + 193,
+        );
+        Self::taxonomy_hash_step(
+            &mut genus_hash,
+            strict_gene_bin(self.section_bend[index].abs(), 0.0, 1.4, 7) + 193,
+        );
+
+        let genus = genus_hash % SPECIES_GENUS_SLOTS;
+        let epithet = species_hash % SPECIES_EPITHET_SLOTS;
+        class_bin * 1_000_000 + genus * SPECIES_EPITHET_SLOTS + epithet
+    }
+
     pub fn shape_name(&self, index: usize) -> String {
         if self.section_count[index] >= 2 {
             let aspect = self.section_spacing[index]
                 / (self.max_base_radius(index) + self.tail_collision_radius[index]).max(0.1);
             return if self.section_bend[index].abs() > 0.20 {
-                "Спирилла / Изогнутый филамент".to_string()
+                "Спирилла / многосегментная клетка".to_string()
             } else if aspect > 1.55 {
-                "Филамент / Нематода".to_string()
+                "Филамент / нематода".to_string()
             } else {
                 "Бацилла".to_string()
             };
@@ -5170,6 +5447,7 @@ impl CellStore {
         self.jelly_dir_x.push(offset_c);
         self.jelly_dir_y.push(offset_s);
         self.wake_strength.push(0.0);
+        self.species[child_index] = self.taxonomy_species_id(child_index);
     }
 
     fn swap_remove(&mut self, index: usize) {
@@ -5676,6 +5954,7 @@ pub struct CellGrid {
     width: f32,
     height: f32,
     buckets: Vec<Vec<usize>>,
+    occupied_buckets: Vec<usize>,
 }
 
 impl CellGrid {
@@ -5691,16 +5970,24 @@ impl CellGrid {
             width,
             height,
             buckets,
+            occupied_buckets: Vec::new(),
         }
     }
 
     fn rebuild(&mut self, cells: &CellStore) {
-        for bucket in &mut self.buckets {
-            bucket.clear();
+        self.rebuild_points(&cells.x, &cells.y);
+    }
+
+    fn rebuild_points(&mut self, x: &[f32], y: &[f32]) {
+        for bucket in self.occupied_buckets.drain(..) {
+            self.buckets[bucket].clear();
         }
 
-        for i in 0..cells.len() {
-            let bucket = self.bucket_index(cells.x[i], cells.y[i]);
+        for i in 0..x.len().min(y.len()) {
+            let bucket = self.bucket_index(x[i], y[i]);
+            if self.buckets[bucket].is_empty() {
+                self.occupied_buckets.push(bucket);
+            }
             self.buckets[bucket].push(i);
         }
     }
@@ -5738,6 +6025,7 @@ pub struct FoodStore {
     pub spin: Vec<f32>,
     pub growth: Vec<f32>,
     pub energy: Vec<f32>,
+    pub origin_species: Vec<i32>,
     pub age: Vec<f32>,
     pub lifetime: Vec<f32>,
     source: Vec<FoodSource>,
@@ -5769,6 +6057,7 @@ impl FoodStore {
             spin: Vec::with_capacity(count),
             growth: Vec::with_capacity(count),
             energy: Vec::with_capacity(count),
+            origin_species: Vec::with_capacity(count),
             age: Vec::with_capacity(count),
             lifetime: Vec::with_capacity(count),
             source: Vec::with_capacity(count),
@@ -5809,6 +6098,7 @@ impl FoodStore {
         self.spin.push(random_food_spin(rng));
         self.growth.push(1.0);
         self.energy.push(WORLD_GRASS_ENERGY);
+        self.origin_species.push(-1);
         self.age.push(0.0);
         self.lifetime.push(food_lifetime(kind, rng));
         self.source.push(FoodSource::Wild);
@@ -5852,6 +6142,7 @@ impl FoodStore {
             self.spin[index] = 0.0;
             self.growth[index] = 0.24;
             self.energy[index] = FEEDER_FOOD_ENERGY;
+            self.origin_species[index] = -1;
             self.age[index] = 0.0;
             self.lifetime[index] = rng.random_range(55.0..90.0);
             self.source[index] = FoodSource::Feeder;
@@ -5875,6 +6166,7 @@ impl FoodStore {
         self.spin.push(0.0);
         self.growth.push(0.24);
         self.energy.push(FEEDER_FOOD_ENERGY);
+        self.origin_species.push(-1);
         self.age.push(0.0);
         self.lifetime.push(rng.random_range(55.0..90.0));
         self.source.push(FoodSource::Feeder);
@@ -5897,6 +6189,7 @@ impl FoodStore {
         arena_h: f32,
         arena_shape: ArenaShape,
         energy: f32,
+        origin_species: u32,
         rng: &mut SmallRng,
     ) {
         let point =
@@ -5915,6 +6208,7 @@ impl FoodStore {
             self.spin[index] = random_food_spin(rng);
             self.growth[index] = 1.0;
             self.energy[index] = energy.max(0.0);
+            self.origin_species[index] = origin_species as i32;
             self.age[index] = 0.0;
             self.lifetime[index] = food_lifetime(FoodKind::Meat, rng);
             self.source[index] = FoodSource::Carrion;
@@ -5939,6 +6233,7 @@ impl FoodStore {
         self.spin.push(random_food_spin(rng));
         self.growth.push(1.0);
         self.energy.push(energy.max(0.0));
+        self.origin_species.push(origin_species as i32);
         self.age.push(0.0);
         self.lifetime.push(food_lifetime(FoodKind::Meat, rng));
         self.source.push(FoodSource::Carrion);
@@ -6014,6 +6309,7 @@ impl FoodStore {
         self.spin[index] = random_food_spin(rng);
         self.growth[index] = rng.random_range(0.18..0.34);
         self.energy[index] = WORLD_GRASS_ENERGY;
+        self.origin_species[index] = -1;
         self.age[index] = 0.0;
         self.lifetime[index] = food_lifetime(FoodKind::Grass, rng);
         self.regrow_timer[index] = 0.0;
@@ -6538,12 +6834,25 @@ impl SpatialGrid {
     }
 
     #[inline]
+    #[allow(dead_code)]
     fn nearest_food(
         &self,
         x: f32,
         y: f32,
         food: &FoodStore,
         perception_radius: f32,
+    ) -> Option<(usize, f32, f32, f32)> {
+        self.nearest_food_filtered(x, y, food, perception_radius, None)
+    }
+
+    #[inline]
+    fn nearest_food_filtered(
+        &self,
+        x: f32,
+        y: f32,
+        food: &FoodStore,
+        perception_radius: f32,
+        forbidden_meat_species: Option<u32>,
     ) -> Option<(usize, f32, f32, f32)> {
         let (cx, cy) = self.grid_coords(x, y);
         let mut best = None;
@@ -6553,7 +6862,17 @@ impl SpatialGrid {
 
         for ring in 0..=max_ring {
             if ring == 0 {
-                self.scan_food_bucket(cx, cy, x, y, food, radius_sq, &mut best_dist_sq, &mut best);
+                self.scan_food_bucket(
+                    cx,
+                    cy,
+                    x,
+                    y,
+                    food,
+                    forbidden_meat_species,
+                    radius_sq,
+                    &mut best_dist_sq,
+                    &mut best,
+                );
             } else {
                 for ox in -ring..=ring {
                     self.scan_food_bucket(
@@ -6562,6 +6881,7 @@ impl SpatialGrid {
                         x,
                         y,
                         food,
+                        forbidden_meat_species,
                         radius_sq,
                         &mut best_dist_sq,
                         &mut best,
@@ -6572,6 +6892,7 @@ impl SpatialGrid {
                         x,
                         y,
                         food,
+                        forbidden_meat_species,
                         radius_sq,
                         &mut best_dist_sq,
                         &mut best,
@@ -6584,6 +6905,7 @@ impl SpatialGrid {
                         x,
                         y,
                         food,
+                        forbidden_meat_species,
                         radius_sq,
                         &mut best_dist_sq,
                         &mut best,
@@ -6594,6 +6916,7 @@ impl SpatialGrid {
                         x,
                         y,
                         food,
+                        forbidden_meat_species,
                         radius_sq,
                         &mut best_dist_sq,
                         &mut best,
@@ -6618,6 +6941,7 @@ impl SpatialGrid {
         x: f32,
         y: f32,
         food: &FoodStore,
+        forbidden_meat_species: Option<u32>,
         radius_sq: f32,
         best_dist_sq: &mut f32,
         best: &mut Option<(usize, f32, f32, f32)>,
@@ -6631,6 +6955,14 @@ impl SpatialGrid {
 
         let bucket = gy as usize * self.cols + gx as usize;
         for &food_index in &self.buckets[bucket] {
+            if let Some(species) = forbidden_meat_species {
+                if food.kind[food_index] == FoodKind::Meat
+                    && food.origin_species[food_index] >= 0
+                    && food.origin_species[food_index] as u32 == species
+                {
+                    continue;
+                }
+            }
             let dx = food.x[food_index] - x;
             let dy = food.y[food_index] - y;
             let dist_sq = dx * dx + dy * dy;
@@ -6710,7 +7042,7 @@ pub struct FrameStats {
     pub upload_time: Duration,
 }
 
-pub fn species_color(species: u8, viability_ratio: f32) -> [f32; 4] {
+pub fn species_color(species: u32, viability_ratio: f32) -> [f32; 4] {
     const PALETTE: [[f32; 3]; 12] = [
         [0.82, 0.90, 0.98],
         [0.97, 0.84, 0.90],
@@ -6731,6 +7063,50 @@ pub fn species_color(species: u8, viability_ratio: f32) -> [f32; 4] {
         tint[0] * brightness,
         tint[1] * brightness,
         tint[2] * brightness,
+        1.0,
+    ]
+}
+
+pub fn aggression_spectrum_color(aggressiveness: f32) -> [f32; 3] {
+    let aggression = (aggressiveness / CELL_AGGRESSIVENESS_DISPLAY_MAX).clamp(0.0, 1.0);
+    if aggression < 0.5 {
+        let t = aggression * 2.0;
+        [0.50 + 0.45 * t, 0.96 - 0.10 * t, 0.56 * (1.0 - t)]
+    } else {
+        let t = (aggression - 0.5) * 2.0;
+        [0.95 + 0.05 * t, 0.86 * (1.0 - t) + 0.28 * t, 0.0]
+    }
+}
+
+pub fn cell_display_color(
+    species: u32,
+    viability_ratio: f32,
+    aggressiveness: f32,
+    lysis: f32,
+) -> [f32; 4] {
+    let active_predator_color = lysis >= LYSIS_ACTIVE_THRESHOLD && aggressiveness > 0.01;
+    let color_driver = if active_predator_color {
+        aggressiveness
+    } else {
+        0.0
+    };
+    let spectrum = aggression_spectrum_color(color_driver);
+    let tint_variation = (species as f32 * 0.618_034).fract();
+    let tint_strength = 0.70 + tint_variation * 0.20;
+    let base = [0.98, 1.0, 0.985];
+    let vitality = viability_ratio.clamp(0.0, 1.0);
+    let brightness = 0.90 + vitality * 0.10;
+    let saturation = 0.25 + vitality * 0.75;
+    let tinted = [
+        (base[0] * (1.0 - tint_strength) + spectrum[0] * tint_strength) * brightness,
+        (base[1] * (1.0 - tint_strength) + spectrum[1] * tint_strength) * brightness,
+        (base[2] * (1.0 - tint_strength) + spectrum[2] * tint_strength) * brightness,
+    ];
+    let gray = (tinted[0] * 0.299 + tinted[1] * 0.587 + tinted[2] * 0.114) * 0.94;
+    [
+        gray * (1.0 - saturation) + tinted[0] * saturation,
+        gray * (1.0 - saturation) + tinted[1] * saturation,
+        gray * (1.0 - saturation) + tinted[2] * saturation,
         1.0,
     ]
 }
@@ -7098,18 +7474,80 @@ mod tests {
     }
 
     #[test]
-    fn aggressiveness_increases_meat_energy_without_buffing_grass() {
+    fn aggressiveness_trades_grass_efficiency_for_meat_efficiency() {
         let raw_energy = 8.0;
-        let passive_meat = digested_food_energy(FoodKind::Meat, raw_energy, 0.0);
-        let aggressive_meat =
+        let biotroph_grass = digested_food_energy(FoodKind::Grass, raw_energy, 0.0);
+        let biotroph_meat = digested_food_energy(FoodKind::Meat, raw_energy, 0.0);
+        let hemi_grass = digested_food_energy(
+            FoodKind::Grass,
+            raw_energy,
+            CELL_AGGRESSIVENESS_DISPLAY_MAX * 0.5,
+        );
+        let hemi_meat = digested_food_energy(
+            FoodKind::Meat,
+            raw_energy,
+            CELL_AGGRESSIVENESS_DISPLAY_MAX * 0.5,
+        );
+        let necro_grass =
+            digested_food_energy(FoodKind::Grass, raw_energy, CELL_AGGRESSIVENESS_DISPLAY_MAX);
+        let necro_meat =
             digested_food_energy(FoodKind::Meat, raw_energy, CELL_AGGRESSIVENESS_DISPLAY_MAX);
 
-        assert_eq!(passive_meat, raw_energy);
-        assert!((aggressive_meat - raw_energy * 4.0).abs() < 0.001);
-        assert_eq!(
-            digested_food_energy(FoodKind::Grass, raw_energy, CELL_AGGRESSIVENESS_DISPLAY_MAX),
-            raw_energy
+        assert!(biotroph_grass > hemi_grass && hemi_grass > necro_grass);
+        assert!(biotroph_meat < hemi_meat && hemi_meat < necro_meat);
+        assert!((biotroph_grass - raw_energy * 1.25).abs() < 0.001);
+        assert!((necro_grass - raw_energy * 0.30).abs() < 0.001);
+        assert!((necro_meat - raw_energy * 4.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn aggression_tints_only_lysis_capable_cells() {
+        fn chroma(color: [f32; 4]) -> f32 {
+            let min = color[0].min(color[1]).min(color[2]);
+            let max = color[0].max(color[1]).max(color[2]);
+            max - min
+        }
+
+        let default_green = cell_display_color(0, 1.0, 0.0, 0.0);
+        let aggressive_without_lysis =
+            cell_display_color(0, 1.0, CELL_AGGRESSIVENESS_DISPLAY_MAX, 0.0);
+        let yellow = cell_display_color(
+            4,
+            1.0,
+            CELL_AGGRESSIVENESS_DISPLAY_MAX * 0.5,
+            CELL_LYSIS_DISPLAY_MAX,
         );
+        let red = cell_display_color(
+            8,
+            1.0,
+            CELL_AGGRESSIVENESS_DISPLAY_MAX,
+            CELL_LYSIS_DISPLAY_MAX,
+        );
+        let fading_red = cell_display_color(
+            8,
+            0.0,
+            CELL_AGGRESSIVENESS_DISPLAY_MAX,
+            CELL_LYSIS_DISPLAY_MAX,
+        );
+
+        assert_eq!(default_green, aggressive_without_lysis);
+        assert!(default_green[1] > default_green[0]);
+        assert!(yellow[0] > default_green[0]);
+        assert!(yellow[1] > red[1]);
+        assert!(red[0] > red[1]);
+        assert!(chroma(fading_red) < chroma(red));
+        assert!(chroma(fading_red) > chroma(red) * 0.20);
+    }
+
+    #[test]
+    fn larger_predators_deal_more_lysis_damage_to_smaller_prey() {
+        let large_to_small = lysis_size_damage_multiplier(160.0, 40.0);
+        let equal_size = lysis_size_damage_multiplier(80.0, 80.0);
+        let small_to_large = lysis_size_damage_multiplier(40.0, 160.0);
+
+        assert!(large_to_small > equal_size);
+        assert!(small_to_large < equal_size);
+        assert!((equal_size - 1.0).abs() < f32::EPSILON);
     }
 
     #[test]
@@ -7322,8 +7760,13 @@ mod tests {
         world.cells.y[0] = 0.0;
         world.cells.vx[0] = -20.0;
         world.cells.vy[0] = 0.0;
+        world.max_obstacle_radius = 80.0;
+        world
+            .obstacle_grid
+            .rebuild_points(&world.obstacles.x, &world.obstacles.y);
 
-        world.resolve_cell_obstacles(0);
+        let cell_bound = world.cells.collision_bound_radius(0);
+        world.resolve_cell_obstacles(0, cell_bound);
 
         assert!(
             world.cells.current_radii[0]
@@ -7515,6 +7958,119 @@ mod tests {
         config.set_cell_shape_weight(0, 42.0);
         assert!((config.cell_shape_weights.iter().sum::<f32>() - 100.0).abs() < 0.001);
         assert!((config.cell_shape_weights[0] - 42.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn taxonomy_keeps_distinct_shape_classes_in_separate_species() {
+        let mut world = WorldState::new(&SimConfig {
+            cells: 2,
+            food: 0,
+            obstacles: 0,
+            food_growers: 0,
+            segmented_cells: false,
+            ..default()
+        });
+
+        world.cells.section_count[0] = 1;
+        world.cells.section_count[1] = 1;
+        world.cells.aggressiveness[0] = 20.0;
+        world.cells.aggressiveness[1] = 20.0;
+        world.cells.angle_offsets[0] = [0.0; SOFT_BODY_POINTS];
+        world.cells.angle_offsets[1] = [0.0; SOFT_BODY_POINTS];
+        world.cells.base_radii[0] = [10.0, 3.0, 3.0, 3.0, 10.0, 3.0, 3.0, 3.0];
+        world.cells.base_radii[1] = [6.0, 8.4, 6.0, 8.4, 6.0, 8.4, 6.0, 8.4];
+        world.cells.rebuild_soft_body_cache(0);
+        world.cells.rebuild_soft_body_cache(1);
+        world.cells.refresh_taxonomy();
+
+        assert_eq!(
+            analyze_cell_shape_class(&world.cells.soft_body_profile(0)),
+            CellShapeClass::Filament
+        );
+        assert_eq!(
+            analyze_cell_shape_class(&world.cells.soft_body_profile(1)),
+            CellShapeClass::Cuboid
+        );
+        assert_ne!(world.cells.species[0], world.cells.species[1]);
+    }
+
+    #[test]
+    fn taxonomy_uses_core_genes_not_only_shape() {
+        let mut world = WorldState::new(&SimConfig {
+            cells: 2,
+            food: 0,
+            obstacles: 0,
+            food_growers: 0,
+            segmented_cells: false,
+            ..default()
+        });
+
+        for index in 0..2 {
+            world.cells.section_count[index] = 1;
+            world.cells.base_radii[index] = [8.0; SOFT_BODY_POINTS];
+            world.cells.angle_offsets[index] = [0.0; SOFT_BODY_POINTS];
+        }
+        world.cells.speed[0] = SPEED_GENE_MIN;
+        world.cells.speed[1] = SPEED_GENE_MAX;
+        world.cells.perception[0] = PERCEPTION_GENE_MIN;
+        world.cells.perception[1] = PERCEPTION_GENE_MAX;
+        world.cells.aggressiveness[0] = 5.0;
+        world.cells.aggressiveness[1] = 95.0;
+        world.cells.lysis[0] = 0.0;
+        world.cells.lysis[1] = CELL_LYSIS_DISPLAY_MAX;
+        world.cells.refresh_taxonomy();
+
+        assert_eq!(
+            analyze_cell_shape_class(&world.cells.soft_body_profile(0)),
+            CellShapeClass::Coccus
+        );
+        assert_eq!(
+            analyze_cell_shape_class(&world.cells.soft_body_profile(1)),
+            CellShapeClass::Coccus
+        );
+        assert_ne!(world.cells.species[0], world.cells.species[1]);
+    }
+
+    #[test]
+    fn taxonomy_splits_same_coccus_shape_when_genes_diverge_hard() {
+        let mut world = WorldState::new(&SimConfig {
+            cells: 4,
+            food: 0,
+            obstacles: 0,
+            food_growers: 0,
+            segmented_cells: false,
+            ..default()
+        });
+        let profiles = [
+            (5.6, 61.0, 2.2, 336.0, 60.0, 32.0, 0.0, 38.0),
+            (5.2, 64.0, 2.0, 480.0, 31.0, 37.0, 0.0, 36.0),
+            (7.1, 67.0, 1.9, 490.0, 55.0, 70.0, 57.0, 26.0),
+            (4.3, 62.0, 1.2, 302.0, 32.0, 1.0, 0.0, 32.0),
+        ];
+
+        for (index, profile) in profiles.iter().copied().enumerate() {
+            let (size, speed, turn, perception, persistence, aggression, lysis, mutation) = profile;
+            world.cells.section_count[index] = 1;
+            world.cells.base_radii[index] = [size; SOFT_BODY_POINTS];
+            world.cells.angle_offsets[index] = [0.0; SOFT_BODY_POINTS];
+            world.cells.speed[index] = speed;
+            world.cells.turn_speed[index] = turn;
+            world.cells.perception[index] = perception;
+            world.cells.persistence[index] = persistence;
+            world.cells.aggressiveness[index] = aggression;
+            world.cells.lysis[index] = lysis;
+            world.cells.mutation_susceptibility[index] = mutation;
+            world.cells.rebuild_soft_body_cache(index);
+        }
+        world.cells.refresh_taxonomy();
+
+        let species = world
+            .cells
+            .species
+            .iter()
+            .copied()
+            .collect::<std::collections::HashSet<_>>();
+        assert_eq!(species.len(), profiles.len());
     }
 
     #[test]
@@ -8090,9 +8646,14 @@ mod tests {
         world.cells.x[0] = 10.0;
         world.cells.y[0] = 0.0;
         set_test_cell_soft_radius(&mut world, 0, 8.0);
+        world.max_obstacle_radius = 80.0;
+        world
+            .obstacle_grid
+            .rebuild_points(&world.obstacles.x, &world.obstacles.y);
 
         let before = Vec2::new(world.cells.x[0], world.cells.y[0]).length();
-        world.resolve_cell_obstacles(0);
+        let cell_bound = world.cells.collision_bound_radius(0);
+        world.resolve_cell_obstacles(0, cell_bound);
 
         let dist = Vec2::new(world.cells.x[0], world.cells.y[0]).length();
         assert!(dist > before);
@@ -8122,7 +8683,8 @@ mod tests {
         set_test_cell_soft_radius(&mut world, 0, 8.0);
 
         let before = Vec2::new(world.cells.x[0], world.cells.y[0]).length();
-        world.resolve_cell_food_growers(0);
+        let cell_bound = world.cells.collision_bound_radius(0);
+        world.resolve_cell_food_growers(0, cell_bound);
 
         let dist = Vec2::new(world.cells.x[0], world.cells.y[0]).length();
         assert!(dist > before);
@@ -8163,11 +8725,13 @@ mod tests {
         world.cells.y[0] = 1.0;
         set_test_cell_soft_radius(&mut world, 0, 8.0);
 
-        world.resolve_cell_food_growers(0);
+        let cell_bound = world.cells.collision_bound_radius(0);
+        world.resolve_cell_food_growers(0, cell_bound);
         assert!((world.cells.y[0] - 1.0).abs() < 0.001);
 
         world.food_growers.branch_solid[branch] = true;
-        world.resolve_cell_food_growers(0);
+        let cell_bound = world.cells.collision_bound_radius(0);
+        world.resolve_cell_food_growers(0, cell_bound);
         assert!(world.cells.y[0].abs() > 1.0);
         assert!(world.cells.y[0].abs() <= 1.0 + SOFT_BODY_SOLID_PUSH_MAX + 0.001);
     }
@@ -8912,6 +9476,40 @@ mod tests {
     }
 
     #[test]
+    fn cells_ignore_meat_from_their_own_species() {
+        let mut world = WorldState::new(&SimConfig {
+            cells: 1,
+            food: 1,
+            obstacles: 0,
+            food_growers: 0,
+            ..default()
+        });
+        world.cells.viability[0] = 10.0;
+        world.cells.max_viability[0] = 100.0;
+        world.cells.perception[0] = 400.0;
+        world.cells.species[0] = 17;
+        world.food.kind[0] = FoodKind::Meat;
+        world.food.origin_species[0] = 17;
+        world.food.x[0] = 20.0;
+        world.food.y[0] = 0.0;
+        world.grid.rebuild(&world.food);
+
+        assert!(
+            world
+                .nearest_edible_food(0, Vec2::new(0.0, 0.0), 400.0)
+                .is_none()
+        );
+
+        world.food.origin_species[0] = 18;
+        world.grid.rebuild(&world.food);
+        assert!(
+            world
+                .nearest_edible_food(0, Vec2::new(0.0, 0.0), 400.0)
+                .is_some()
+        );
+    }
+
+    #[test]
     fn child_soft_body_shape_stays_in_allowed_ranges() {
         let config = SimConfig {
             cells: 1,
@@ -9060,7 +9658,14 @@ mod tests {
         world.food.x[0] = 5000.0;
         world.food.y[0] = 5000.0;
         world.food.feeder[0] = -1;
-        let available_energy = world.food.energy[0];
+        world.food.kind[0] = FoodKind::Grass;
+        world.food.growth[0] = 1.0;
+        world.cells.aggressiveness[0] = 0.0;
+        let available_energy = digested_food_energy(
+            world.food.kind[0],
+            world.food.energy[0] * world.food.growth[0],
+            world.cells.aggressiveness[0],
+        );
 
         world.update(1.0 / 60.0);
 
@@ -9359,21 +9964,5 @@ mod tests {
         ] {
             assert_eq!(world.cells.shape_radius_at(0, angle), 1.0);
         }
-    }
-
-    #[test]
-    #[ignore]
-    fn profile_default_10k_update() {
-        let mut world = WorldState::new(&SimConfig::default());
-        for _ in 0..5 {
-            world.update(1.0 / 60.0);
-        }
-        let started = std::time::Instant::now();
-        let frames = 30;
-        for _ in 0..frames {
-            world.update(1.0 / 60.0);
-        }
-        let frame_ms = started.elapsed().as_secs_f64() * 1_000.0 / frames as f64;
-        println!("default 10k simulation: {frame_ms:.3} ms/update");
     }
 }

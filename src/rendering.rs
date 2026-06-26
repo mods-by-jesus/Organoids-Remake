@@ -1,7 +1,7 @@
 use crate::simulation::{
     ArenaShape, CellTargetKind, FOOD_RADIUS, FoodKind, FrameStats, GRASS_FOOD_COLOR,
     LIQUID_CAUSTIC_STRENGTH, LIQUID_FLOW_SCALE, LIQUID_FLOW_SPEED, LIQUID_VIGNETTE_STRENGTH,
-    MEAT_FOOD_COLOR, SimConfig, WorldState, species_color,
+    MEAT_FOOD_COLOR, SimConfig, WorldState, cell_display_color,
 };
 use crate::{MainCamera, SelectedCell};
 use bevy::camera::visibility::NoFrustumCulling;
@@ -88,6 +88,7 @@ pub struct InstancedDiscPlugin;
 #[derive(Resource, Default)]
 pub(crate) struct SelectionVisualState {
     cell_id: Option<u64>,
+    fade: f32,
     perception_radius: f32,
     target_position: Vec2,
     target_visible: bool,
@@ -301,7 +302,7 @@ pub fn sync_instance_data(
     particles.reserve(
         world.cells.len() * 3
             + wake_trails.patches.len()
-            + usize::from(selected.cell_id.is_some()) * 4
+            + usize::from(selected.cell_id.is_some() || selection_visual.fade > 0.02) * 4
             + world.food.len() * 2
             + world.visual_particles.len()
             + world.obstacles.len()
@@ -309,9 +310,15 @@ pub fn sync_instance_data(
             + world.food_growers.total_branches() * BRANCH_RENDER_SEGMENTS,
     );
 
-    if selected.cell_id.is_none() {
-        selection_visual.cell_id = None;
+    let selection_follow = 1.0 - (-9.0 * time.delta_secs()).exp();
+    if selected.cell_id.is_some() {
+        selection_visual.fade += (1.0 - selection_visual.fade) * selection_follow;
+    } else {
+        selection_visual.fade += (0.0 - selection_visual.fade) * selection_follow;
         selection_visual.target_visible = false;
+        if selection_visual.fade < 0.015 {
+            selection_visual.cell_id = None;
+        }
     }
 
     let (view_center, view_half_size, world_units_per_pixel) =
@@ -336,7 +343,12 @@ pub fn sync_instance_data(
         let mitosis_split = mitosis * mitosis * (3.0 - 2.0 * mitosis);
         let visual_radius = base_visual_radius * (1.0 + mitosis_split * 1.20);
         let inv_visual_radius = visual_radius.recip();
-        let cell_color = species_color(world.cells.species[i], world.cells.viability_ratio(i));
+        let cell_color = cell_display_color(
+            world.cells.species[i],
+            world.cells.viability_ratio(i),
+            world.cells.aggressiveness[i],
+            world.cells.lysis[i],
+        );
 
         let velocity = Vec2::new(world.cells.vx[i], world.cells.vy[i]);
         let velocity_length = velocity.length();
@@ -443,10 +455,14 @@ pub fn sync_instance_data(
             });
         }
 
-        if selected.cell_id == Some(world.cells.id[i]) {
+        let active_selected = selected.cell_id == Some(world.cells.id[i]);
+        let fading_selected = !active_selected
+            && selection_visual.cell_id == Some(world.cells.id[i])
+            && selection_visual.fade > 0.015;
+        if active_selected || fading_selected {
             let world_units_per_pixel = selection_world_units_per_pixel(&camera, &windows);
             let desired_perception = world.cells.perception[i].max(1.0);
-            if selection_visual.cell_id != selected.cell_id {
+            if active_selected && selection_visual.cell_id != selected.cell_id {
                 selection_visual.cell_id = selected.cell_id;
                 selection_visual.perception_radius = desired_perception * 0.82;
                 selection_visual.target_position = Vec2::new(world.cells.x[i], world.cells.y[i]);
@@ -454,12 +470,15 @@ pub fn sync_instance_data(
                 selection_visual.velocity_direction = Vec2::new(move_dir_x, move_dir_y);
             }
             let overlay_follow = 1.0 - (-8.0 * time.delta_secs()).exp();
-            selection_visual.perception_radius +=
-                (desired_perception - selection_visual.perception_radius) * overlay_follow;
+            if active_selected {
+                selection_visual.perception_radius +=
+                    (desired_perception - selection_visual.perception_radius) * overlay_follow;
+            }
+            let selection_alpha = selection_visual.fade.clamp(0.0, 1.0);
             let perception_radius = selection_visual.perception_radius.max(1.0);
             particles.push(InstanceData {
                 pos_radius: [world.cells.x[i], world.cells.y[i], 4.05, perception_radius],
-                color: [0.30, 0.82, 0.80, 0.72],
+                color: [0.30, 0.82, 0.80, 0.72 * selection_alpha],
                 nucleus: [0.0, 0.0, 0.0, 7.0],
                 motion: [0.0; 4],
                 shape: [
@@ -482,14 +501,14 @@ pub fn sync_instance_data(
                     &world,
                     i,
                     4.20,
-                    [0.36, 0.88, 0.92, 0.92],
+                    [0.36, 0.88, 0.92, 0.92 * selection_alpha],
                     11.0,
                     1.16,
                     world_units_per_pixel * SELECTION_MIN_RADIUS_PX,
                 ));
             }
 
-            if let Some(target) = world.cell_target(i) {
+            if active_selected && let Some(target) = world.cell_target(i) {
                 let cell_position = Vec2::new(world.cells.x[i], world.cells.y[i]);
                 if !selection_visual.target_visible {
                     selection_visual.target_position = cell_position;
@@ -551,7 +570,7 @@ pub fn sync_instance_data(
             if world.cells.section_count[i] == 1 {
                 particles.push(InstanceData {
                     pos_radius: [world.cells.x[i], world.cells.y[i], 4.20, highlight_radius],
-                    color: [0.36, 0.88, 0.92, 0.92],
+                    color: [0.36, 0.88, 0.92, 0.92 * selection_alpha],
                     nucleus: [0.0, 0.0, 0.0, 5.0],
                     motion: [move_dir_x, move_dir_y, jelly, world.cells.jelly_phase[i]],
                     shape: [
@@ -598,7 +617,7 @@ pub fn sync_instance_data(
                 + velocity_direction * (highlight_radius + arrow_gap + arrow_radius * 0.35);
             particles.push(InstanceData {
                 pos_radius: [arrow_center.x, arrow_center.y, 4.25, arrow_radius],
-                color: [0.66, 0.98, 0.94, 0.98],
+                color: [0.66, 0.98, 0.94, 0.98 * selection_alpha],
                 nucleus: [0.0, 0.0, 0.0, 6.0],
                 motion: [
                     velocity_direction.x,
@@ -636,7 +655,7 @@ pub fn sync_instance_data(
         let instance_radius = patch.half_length + patch.half_width * 1.35;
         particles.push(InstanceData {
             pos_radius: [patch.center.x, patch.center.y, 1.92, instance_radius],
-            color: [0.66, 0.92, 1.0, (0.18 + patch.strength * 0.14) * opacity],
+            color: [0.66, 0.92, 1.0, (0.09 + patch.strength * 0.08) * opacity],
             nucleus: [0.0, 0.0, 0.0, 13.0],
             motion: [
                 patch.direction.x,

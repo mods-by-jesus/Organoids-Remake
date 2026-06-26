@@ -441,20 +441,20 @@ fn cell_wake_fragment(
         + 0.31 * sin(t * 19.0 + lateral * 8.0 + globals.time * 0.54)
         + 0.17 * sin(t * 83.0 - lateral * 13.0 + motion.w * 2.1);
     let broken_foam = smoothstep(-0.30, 0.42, foam_noise);
-    let edge_foam = edge_ring * mix(0.20, 1.0, broken_foam);
+    let edge_foam = edge_ring * mix(0.12, 0.58, broken_foam);
 
     let patch_field =
         sin(t * 34.0 + motion.w * 1.3 - globals.time * 0.31)
         * sin(signed_lateral * 5.7 - motion.w * 0.8 + globals.time * 0.17)
         + 0.42 * sin(t * 19.0 - signed_lateral * 8.3 + motion.w * 2.1);
-    let pale_patches = interior * smoothstep(0.52, 1.08, patch_field) * 0.18;
+    let pale_patches = interior * smoothstep(0.52, 1.08, patch_field) * 0.10;
 
     let tail_fade = smoothstep(0.0, 0.22, t);
     let alpha = (
-        interior * 0.055
-        + edge_foam * 0.92
+        interior * 0.030
+        + edge_foam * 0.48
         + pale_patches
-    ) * outer_mask * tail_fade * (0.72 + speed * 0.12);
+    ) * outer_mask * tail_fade * (0.54 + speed * 0.08);
     if (alpha < 0.008) {
         discard;
     }
@@ -502,11 +502,20 @@ fn target_vector_fragment(local: vec2<f32>, color: vec4<f32>, motion: vec4<f32>,
         0.20,
         sin((dash_phase - globals.time * 1.8) * 3.14159265)
     );
-    let line = (1.0 - smoothstep(width, width * 1.8, line_dist)) * mix(0.18, 0.80, dash);
+    let flow = smoothstep(
+        0.62,
+        1.0,
+        sin((dash_phase - globals.time * 3.2) * 3.14159265)
+    );
+    let pulse_center = fract(globals.time * 0.42);
+    let flow_t = clamp((p.x + half_length) / max(half_length * 2.0, 0.001), 0.0, 1.0);
+    let pulse = exp(-pow((flow_t - pulse_center) * 7.0, 2.0));
+    let line = (1.0 - smoothstep(width, width * 1.8, line_dist))
+        * (0.14 + dash * 0.38 + flow * 0.34 + pulse * 0.58);
 
     let target_delta = p - vec2<f32>(half_length, 0.0);
     let target_dist = length(target_delta);
-    let reticle_pulse = 1.0 + 0.12 * sin(globals.time * 2.4);
+    let reticle_pulse = 1.0 + 0.20 * sin(globals.time * 3.0);
     let reticle_radius = world_pixel * 6.5 * reticle_pulse;
     let reticle_width = world_pixel * 1.6;
     let reticle = smoothstep(reticle_radius - reticle_width, reticle_radius, target_dist)
@@ -515,7 +524,12 @@ fn target_vector_fragment(local: vec2<f32>, color: vec4<f32>, motion: vec4<f32>,
         * (1.0 - smoothstep(reticle_radius * 1.35, reticle_radius * 1.65, abs(target_delta.y)));
     let cross_y = (1.0 - smoothstep(reticle_width, reticle_width * 1.8, abs(target_delta.y)))
         * (1.0 - smoothstep(reticle_radius * 1.35, reticle_radius * 1.65, abs(target_delta.x)));
-    let marker = max(reticle, max(cross_x, cross_y));
+    let orbit = smoothstep(
+        0.86,
+        1.0,
+        sin(atan2(target_delta.y, target_delta.x) * 3.0 - globals.time * 3.6)
+    ) * reticle;
+    let marker = max(reticle + orbit * 0.65, max(cross_x, cross_y));
     let alpha = max(line, marker);
     if (alpha < 0.01) {
         discard;

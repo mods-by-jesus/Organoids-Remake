@@ -148,6 +148,12 @@ struct MenuAudioFill(MenuAudioKind);
 #[derive(Component)]
 struct MenuAudioValue(MenuAudioKind);
 
+fn relative_cursor_fraction_x(cursor: &RelativeCursorPosition) -> Option<f32> {
+    cursor
+        .normalized
+        .map(|position| (position.x + 0.5).clamp(0.0, 1.0))
+}
+
 const NORMAL_BORDER: Color = Color::srgb(0.18, 0.30, 0.34);
 const FOCUSED_BORDER: Color = Color::srgb(0.46, 0.82, 0.90);
 const NORMAL_BG: Color = Color::srgb(0.045, 0.070, 0.080);
@@ -1355,8 +1361,8 @@ fn shape_weight_slider_system(
         if *interaction != Interaction::Pressed {
             continue;
         }
-        if let Some(position) = cursor.normalized {
-            config.set_cell_shape_weight(slider.0, position.x.clamp(0.0, 1.0) * 100.0);
+        if let Some(fraction) = relative_cursor_fraction_x(cursor) {
+            config.set_cell_shape_weight(slider.0, fraction * 100.0);
         }
     }
 }
@@ -1442,10 +1448,9 @@ fn menu_audio_slider_system(
         if *interaction != Interaction::Pressed {
             continue;
         }
-        let Some(position) = cursor.normalized else {
+        let Some(value) = relative_cursor_fraction_x(cursor) else {
             continue;
         };
-        let value = position.x.clamp(0.0, 1.0);
         match slider.0 {
             MenuAudioKind::Effects => config.sound_volume = value,
             MenuAudioKind::Ambient => config.ambient_volume = value,

@@ -10,7 +10,7 @@ use bevy::input::mouse::{MouseScrollUnit, MouseWheel};
 use bevy::prelude::*;
 use bevy::render::view::NoIndirectDrawing;
 use bevy::ui::RelativeCursorPosition;
-use bevy::window::{PresentMode, PrimaryWindow, WindowResolution};
+use bevy::window::{PresentMode, PrimaryWindow, WindowMode, WindowResolution};
 use rand::Rng;
 use rendering::{
     InstancedDiscPlugin, LiquidMediumMaterial, SimulationRenderEntity, clear_cell_wake_trails,
@@ -21,10 +21,10 @@ use simulation::{
     CELL_MUTATION_DISPLAY_MAX, CELL_PERCEPTION_DISPLAY_MAX, CELL_PERSISTENCE_DISPLAY_MAX,
     CELL_SIZE_GENE_MAX, CELL_SIZE_GENE_MIN, CELL_SPEED_DISPLAY_MAX, CELL_TURN_DISPLAY_MAX,
     CELL_VIABILITY_MAX, FrameStats, PERCEPTION_GENE_MAX, PERCEPTION_GENE_MIN, SPEED_GENE_MAX,
-    SPEED_GENE_MIN, SimConfig, TURN_GENE_MAX, TURN_GENE_MIN, WorldState, lysis_combat_profile,
-    meat_energy_multiplier,
+    SPEED_GENE_MIN, SimConfig, TURN_GENE_MAX, TURN_GENE_MIN, WorldState, cell_display_color,
+    grass_energy_multiplier, lysis_combat_profile, meat_energy_multiplier,
 };
-use std::time::Instant;
+use std::{fs, path::PathBuf, time::Instant};
 
 #[derive(States, Debug, Clone, Copy, Eq, PartialEq, Hash, Default)]
 pub enum AppState {
@@ -38,6 +38,55 @@ struct StatsText;
 
 #[derive(Component)]
 struct EnergyBalanceText;
+
+#[derive(Component)]
+struct FpsAverageText;
+
+#[derive(Component)]
+struct FpsAverageDeltaText;
+
+#[derive(Resource, Default)]
+struct FpsAverageStats {
+    elapsed: f32,
+    accumulated_frame_time: f32,
+    frame_count: u32,
+    current_average: f32,
+    previous_average: Option<f32>,
+    delta: f32,
+}
+
+impl FpsAverageStats {
+    fn observe(&mut self, dt: f32, fallback_fps: f64) {
+        let dt = dt.clamp(0.0, 0.25);
+        if dt <= f32::EPSILON {
+            if self.current_average <= 0.0 {
+                self.current_average = fallback_fps as f32;
+            }
+            return;
+        }
+
+        self.elapsed += dt;
+        self.accumulated_frame_time += dt;
+        self.frame_count = self.frame_count.saturating_add(1);
+
+        let live_average = self.frame_count as f32 / self.accumulated_frame_time.max(0.001);
+        if self.current_average <= 0.0 {
+            self.current_average = fallback_fps as f32;
+        } else {
+            self.current_average = live_average;
+        }
+
+        if self.elapsed >= 2.5 {
+            let previous = self.previous_average.unwrap_or(live_average);
+            self.current_average = live_average;
+            self.delta = live_average - previous;
+            self.previous_average = Some(live_average);
+            self.elapsed = 0.0;
+            self.accumulated_frame_time = 0.0;
+            self.frame_count = 0;
+        }
+    }
+}
 
 #[derive(Clone, Copy)]
 enum PopulationCounterKind {
@@ -63,6 +112,141 @@ struct RunningUiEntity;
 #[derive(Resource, Default)]
 struct SelectedCell {
     cell_id: Option<u64>,
+    last_click_cell_id: Option<u64>,
+    last_click_time: f64,
+}
+
+#[derive(Resource, Default)]
+struct SpeciesLedgerUiState {
+    open: bool,
+    selected_species: Option<u32>,
+    last_click_species: Option<u32>,
+    last_click_time: f64,
+    rendered_revision: u64,
+    scroll_target_species: Option<u32>,
+}
+
+#[derive(Resource, Default)]
+struct SpeciesCameraFocus {
+    active: bool,
+    target: Vec2,
+    target_scale: f32,
+}
+
+#[derive(Resource, Default)]
+struct SpeciesNameBook {
+    prefixes: Vec<String>,
+    suffixes: Vec<String>,
+    epithets: Vec<String>,
+}
+
+#[derive(Clone, Default)]
+struct SpeciesSnapshot {
+    species: u32,
+    alive: usize,
+    average_position: Vec2,
+    representative_cell_id: Option<u64>,
+    average_viability: f32,
+    average_speed: f32,
+    average_turn: f32,
+    average_aggressiveness: f32,
+    average_lysis: f32,
+    average_size: f32,
+    average_perception: f32,
+    average_persistence: f32,
+    average_mutation: f32,
+    segmented_ratio: f32,
+    average_radii: [f32; 8],
+    average_angle_offsets: [f32; 8],
+    display_radii: [f32; 8],
+    display_angle_offsets: [f32; 8],
+    display_section_count: u8,
+}
+
+#[derive(Resource, Default)]
+struct SpeciesLedgerStats {
+    snapshots: Vec<SpeciesSnapshot>,
+    accumulator: f32,
+    sort_accumulator: f32,
+    revision: u64,
+}
+
+#[derive(Component)]
+struct SpeciesLedgerButton;
+
+#[derive(Component)]
+struct SpeciesLedgerPanel;
+
+#[derive(Component)]
+struct SpeciesLedgerScrollArea;
+
+#[derive(Component)]
+struct SpeciesLedgerGrid;
+
+#[derive(Component)]
+struct SpeciesLedgerScrollbarTrack;
+
+#[derive(Component)]
+struct SpeciesLedgerScrollbarThumb;
+
+#[derive(Component)]
+struct SpeciesLedgerRow {
+    species: u32,
+}
+
+#[derive(Component)]
+struct SpeciesLedgerNameText;
+
+#[derive(Component)]
+struct SpeciesLedgerCountText {
+    species: u32,
+}
+
+#[allow(dead_code)]
+#[derive(Component)]
+struct SpeciesLedgerDetailsPanel;
+
+#[allow(dead_code)]
+#[derive(Component)]
+struct SpeciesLedgerDetailsText;
+
+#[derive(Component)]
+struct SpeciesLedgerStatusIcon;
+
+#[derive(Component)]
+struct SpeciesLedgerDietIcon;
+
+#[derive(Component)]
+struct SpeciesLedgerRelationIcon {
+    species: u32,
+}
+
+#[derive(Component)]
+struct SpeciesLedgerMiniature {
+    species: u32,
+}
+
+#[derive(Component)]
+struct SpeciesLedgerMiniCore {
+    species: u32,
+}
+
+#[derive(Component)]
+struct SpeciesLedgerMiniSegment {
+    species: u32,
+    section: u8,
+}
+
+#[derive(Component)]
+struct SpeciesLedgerMiniRay {
+    species: u32,
+    ray: usize,
+}
+
+#[derive(Component)]
+struct SpeciesLedgerMiniLobe {
+    species: u32,
+    ray: usize,
 }
 
 #[derive(Resource)]
@@ -98,6 +282,7 @@ enum GeneStatId {
     Perception,
     Persistence,
     Aggressiveness,
+    Diet,
     Lysis,
     Mutation,
     Size,
@@ -110,6 +295,11 @@ struct GeneBarFill {
 
 #[derive(Component)]
 struct GeneValueText {
+    kind: GeneStatId,
+}
+
+#[derive(Component)]
+struct GeneIconNode {
     kind: GeneStatId,
 }
 
@@ -240,7 +430,48 @@ const CAMERA_MOVE_SPEED: f32 = 1_100.0;
 const ZOOM_FACTOR: f32 = 1.18;
 const MIN_ZOOM_SCALE: f32 = 0.08;
 const MAX_ZOOM_SCALE: f32 = 12.0;
+const SPECIES_LEDGER_ROW_LIMIT: usize = 360;
+const SPECIES_LEDGER_SORT_INTERVAL: f32 = 5.0;
+const SPECIES_EPITHET_SLOTS: u32 = 200;
 const UI_FONT: &str = "fonts/FiraSansExtraCondensed-Regular.ttf";
+
+fn relative_cursor_fraction_x(cursor: &RelativeCursorPosition) -> Option<f32> {
+    cursor
+        .normalized
+        .map(|position| (position.x + 0.5).clamp(0.0, 1.0))
+}
+
+fn tooltip_position_near_cursor(
+    window: &Window,
+    cursor: Vec2,
+    width: f32,
+    height: f32,
+    gap: f32,
+) -> Vec2 {
+    let x = if cursor.x + width + gap > window.width() {
+        cursor.x - width - gap
+    } else {
+        cursor.x + gap
+    }
+    .clamp(8.0, (window.width() - width - 8.0).max(8.0));
+
+    let y = if cursor.y + height + gap > window.height() {
+        cursor.y - height - gap
+    } else {
+        cursor.y + gap
+    }
+    .clamp(8.0, (window.height() - height - 8.0).max(8.0));
+
+    Vec2::new(x, y)
+}
+
+fn cursor_over_species_ledger(window: &Window, cursor: Vec2) -> bool {
+    let left = 16.0;
+    let right = left + 540.0;
+    let bottom = window.height() - 74.0;
+    let top = bottom - window.height() * 0.64;
+    cursor.x >= left && cursor.x <= right && cursor.y >= top && cursor.y <= bottom
+}
 
 fn main() {
     let mut config = SimConfig::default();
@@ -264,8 +495,12 @@ fn main() {
         .insert_resource(ClearColor(Color::srgb(0.012, 0.015, 0.018)))
         .insert_resource(config.clone())
         .init_resource::<SelectedCell>()
+        .init_resource::<SpeciesLedgerUiState>()
+        .init_resource::<SpeciesCameraFocus>()
+        .init_resource::<SpeciesLedgerStats>()
         .init_resource::<GameUiState>()
         .init_resource::<FrameStats>()
+        .init_resource::<FpsAverageStats>()
         .init_resource::<CellAudioState>()
         .add_plugins((
             DefaultPlugins
@@ -277,6 +512,8 @@ fn main() {
                     primary_window: Some(Window {
                         title: "Organoids".to_string(),
                         present_mode,
+                        mode: WindowMode::Windowed,
+                        decorations: true,
                         resolution: WindowResolution::new(1920, 1080)
                             .with_scale_factor_override(1.0),
                         ..default()
@@ -289,15 +526,25 @@ fn main() {
             menu::MenuPlugin,
         ))
         .init_state::<AppState>()
-        .add_systems(Startup, (setup_camera, load_cell_audio))
+        .add_systems(
+            Startup,
+            (
+                setup_camera,
+                load_cell_audio,
+                load_species_name_book,
+                maximize_primary_window,
+            ),
+        )
         .add_systems(
             OnEnter(AppState::Running),
             (
                 initialize_world_state,
+                load_species_name_book,
                 clear_cell_wake_trails,
                 spawn_simulation_layers,
                 setup_game_stats_ui,
                 setup_biolab_ui_v2,
+                setup_species_ledger_ui,
                 start_running_audio,
                 update_window_title,
             )
@@ -333,11 +580,108 @@ fn main() {
         )
         .add_systems(
             Update,
+            (
+                species_ledger_button_system,
+                update_species_ledger_stats,
+                update_species_ledger_ui,
+                update_species_ledger_row_visuals,
+                update_species_ledger_miniature_visuals,
+                species_ledger_scroll_system,
+                species_ledger_row_system,
+                apply_species_camera_focus,
+            )
+                .run_if(in_state(AppState::Running)),
+        )
+        .add_systems(
+            Update,
+            update_diet_icon_system
+                .after(update_selection_ui)
+                .run_if(in_state(AppState::Running)),
+        )
+        .add_systems(
+            Update,
+            update_selected_species_titles
+                .after(update_selection_ui)
+                .run_if(in_state(AppState::Running)),
+        )
+        .add_systems(
+            Update,
             update_gene_tooltip
                 .after(update_selection_ui)
                 .run_if(in_state(AppState::Running)),
         )
         .run();
+}
+
+fn load_taxonomy_words(file_name: &str) -> Vec<String> {
+    let path: PathBuf = [env!("CARGO_MANIFEST_DIR"), "assets", "taxonomy", file_name]
+        .iter()
+        .collect();
+    fs::read_to_string(path)
+        .map(|content| {
+            content
+                .lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty() && !line.starts_with('#'))
+                .map(ToOwned::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn fallback_taxonomy_words(words: Vec<String>, fallback: &[&str]) -> Vec<String> {
+    if words.is_empty() {
+        fallback.iter().map(|word| (*word).to_string()).collect()
+    } else {
+        words
+    }
+}
+
+fn make_species_name_book(config: &SimConfig) -> SpeciesNameBook {
+    let prefixes = fallback_taxonomy_words(
+        load_taxonomy_words("genus_prefixes.txt"),
+        &["Vita", "Luma", "Novi", "Cala"],
+    );
+    let suffixes = fallback_taxonomy_words(
+        load_taxonomy_words("genus_suffixes.txt"),
+        &["um", "is", "on", "a"],
+    );
+    let epithets = fallback_taxonomy_words(
+        load_taxonomy_words("species_epithets.txt"),
+        &["primus", "lucens", "minor", "flexus"],
+    );
+    let _ = config;
+    SpeciesNameBook {
+        prefixes,
+        suffixes,
+        epithets,
+    }
+}
+
+fn load_species_name_book(mut commands: Commands, config: Res<SimConfig>) {
+    commands.insert_resource(make_species_name_book(&config));
+}
+
+fn species_name_for(names: &SpeciesNameBook, species: u32) -> String {
+    let prefix_count = names.prefixes.len().max(1);
+    let suffix_count = names.suffixes.len().max(1);
+    let epithet_count = names.epithets.len().max(1);
+    let genus_key = species_genus_key(species) as usize;
+    let epithet_key = (species % SPECIES_EPITHET_SLOTS) as usize;
+    let prefix = &names.prefixes[genus_key % prefix_count];
+    let suffix = &names.suffixes[(genus_key / prefix_count) % suffix_count];
+    let epithet = &names.epithets[(epithet_key + genus_key * 13) % epithet_count];
+    format!("{prefix}{suffix} {epithet}")
+}
+
+fn species_snapshot_by_id<'a>(
+    stats: &'a SpeciesLedgerStats,
+    species: u32,
+) -> Option<&'a SpeciesSnapshot> {
+    stats
+        .snapshots
+        .iter()
+        .find(|snapshot| snapshot.species == species)
 }
 
 fn load_cell_audio(mut commands: Commands, asset_server: Res<AssetServer>) {
@@ -537,9 +881,15 @@ fn initialize_world_state(
     config: Res<SimConfig>,
     mut selected: ResMut<SelectedCell>,
     mut ui_state: ResMut<GameUiState>,
+    mut species_ui: ResMut<SpeciesLedgerUiState>,
+    mut species_focus: ResMut<SpeciesCameraFocus>,
+    mut species_stats: ResMut<SpeciesLedgerStats>,
 ) {
     selected.cell_id = None;
     *ui_state = GameUiState::default();
+    *species_ui = SpeciesLedgerUiState::default();
+    *species_focus = SpeciesCameraFocus::default();
+    *species_stats = SpeciesLedgerStats::default();
     commands.insert_resource(WorldState::new(&config));
 }
 
@@ -550,6 +900,12 @@ fn update_window_title(
     if let Some(mut window) = windows.iter_mut().next() {
         window.title = format!("Organoids - {} клеток / {} еды", config.cells, config.food);
         window.title = format!("Organoids - {} клеток / {} еды", config.cells, config.food);
+    }
+}
+
+fn maximize_primary_window(mut windows: Query<&mut Window, With<PrimaryWindow>>) {
+    if let Ok(mut window) = windows.single_mut() {
+        window.set_maximized(true);
     }
 }
 
@@ -582,27 +938,148 @@ fn setup_camera(mut commands: Commands) {
     ));
 }
 
-#[allow(dead_code)]
-fn setup_ui(mut commands: Commands) {
-    commands.spawn((
-        Text::new("загрузка"),
-        TextFont {
-            font_size: 16.0,
-            ..default()
-        },
-        TextColor(Color::srgb(0.86, 0.91, 0.95)),
-        TextShadow::default(),
-        Node {
-            position_type: PositionType::Absolute,
-            top: px(10),
-            left: px(12),
-            ..default()
-        },
-        StatsText,
-        RunningUiEntity,
-    ));
-}
+fn setup_species_ledger_ui(mut commands: Commands, asset_server: Res<AssetServer>) {
+    let font = asset_server.load(UI_FONT);
+    commands
+        .spawn((
+            Button,
+            Node {
+                position_type: PositionType::Absolute,
+                left: px(18),
+                bottom: px(18),
+                width: px(46),
+                height: px(46),
+                border: UiRect::all(px(2)),
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                ..default()
+            },
+            BorderColor::all(Color::srgb(0.39, 0.64, 0.70)),
+            BackgroundColor(Color::srgb(0.035, 0.055, 0.064)),
+            SpeciesLedgerButton,
+            RunningUiEntity,
+        ))
+        .with_child((
+            ImageNode::new(asset_server.load("sprites/icon-species-ledger.png")),
+            Node {
+                width: px(28),
+                height: px(28),
+                ..default()
+            },
+        ));
 
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: px(-590),
+                bottom: px(74),
+                width: px(540),
+                height: percent(64),
+                flex_direction: FlexDirection::Column,
+                row_gap: px(8),
+                padding: UiRect::all(px(12)),
+                border: UiRect::all(px(2)),
+                overflow: Overflow::clip(),
+                display: Display::None,
+                ..default()
+            },
+            BorderColor::all(Color::srgb(0.39, 0.64, 0.70)),
+            BackgroundColor(Color::srgba(0.012, 0.018, 0.022, 0.96)),
+            Visibility::Hidden,
+            PanelReveal::horizontal(590.0),
+            SpeciesLedgerPanel,
+            RunningUiEntity,
+        ))
+        .with_children(|panel| {
+            panel
+                .spawn((Node {
+                    width: percent(100),
+                    height: px(24),
+                    align_items: AlignItems::Center,
+                    ..default()
+                },))
+                .with_child((
+                    Text::new("РЕЕСТР ВИДОВ"),
+                    TextFont {
+                        font: font.clone(),
+                        font_size: 18.0,
+                        ..default()
+                    },
+                    TextColor(Color::srgb(0.76, 0.94, 0.92)),
+                ));
+
+            panel
+                .spawn((Node {
+                    width: percent(100),
+                    flex_grow: 1.0,
+                    min_height: px(0),
+                    position_type: PositionType::Relative,
+                    ..default()
+                },))
+                .with_children(|viewport| {
+                    viewport
+                        .spawn((
+                            Node {
+                                position_type: PositionType::Absolute,
+                                left: px(0),
+                                top: px(0),
+                                width: percent(100),
+                                height: percent(100),
+                                padding: UiRect::new(px(8), px(18), px(8), px(8)),
+                                border: UiRect::all(px(1)),
+                                overflow: Overflow::scroll_y(),
+                                ..default()
+                            },
+                            BorderColor::all(Color::srgb(0.17, 0.36, 0.41)),
+                            BackgroundColor(Color::srgb(0.014, 0.025, 0.030)),
+                            ScrollPosition::default(),
+                            RelativeCursorPosition::default(),
+                            SpeciesLedgerScrollArea,
+                        ))
+                        .with_child((
+                            Node {
+                                width: percent(100),
+                                flex_direction: FlexDirection::Row,
+                                flex_wrap: FlexWrap::Wrap,
+                                align_content: AlignContent::FlexStart,
+                                row_gap: px(8),
+                                column_gap: px(8),
+                                ..default()
+                            },
+                            SpeciesLedgerGrid,
+                        ));
+
+                    viewport
+                        .spawn((
+                            Node {
+                                position_type: PositionType::Absolute,
+                                right: px(5),
+                                top: px(8),
+                                width: px(5),
+                                height: percent(96),
+                                border_radius: BorderRadius::MAX,
+                                ..default()
+                            },
+                            BackgroundColor(Color::srgba(0.15, 0.36, 0.42, 0.48)),
+                            Visibility::Hidden,
+                            SpeciesLedgerScrollbarTrack,
+                        ))
+                        .with_child((
+                            Node {
+                                position_type: PositionType::Absolute,
+                                top: percent(0),
+                                width: percent(100),
+                                height: percent(18),
+                                border_radius: BorderRadius::MAX,
+                                ..default()
+                            },
+                            BackgroundColor(Color::srgb(0.46, 0.86, 0.92)),
+                            SpeciesLedgerScrollbarThumb,
+                        ));
+                });
+        });
+}
 fn setup_game_stats_ui(mut commands: Commands, asset_server: Res<AssetServer>) {
     let font = asset_server.load(UI_FONT);
     commands
@@ -773,6 +1250,7 @@ fn gene_stat_color(kind: GeneStatId) -> Color {
         GeneStatId::Perception => Color::srgb(0.38, 0.88, 0.86),
         GeneStatId::Persistence => Color::srgb(0.96, 0.62, 0.42),
         GeneStatId::Aggressiveness => Color::srgb(1.0, 0.42, 0.30),
+        GeneStatId::Diet => Color::srgb(0.78, 0.96, 0.50),
         GeneStatId::Lysis => Color::srgb(0.94, 0.30, 0.48),
         GeneStatId::Mutation => Color::srgb(0.77, 0.56, 1.0),
         GeneStatId::Size => Color::srgb(0.70, 0.95, 0.86),
@@ -1478,9 +1956,9 @@ fn pause_audio_slider_system(
     }
     for (interaction, cursor, slider) in &sliders {
         if *interaction == Interaction::Pressed
-            && let Some(position) = cursor.normalized
+            && let Some(fraction) = relative_cursor_fraction_x(cursor)
         {
-            set_audio_volume(&mut config, slider.0, position.x.clamp(0.0, 1.0));
+            set_audio_volume(&mut config, slider.0, fraction);
         }
     }
 }
@@ -1714,7 +2192,7 @@ fn setup_biolab_selection_ui(mut commands: Commands, asset_server: Res<AssetServ
                 right: px(12),
                 width: px(395),
                 padding: UiRect::all(px(15)),
-                border: UiRect::all(px(1)),
+                border: UiRect::all(px(2)),
                 flex_direction: FlexDirection::Column,
                 row_gap: px(11),
                 ..default()
@@ -2057,11 +2535,13 @@ fn step_simulation(
 }
 
 fn select_cell_system(
+    time: Res<Time>,
     mouse_buttons: Res<ButtonInput<MouseButton>>,
     windows: Query<(Entity, &Window), With<PrimaryWindow>>,
     camera: Query<(&Transform, &Projection), With<MainCamera>>,
     world: Res<WorldState>,
     mut selected: ResMut<SelectedCell>,
+    mut species_ui: ResMut<SpeciesLedgerUiState>,
     mut ui_state: ResMut<GameUiState>,
 ) {
     if !mouse_buttons.just_pressed(MouseButton::Left) {
@@ -2076,6 +2556,10 @@ fn select_cell_system(
     };
 
     if ui_state.pause_menu_open {
+        return;
+    }
+
+    if species_ui.open && cursor_over_species_ledger(window, cursor) {
         return;
     }
 
@@ -2116,8 +2600,25 @@ fn select_cell_system(
         }
     }
 
-    selected.cell_id = best.map(|index| world.cells.id[index]);
-    if selected.cell_id.is_none() {
+    if let Some(index) = best {
+        let cell_id = world.cells.id[index];
+        let now = time.elapsed_secs_f64();
+        let is_double =
+            selected.last_click_cell_id == Some(cell_id) && now - selected.last_click_time <= 0.42;
+        selected.cell_id = Some(cell_id);
+        selected.last_click_cell_id = Some(cell_id);
+        selected.last_click_time = now;
+        if species_ui.open {
+            let species = world.cells.species[index];
+            species_ui.selected_species = Some(species);
+            if is_double {
+                species_ui.scroll_target_species = Some(species);
+            }
+        }
+    } else {
+        selected.cell_id = None;
+        species_ui.selected_species = None;
+        species_ui.scroll_target_species = None;
         ui_state.passport_open = false;
     }
 }
@@ -2128,6 +2629,7 @@ fn camera_controls(
     mouse_buttons: Res<ButtonInput<MouseButton>>,
     mut mouse_wheel: MessageReader<MouseWheel>,
     windows: Query<(Entity, &Window), With<PrimaryWindow>>,
+    species_ui: Res<SpeciesLedgerUiState>,
     mut camera: Query<(&mut Transform, &mut Projection), With<MainCamera>>,
     mut last_cursor: Local<Option<Vec2>>,
 ) {
@@ -2193,7 +2695,12 @@ fn camera_controls(
         };
     }
 
-    if scroll != 0.0 {
+    let cursor_over_ledger = window
+        .cursor_position()
+        .map(|cursor| species_ui.open && cursor_over_species_ledger(window, cursor))
+        .unwrap_or(false);
+
+    if scroll != 0.0 && !cursor_over_ledger {
         let cursor_world_before = window
             .cursor_position()
             .map(|cursor| cursor_to_world(cursor, transform.translation, projection, window));
@@ -2276,10 +2783,33 @@ struct StatUiValue {
     range: String,
 }
 
+fn trophic_type_name(aggressiveness: f32) -> &'static str {
+    let aggression = (aggressiveness / CELL_AGGRESSIVENESS_DISPLAY_MAX).clamp(0.0, 1.0);
+    if aggression < 0.40 {
+        "Биотроф"
+    } else if aggression < 0.70 {
+        "Гемибиотроф"
+    } else {
+        "Некротроф"
+    }
+}
+
+fn trophic_type_icon(aggressiveness: f32) -> &'static str {
+    let aggression = (aggressiveness / CELL_AGGRESSIVENESS_DISPLAY_MAX).clamp(0.0, 1.0);
+    if aggression < 0.40 {
+        "sprites/gene-type-biotroph.png"
+    } else if aggression < 0.70 {
+        "sprites/gene-type-hemibiotroph.png"
+    } else {
+        "sprites/gene-type-necrotroph.png"
+    }
+}
+
 fn game_ui_input_system(
     keys: Res<ButtonInput<KeyCode>>,
     selected: Res<SelectedCell>,
     mut ui_state: ResMut<GameUiState>,
+    mut species_ui: ResMut<SpeciesLedgerUiState>,
 ) {
     if keys.just_pressed(KeyCode::Space) {
         ui_state.paused = !ui_state.paused;
@@ -2293,6 +2823,15 @@ fn game_ui_input_system(
             ui_state.passport_open = !ui_state.passport_open;
         } else {
             ui_state.passport_open = false;
+        }
+    }
+
+    if keys.just_pressed(KeyCode::KeyQ) {
+        species_ui.open = !species_ui.open;
+        if !species_ui.open {
+            species_ui.selected_species = None;
+            species_ui.scroll_target_species = None;
+            species_ui.last_click_species = None;
         }
     }
 
@@ -2338,15 +2877,19 @@ fn game_ui_input_system(
 
 fn update_stats_overlay(
     diagnostics: Res<DiagnosticsStore>,
+    time: Res<Time>,
     world: Res<WorldState>,
     stats: Res<FrameStats>,
     config: Res<SimConfig>,
+    mut fps_average: ResMut<FpsAverageStats>,
     mut text: Query<&mut Text, With<StatsText>>,
     mut stats_spans: ParamSet<(
         Query<(&PopulationCountText, &mut TextSpan)>,
         Query<(&PopulationDeltaText, &mut TextSpan, &mut TextColor)>,
         Query<&mut TextSpan, With<StatsBodyText>>,
         Query<(&mut TextSpan, &mut TextColor), With<EnergyBalanceText>>,
+        Query<&mut TextSpan, With<FpsAverageText>>,
+        Query<(&mut TextSpan, &mut TextColor), With<FpsAverageDeltaText>>,
     )>,
 ) {
     let fps = diagnostics
@@ -2358,10 +2901,27 @@ fn update_stats_overlay(
         .and_then(|frame| frame.smoothed())
         .unwrap_or(0.0);
 
+    fps_average.observe(time.delta_secs(), fps);
+
     let Ok(mut text) = text.single_mut() else {
         return;
     };
     **text = format!("FPS {fps:>6.1} | кадр {frame_ms:>5.2} мс");
+
+    if let Ok(mut span) = stats_spans.p4().single_mut() {
+        **span = format!("\nср. FPS {:>5.1}", fps_average.current_average);
+    }
+    if let Ok((mut span, mut color)) = stats_spans.p5().single_mut() {
+        let delta = fps_average.delta;
+        **span = format!(" {delta:+.1}");
+        color.0 = if delta > 0.2 {
+            Color::srgb(0.38, 1.0, 0.56)
+        } else if delta < -0.2 {
+            Color::srgb(1.0, 0.38, 0.34)
+        } else {
+            Color::srgb(0.66, 0.72, 0.76)
+        };
+    }
 
     for (counter, mut span) in &mut stats_spans.p0() {
         **span = match counter.0 {
@@ -2388,7 +2948,7 @@ fn update_stats_overlay(
     let (wild_food, feeder_food, carrion) = world.active_food_counts();
     if let Ok(mut body) = stats_spans.p2().single_mut() {
         **body = format!(
-            "\nдикая {:>4} | корм. {:>4} | мясо {:>4}\nпрепят. {:>4} | кормилки {:>2}\nсим {:>5.2} мс | ренд {:>5.2} мс\nарена {:.0} x {:.0}\n\nЭНЕРГЕТИКА, ед/с\n+ дикая трава  {:>8.1}\n+ кормушки     {:>8.1}\n= общий приток {:>8.1}\n~ съедено      {:>8.1}\n~ падаль       {:>8.1}\n- метаболизм   {:>8.1}\n- порча        {:>8.1}\n- митоз        {:>8.1}\n- лизис        {:>8.1}\n= общий отток  {:>8.1}",
+            "\nдикая {:>4} | корм. {:>4} | мясо {:>4}\nпрепят. {:>4} | кормушки {:>2}\nсим {:>5.2} мс | ренд {:>5.2} мс\nарена {:.0} x {:.0}\n\nЭНЕРГЕТИКА, ед/с\n+ дикая трава  {:>8.1}\n+ кормушки     {:>8.1}\n= общий приток {:>8.1}\n~ съедено      {:>8.1}\n~ падаль       {:>8.1}\n- метаболизм   {:>8.1}\n- порча        {:>8.1}\n- митоз        {:>8.1}\n- лизис        {:>8.1}\n= общий отток  {:>8.1}",
             wild_food,
             feeder_food,
             carrion,
@@ -2603,7 +3163,6 @@ fn update_selection_ui(
     if let Ok(mut title) = passport_title.single_mut() {
         **title = format!("ПАСПОРТ КЛЕТКИ #{cell_id} · {shape_name}");
     }
-
     let division_threshold = world.cells.division_threshold[cell_index];
     for (bar, mut node) in &mut bar_fills {
         let value = stat_ui_value(&world, cell_index, bar.kind);
@@ -2643,21 +3202,10 @@ fn update_selection_ui(
             let tooltip_width = 370.0;
             let tooltip_height = 122.0;
             let gap = 18.0;
-            let x = if cursor.x + tooltip_width + gap > window.width() {
-                cursor.x - tooltip_width - gap
-            } else {
-                cursor.x + gap
-            }
-            .clamp(8.0, (window.width() - tooltip_width - 8.0).max(8.0));
-            let y = if cursor.y + tooltip_height + gap > window.height() {
-                cursor.y - tooltip_height - gap
-            } else {
-                cursor.y + gap
-            }
-            .clamp(8.0, (window.height() - tooltip_height - 8.0).max(8.0));
-
-            tooltip_node.left = px(x);
-            tooltip_node.top = px(y);
+            let position =
+                tooltip_position_near_cursor(window, cursor, tooltip_width, tooltip_height, gap);
+            tooltip_node.left = px(position.x);
+            tooltip_node.top = px(position.y);
         }
     }
     if let Ok(mut value_text) = tooltip_value.single_mut() {
@@ -2673,6 +3221,49 @@ fn update_selection_ui(
     }
 }
 
+fn update_selected_species_titles(
+    world: Res<WorldState>,
+    selected: Res<SelectedCell>,
+    names: Res<SpeciesNameBook>,
+    mut compact_title: Query<
+        &mut Text,
+        (
+            With<SelectionCellTitle>,
+            Without<PassportCellTitle>,
+            Without<GeneValueText>,
+            Without<GeneRangeText>,
+            Without<DivisionTooltipText>,
+            Without<DivisionTooltipValueText>,
+        ),
+    >,
+    mut passport_title: Query<
+        &mut Text,
+        (
+            With<PassportCellTitle>,
+            Without<SelectionCellTitle>,
+            Without<GeneValueText>,
+            Without<GeneRangeText>,
+            Without<DivisionTooltipText>,
+            Without<DivisionTooltipValueText>,
+        ),
+    >,
+) {
+    let Some(cell_index) = selected
+        .cell_id
+        .and_then(|cell_id| world.cell_index_by_id(cell_id))
+    else {
+        return;
+    };
+    let cell_id = world.cells.id[cell_index];
+    let shape_name = world.cells.shape_name(cell_index);
+    let species_name = species_name_for(&names, world.cells.species[cell_index]);
+    if let Ok(mut title) = compact_title.single_mut() {
+        **title = format!("КЛЕТКА #{cell_id} · {shape_name} · {species_name}");
+    }
+    if let Ok(mut title) = passport_title.single_mut() {
+        **title = format!("ПАСПОРТ КЛЕТКИ #{cell_id} · {shape_name} · {species_name}");
+    }
+}
 fn stat_ui_value(world: &WorldState, cell_index: usize, id: GeneStatId) -> StatUiValue {
     let cells = &world.cells;
     let viability = cells.viability[cell_index];
@@ -2691,11 +3282,11 @@ fn stat_ui_value(world: &WorldState, cell_index: usize, id: GeneStatId) -> StatU
         GeneStatId::Viability => StatUiValue {
             normalized: viability_ratio,
             display: format!(
-                "{viability:.0} / {:.0}→{max_viability:.0}",
+                "{viability:.0} / {:.0} -> {max_viability:.0}",
                 CELL_VIABILITY_MAX
             ),
             range: format!(
-                "запас {} · расход {}",
+                "запас {} | расход {}",
                 modifier(viability_factor),
                 modifier(metabolism_factor)
             ),
@@ -2704,9 +3295,9 @@ fn stat_ui_value(world: &WorldState, cell_index: usize, id: GeneStatId) -> StatU
             let speed = cells.speed[cell_index];
             StatUiValue {
                 normalized: speed / CELL_SPEED_DISPLAY_MAX,
-                display: format!("{speed:.0}→{:.0}", speed * speed_factor),
+                display: format!("{speed:.0} -> {:.0}", speed * speed_factor),
                 range: format!(
-                    "ген {SPEED_GENE_MIN:.0}-{SPEED_GENE_MAX:.0} · форма {} · разгон {}",
+                    "ген {SPEED_GENE_MIN:.0}-{SPEED_GENE_MAX:.0} | форма {} | разгон {}",
                     modifier(speed_factor),
                     modifier(acceleration_factor)
                 ),
@@ -2716,9 +3307,9 @@ fn stat_ui_value(world: &WorldState, cell_index: usize, id: GeneStatId) -> StatU
             let turn = cells.turn_speed[cell_index];
             StatUiValue {
                 normalized: turn / CELL_TURN_DISPLAY_MAX,
-                display: format!("{turn:.1}→{:.1}", turn * turn_factor),
+                display: format!("{turn:.1} -> {:.1}", turn * turn_factor),
                 range: format!(
-                    "ген {TURN_GENE_MIN:.2}-{TURN_GENE_MAX:.1} · форма {}",
+                    "ген {TURN_GENE_MIN:.2}-{TURN_GENE_MAX:.1} | форма {}",
                     modifier(turn_factor)
                 ),
             }
@@ -2741,11 +3332,20 @@ fn stat_ui_value(world: &WorldState, cell_index: usize, id: GeneStatId) -> StatU
         }
         GeneStatId::Aggressiveness => {
             let aggressiveness = cells.aggressiveness[cell_index];
-            let meat_multiplier = meat_energy_multiplier(aggressiveness);
             StatUiValue {
                 normalized: aggressiveness / CELL_AGGRESSIVENESS_DISPLAY_MAX,
                 display: format!("{aggressiveness:.0}%"),
-                range: format!("инициатива 0-100% · мясо x{meat_multiplier:.2}"),
+                range: "инициатива 0-100% | сдвигает рацион к мясу".to_string(),
+            }
+        }
+        GeneStatId::Diet => {
+            let aggressiveness = cells.aggressiveness[cell_index];
+            let grass_multiplier = grass_energy_multiplier(aggressiveness);
+            let meat_multiplier = meat_energy_multiplier(aggressiveness);
+            StatUiValue {
+                normalized: aggressiveness / CELL_AGGRESSIVENESS_DISPLAY_MAX,
+                display: trophic_type_name(aggressiveness).to_string(),
+                range: format!("трава x{grass_multiplier:.2} | мясо x{meat_multiplier:.2}"),
             }
         }
         GeneStatId::Lysis => {
@@ -2759,7 +3359,7 @@ fn stat_ui_value(world: &WorldState, cell_index: usize, id: GeneStatId) -> StatU
                     format!("{lysis:.0}%")
                 },
                 range: format!(
-                    "урон {damage:.1} · цена {self_cost:.2} · КД {cooldown:.2}с · радиус {reach:.1}"
+                    "урон {damage:.1} | цена {self_cost:.2} | КД {cooldown:.2}с | радиус {reach:.1}"
                 ),
             }
         }
@@ -2780,48 +3380,50 @@ fn stat_ui_value(world: &WorldState, cell_index: usize, id: GeneStatId) -> StatU
         },
     }
 }
-
 fn gene_tooltip_copy(kind: GeneStatId) -> (&'static str, &'static str) {
     match kind {
         GeneStatId::Viability => (
             "ЖИЗНЕСПОСОБНОСТЬ",
-            "Общий запас энергии и здоровья. Расходуется метаболизмом, движением и уроном; восстанавливается пищей. При нуле клетка погибает.",
+            "Общий запас энергии и здоровья. Восполняется пищей, тратится в покое; геометрия формы меняет итоговый запас.",
         ),
         GeneStatId::Size => (
             "РАЗМЕР",
-            "Физический масштаб тела. Крупная клетка устойчивее в столкновениях и хранит больше запаса, но требует больше энергии и хуже проходит в тесных местах.",
+            "Физический масштаб тела. Крупная клетка устойчивее в столкновениях и хранит больше запаса, но требует больше энергии.",
         ),
         GeneStatId::Speed => (
             "СКОРОСТЬ",
-            "Предельная скорость движения вперёд. Форма тела изменяет реальный результат, а быстрые клетки платят повышенным метаболизмом.",
+            "Предельная скорость движения вперед. Форма тела меняет реальный результат, а быстрые клетки платят повышенным метаболизмом.",
         ),
         GeneStatId::Turn => (
             "ПОВОРОТЛИВОСТЬ",
-            "Скорость изменения направления головы. Вытянутая и многосегментная геометрия снижает эффективный поворот и усиливает занос хвоста.",
+            "Скорость изменения направления головы. Геометрия и многосегментность могут снижать реальную маневренность.",
         ),
         GeneStatId::Perception => (
             "ВОСПРИЯТИЕ",
-            "Радиус обнаружения пищи и других клеток. Большое восприятие расширяет поиск целей, но не гарантирует выбор конкретной цели.",
+            "Радиус обнаружения еды и других целей. Дальние объекты остаются невидимыми, пока не попадут в этот радиус.",
         ),
         GeneStatId::Persistence => (
             "НАСТОЙЧИВОСТЬ",
-            "Определяет верность выбранной цели, частоту её смены и длительность преследования последней известной позиции.",
+            "Определяет верность выбранной цели, частоту ее смены и длительность преследования последней известной позиции.",
         ),
         GeneStatId::Aggressiveness => (
             "АГРЕССИВНОСТЬ",
-            "Желание самостоятельно начинать охоту и эффективность усвоения мяса. Учитывает голод, дистанцию, слабость и размер жертвы, а также риск ответного лизиса. Чем выше ген, тем больше жизнеспособности клетка получает из мяса; трава остаётся без бонуса.",
+            "Желание самостоятельно начинать охоту. Также сдвигает питание: высокая агрессивность улучшает усвоение мяса, но ухудшает усвоение травы.",
+        ),
+        GeneStatId::Diet => (
+            "РАЦИОН",
+            "Пищевой профиль по агрессивности: биотроф лучше ест траву, гемибиотроф держит середину, некротроф делает ставку на мясо.",
         ),
         GeneStatId::Lysis => (
             "ЛИЗИС",
-            "Контактная атака по жизнеспособности жертвы. Развитие повышает урон и частоту ударов, но увеличивает цену и уменьшает дистанцию атаки.",
+            "Контактная атака по жизнеспособности жертвы. Развитие повышает урон и частоту ударов, но имеет цену.",
         ),
         GeneStatId::Mutation => (
             "МУТАЦИИ",
-            "Вероятность и сила наследственных изменений при делении: генов, формы лучей и топологии многосегментного тела.",
+            "Вероятность и сила наследственных изменений при делении: гены, лучи формы и топология сегментов.",
         ),
     }
 }
-
 fn update_gene_tooltip(
     time: Res<Time>,
     windows: Query<&Window, With<PrimaryWindow>>,
@@ -2899,20 +3501,864 @@ fn update_gene_tooltip(
         let width = 370.0;
         let height = 205.0;
         let gap = 18.0;
-        let x = if cursor.x + width + gap > window.width() {
-            cursor.x - width - gap
-        } else {
-            cursor.x + gap
+        let position = tooltip_position_near_cursor(window, cursor, width, height, gap);
+        node.left = px(position.x);
+        node.top = px(position.y);
+    }
+}
+
+fn species_ledger_button_system(
+    interactions: Query<&Interaction, (Changed<Interaction>, With<SpeciesLedgerButton>)>,
+    mut state: ResMut<SpeciesLedgerUiState>,
+) {
+    for interaction in &interactions {
+        if *interaction == Interaction::Pressed {
+            state.open = !state.open;
+            if !state.open {
+                state.selected_species = None;
+                state.scroll_target_species = None;
+                state.last_click_species = None;
+            }
         }
-        .clamp(8.0, (window.width() - width - 8.0).max(8.0));
-        let y = if cursor.y + height + gap > window.height() {
-            cursor.y - height - gap
-        } else {
-            cursor.y + gap
+    }
+}
+
+fn update_species_ledger_stats(
+    time: Res<Time>,
+    world: Res<WorldState>,
+    state: Res<SpeciesLedgerUiState>,
+    mut stats: ResMut<SpeciesLedgerStats>,
+) {
+    let dt = time.delta_secs();
+    stats.accumulator += dt;
+    stats.sort_accumulator += dt;
+    if stats.accumulator < 0.35
+        && !stats.snapshots.is_empty()
+        && state.scroll_target_species.is_none()
+    {
+        return;
+    }
+    stats.accumulator = 0.0;
+
+    let previous_order = stats
+        .snapshots
+        .iter()
+        .map(|snapshot| snapshot.species)
+        .collect::<Vec<_>>();
+    let mut by_species = std::collections::HashMap::<u32, SpeciesSnapshot>::new();
+
+    for index in 0..world.cells.len() {
+        let species = world.cells.species[index];
+        let snapshot = by_species
+            .entry(species)
+            .or_insert_with(|| SpeciesSnapshot {
+                species,
+                ..default()
+            });
+        snapshot.alive += 1;
+        snapshot.average_position += Vec2::new(world.cells.x[index], world.cells.y[index]);
+        snapshot.average_viability +=
+            world.cells.viability[index] / world.cells.max_viability[index].max(1.0);
+        snapshot.average_speed += world.cells.speed[index];
+        snapshot.average_turn += world.cells.turn_speed[index];
+        snapshot.average_aggressiveness += world.cells.aggressiveness[index];
+        snapshot.average_lysis += world.cells.lysis[index];
+        snapshot.average_perception += world.cells.perception[index];
+        snapshot.average_persistence += world.cells.persistence[index];
+        snapshot.average_mutation += world.cells.mutation_susceptibility[index];
+        let base_radius = world.cells.max_base_radius(index).max(0.1);
+        snapshot.average_size += base_radius;
+        for ray in 0..8 {
+            snapshot.average_radii[ray] += world.cells.base_radii[index][ray] / base_radius;
+            snapshot.average_angle_offsets[ray] += world.cells.angle_offsets[index][ray];
         }
-        .clamp(8.0, (window.height() - height - 8.0).max(8.0));
-        node.left = px(x);
-        node.top = px(y);
+        snapshot.segmented_ratio += if world.cells.section_count[index] >= 2 {
+            1.0
+        } else {
+            0.0
+        };
+        if snapshot.representative_cell_id.is_none() {
+            snapshot.representative_cell_id = Some(world.cells.id[index]);
+            snapshot.display_section_count = world.cells.section_count[index];
+            for ray in 0..8 {
+                snapshot.display_radii[ray] =
+                    (world.cells.base_radii[index][ray] / base_radius).clamp(0.25, 1.35);
+                snapshot.display_angle_offsets[ray] = world.cells.angle_offsets[index][ray];
+            }
+        }
+    }
+
+    let mut snapshots = by_species.into_values().collect::<Vec<_>>();
+    for snapshot in &mut snapshots {
+        let inv = (snapshot.alive as f32).recip();
+        snapshot.average_position *= inv;
+        snapshot.average_viability *= inv;
+        snapshot.average_speed *= inv;
+        snapshot.average_turn *= inv;
+        snapshot.average_aggressiveness *= inv;
+        snapshot.average_lysis *= inv;
+        snapshot.average_size *= inv;
+        snapshot.average_perception *= inv;
+        snapshot.average_persistence *= inv;
+        snapshot.average_mutation *= inv;
+        snapshot.segmented_ratio *= inv;
+        for ray in 0..8 {
+            snapshot.average_radii[ray] = (snapshot.average_radii[ray] * inv).clamp(0.35, 1.55);
+            snapshot.average_angle_offsets[ray] =
+                (snapshot.average_angle_offsets[ray] * inv).clamp(-0.35, 0.35);
+        }
+    }
+
+    let should_sort =
+        stats.snapshots.is_empty() || stats.sort_accumulator >= SPECIES_LEDGER_SORT_INTERVAL;
+    if should_sort {
+        snapshots.sort_by(|a, b| {
+            b.alive
+                .cmp(&a.alive)
+                .then_with(|| a.species.cmp(&b.species))
+        });
+        stats.sort_accumulator = 0.0;
+    } else {
+        let order = previous_order
+            .iter()
+            .enumerate()
+            .map(|(order, species)| (*species, order))
+            .collect::<std::collections::HashMap<_, _>>();
+        snapshots.sort_by(|a, b| {
+            let a_order = order.get(&a.species).copied().unwrap_or(usize::MAX);
+            let b_order = order.get(&b.species).copied().unwrap_or(usize::MAX);
+            a_order
+                .cmp(&b_order)
+                .then_with(|| b.alive.cmp(&a.alive))
+                .then_with(|| a.species.cmp(&b.species))
+        });
+    }
+
+    if snapshots.len() > SPECIES_LEDGER_ROW_LIMIT {
+        let pinned = [state.selected_species, state.scroll_target_species]
+            .into_iter()
+            .flatten()
+            .collect::<std::collections::HashSet<_>>();
+        let pinned_snapshots = snapshots
+            .iter()
+            .filter(|snapshot| pinned.contains(&snapshot.species))
+            .cloned()
+            .collect::<Vec<_>>();
+        snapshots.truncate(SPECIES_LEDGER_ROW_LIMIT.saturating_sub(pinned_snapshots.len()));
+        for snapshot in pinned_snapshots {
+            if !snapshots
+                .iter()
+                .any(|existing| existing.species == snapshot.species)
+            {
+                snapshots.push(snapshot);
+            }
+        }
+    }
+    let new_order = snapshots
+        .iter()
+        .map(|snapshot| snapshot.species)
+        .collect::<Vec<_>>();
+    if new_order != previous_order {
+        stats.revision = stats.revision.wrapping_add(1);
+    }
+    stats.snapshots = snapshots;
+}
+
+fn trophic_icon_tint(aggressiveness: f32) -> Color {
+    let ratio = (aggressiveness / CELL_AGGRESSIVENESS_DISPLAY_MAX).clamp(0.0, 1.0);
+    if ratio < 0.40 {
+        Color::srgb(0.42, 1.0, 0.54)
+    } else if ratio < 0.70 {
+        Color::srgb(1.0, 0.88, 0.30)
+    } else {
+        Color::srgb(1.0, 0.30, 0.24)
+    }
+}
+
+#[allow(dead_code)]
+fn species_morph_class(species: u32) -> u32 {
+    species / 1_000_000
+}
+
+fn species_genus_key(species: u32) -> u32 {
+    species / SPECIES_EPITHET_SLOTS
+}
+
+fn species_snapshots_related(a: &SpeciesSnapshot, b: &SpeciesSnapshot) -> bool {
+    a.species != b.species && species_genus_key(a.species) == species_genus_key(b.species)
+}
+
+fn spawn_species_ledger_row(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    asset_server: &AssetServer,
+    snapshot: &SpeciesSnapshot,
+    name: String,
+) {
+    let species = snapshot.species;
+    parent
+        .spawn((
+            Button,
+            Node {
+                width: px(154),
+                height: px(148),
+                position_type: PositionType::Relative,
+                flex_direction: FlexDirection::Column,
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::SpaceBetween,
+                padding: UiRect::axes(px(8), px(8)),
+                border: UiRect::all(px(2)),
+                ..default()
+            },
+            BorderColor::all(Color::srgb(0.18, 0.38, 0.43)),
+            BackgroundColor(Color::srgb(0.035, 0.055, 0.064)),
+            Interaction::default(),
+            SpeciesLedgerRow { species },
+        ))
+        .with_children(|row| {
+            row.spawn((
+                Node {
+                    position_type: PositionType::Relative,
+                    width: px(88),
+                    height: px(88),
+                    border: UiRect::all(px(2)),
+                    align_items: AlignItems::Center,
+                    justify_content: JustifyContent::Center,
+                    ..default()
+                },
+                BorderColor::all(Color::srgb(0.32, 0.58, 0.62)),
+                BackgroundColor(Color::srgb(0.025, 0.045, 0.050)),
+                SpeciesLedgerMiniature { species },
+            ))
+            .with_children(|mini| {
+                for ray in 0..8 {
+                    mini.spawn((
+                        Node {
+                            position_type: PositionType::Absolute,
+                            left: px(38),
+                            top: px(40),
+                            width: px(14),
+                            height: px(7),
+                            border_radius: BorderRadius::MAX,
+                            ..default()
+                        },
+                        UiTransform::default(),
+                        BackgroundColor(Color::srgb(0.82, 0.96, 0.78)),
+                        SpeciesLedgerMiniRay { species, ray },
+                    ));
+                    mini.spawn((
+                        Node {
+                            position_type: PositionType::Absolute,
+                            left: px(38),
+                            top: px(38),
+                            width: px(10),
+                            height: px(10),
+                            border_radius: BorderRadius::MAX,
+                            ..default()
+                        },
+                        BackgroundColor(Color::srgb(0.82, 0.96, 0.78)),
+                        SpeciesLedgerMiniLobe { species, ray },
+                    ));
+                }
+                for section in 1..4 {
+                    mini.spawn((
+                        Node {
+                            position_type: PositionType::Absolute,
+                            left: px(30),
+                            top: px(30),
+                            width: px(26),
+                            height: px(26),
+                            border_radius: BorderRadius::MAX,
+                            ..default()
+                        },
+                        BackgroundColor(Color::srgba(0.82, 0.96, 0.78, 0.62)),
+                        Visibility::Hidden,
+                        SpeciesLedgerMiniSegment { species, section },
+                    ));
+                }
+                mini.spawn((
+                    Node {
+                        position_type: PositionType::Absolute,
+                        left: px(27),
+                        top: px(27),
+                        width: px(34),
+                        height: px(34),
+                        border_radius: BorderRadius::MAX,
+                        ..default()
+                    },
+                    BackgroundColor(Color::srgb(0.90, 0.98, 0.88)),
+                    SpeciesLedgerMiniCore { species },
+                ));
+            });
+
+            row.spawn((
+                ImageNode {
+                    image: asset_server.load("sprites/icon-species-alive.png"),
+                    color: Color::srgb(0.38, 1.0, 0.52),
+                    ..default()
+                },
+                Node {
+                    position_type: PositionType::Absolute,
+                    right: px(8),
+                    top: px(8),
+                    width: px(17),
+                    height: px(17),
+                    ..default()
+                },
+                SpeciesLedgerStatusIcon,
+            ));
+
+            row.spawn((
+                ImageNode {
+                    image: asset_server.load(trophic_type_icon(snapshot.average_aggressiveness)),
+                    color: trophic_icon_tint(snapshot.average_aggressiveness),
+                    ..default()
+                },
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: px(8),
+                    bottom: px(8),
+                    width: px(24),
+                    height: px(24),
+                    ..default()
+                },
+                SpeciesLedgerDietIcon,
+            ));
+
+            row.spawn((
+                ImageNode {
+                    image: asset_server.load("sprites/icon-species-relation.png"),
+                    color: Color::srgb(0.35, 0.68, 1.0),
+                    ..default()
+                },
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: px(8),
+                    top: px(8),
+                    width: px(17),
+                    height: px(17),
+                    ..default()
+                },
+                Visibility::Hidden,
+                SpeciesLedgerRelationIcon { species },
+            ));
+
+            row.spawn((
+                Text::new(snapshot.alive.to_string()),
+                TextFont {
+                    font: font.clone(),
+                    font_size: 14.0,
+                    ..default()
+                },
+                TextColor(Color::srgb(0.72, 1.0, 0.78)),
+                Node {
+                    position_type: PositionType::Absolute,
+                    right: px(8),
+                    bottom: px(8),
+                    ..default()
+                },
+                SpeciesLedgerCountText { species },
+            ));
+
+            row.spawn((
+                Text::new(name),
+                TextFont {
+                    font,
+                    font_size: 10.5,
+                    ..default()
+                },
+                TextColor(Color::srgb(0.91, 0.96, 0.97)),
+                Node {
+                    width: percent(100),
+                    height: px(22),
+                    justify_content: JustifyContent::Center,
+                    align_items: AlignItems::Center,
+                    ..default()
+                },
+                SpeciesLedgerNameText,
+            ));
+        });
+}
+
+fn update_species_ledger_ui(
+    mut commands: Commands,
+    time: Res<Time>,
+    asset_server: Res<AssetServer>,
+    names: Res<SpeciesNameBook>,
+    stats: Res<SpeciesLedgerStats>,
+    mut state: ResMut<SpeciesLedgerUiState>,
+    mut panel: Query<(&mut Visibility, &mut Node, &mut PanelReveal), With<SpeciesLedgerPanel>>,
+    grid: Query<Entity, With<SpeciesLedgerGrid>>,
+    row_entities: Query<Entity, With<SpeciesLedgerRow>>,
+) {
+    if let Ok((mut visibility, mut node, mut reveal)) = panel.single_mut() {
+        if state.open {
+            *visibility = Visibility::Visible;
+            node.display = Display::Flex;
+        }
+        let target = if state.open { 1.0 } else { 0.0 };
+        let follow = 1.0 - (-13.0 * time.delta_secs()).exp();
+        reveal.progress += (target - reveal.progress) * follow;
+        node.left = px(16.0 - reveal.hidden_offset * (1.0 - reveal.progress));
+        if !state.open && reveal.progress < 0.002 {
+            *visibility = Visibility::Hidden;
+            node.display = Display::None;
+        }
+    }
+
+    if !state.open || state.rendered_revision == stats.revision {
+        return;
+    }
+
+    for entity in &row_entities {
+        commands.entity(entity).despawn();
+    }
+    if let Ok(grid_entity) = grid.single() {
+        let font = asset_server.load(UI_FONT);
+        commands.entity(grid_entity).with_children(|grid| {
+            for snapshot in &stats.snapshots {
+                let name = species_name_for(&names, snapshot.species);
+                spawn_species_ledger_row(grid, font.clone(), &asset_server, snapshot, name);
+            }
+        });
+    }
+    state.rendered_revision = stats.revision;
+}
+
+fn update_species_ledger_row_visuals(
+    stats: Res<SpeciesLedgerStats>,
+    state: Res<SpeciesLedgerUiState>,
+    mut rows: Query<
+        (&SpeciesLedgerRow, &mut BackgroundColor, &mut BorderColor),
+        (
+            Without<SpeciesLedgerMiniature>,
+            Without<SpeciesLedgerMiniCore>,
+            Without<SpeciesLedgerMiniRay>,
+        ),
+    >,
+    mut count_texts: Query<(&SpeciesLedgerCountText, &mut Text), Without<SpeciesLedgerNameText>>,
+    mut relation_icons: Query<(&SpeciesLedgerRelationIcon, &mut Visibility)>,
+) {
+    if !state.open {
+        return;
+    }
+
+    let selected_snapshot = state
+        .selected_species
+        .and_then(|species| species_snapshot_by_id(&stats, species));
+
+    for (row, mut background, mut border) in &mut rows {
+        let selected = state.selected_species == Some(row.species);
+        let related = selected_snapshot
+            .and_then(|selected| {
+                species_snapshot_by_id(&stats, row.species)
+                    .map(|row| species_snapshots_related(selected, row))
+            })
+            .unwrap_or(false);
+        background.0 = if selected {
+            Color::srgb(0.115, 0.215, 0.225)
+        } else if related {
+            Color::srgb(0.040, 0.105, 0.165)
+        } else {
+            Color::srgb(0.030, 0.047, 0.055)
+        };
+        *border = BorderColor::all(if selected {
+            Color::srgb(0.76, 1.0, 0.98)
+        } else if related {
+            Color::srgb(0.24, 0.66, 1.0)
+        } else {
+            Color::srgb(0.18, 0.38, 0.43)
+        });
+    }
+
+    for (marker, mut text) in &mut count_texts {
+        let alive = species_snapshot_by_id(&stats, marker.species)
+            .map(|snapshot| snapshot.alive)
+            .unwrap_or(0);
+        **text = alive.to_string();
+    }
+
+    for (marker, mut visibility) in &mut relation_icons {
+        let related = selected_snapshot
+            .and_then(|selected| {
+                species_snapshot_by_id(&stats, marker.species)
+                    .map(|row| species_snapshots_related(selected, row))
+            })
+            .unwrap_or(false);
+        *visibility = if related {
+            Visibility::Visible
+        } else {
+            Visibility::Hidden
+        };
+    }
+}
+
+fn update_species_ledger_miniature_visuals(
+    stats: Res<SpeciesLedgerStats>,
+    state: Res<SpeciesLedgerUiState>,
+    mut mini_queries: ParamSet<(
+        Query<(&SpeciesLedgerMiniature, &mut BackgroundColor)>,
+        Query<(&SpeciesLedgerMiniCore, &mut BackgroundColor)>,
+        Query<(
+            &SpeciesLedgerMiniSegment,
+            &mut Node,
+            &mut BackgroundColor,
+            &mut Visibility,
+        )>,
+        Query<(
+            &SpeciesLedgerMiniRay,
+            &mut Node,
+            &mut BackgroundColor,
+            &mut UiTransform,
+        )>,
+        Query<(&SpeciesLedgerMiniLobe, &mut Node, &mut BackgroundColor)>,
+    )>,
+) {
+    if !state.open {
+        return;
+    }
+
+    for (marker, mut background) in &mut mini_queries.p0() {
+        background.0 = if species_snapshot_by_id(&stats, marker.species).is_some() {
+            Color::srgb(0.025, 0.045, 0.050)
+        } else {
+            Color::srgb(0.020, 0.025, 0.030)
+        };
+    }
+
+    for (marker, mut background) in &mut mini_queries.p1() {
+        let color = species_snapshot_by_id(&stats, marker.species)
+            .map(|snapshot| {
+                let rgba = cell_display_color(
+                    marker.species,
+                    snapshot.average_viability,
+                    snapshot.average_aggressiveness,
+                    snapshot.average_lysis,
+                );
+                Color::srgb(rgba[0], rgba[1], rgba[2])
+            })
+            .unwrap_or(Color::srgb(0.26, 0.32, 0.32));
+        background.0 = color;
+    }
+
+    for (marker, mut node, mut background, mut visibility) in &mut mini_queries.p2() {
+        let Some(snapshot) = species_snapshot_by_id(&stats, marker.species) else {
+            *visibility = Visibility::Hidden;
+            continue;
+        };
+        if marker.section >= snapshot.display_section_count {
+            *visibility = Visibility::Hidden;
+            continue;
+        }
+        *visibility = Visibility::Visible;
+        let rgba = cell_display_color(
+            marker.species,
+            snapshot.average_viability,
+            snapshot.average_aggressiveness,
+            snapshot.average_lysis,
+        );
+        background.0 = Color::srgba(
+            (rgba[0] * 0.96).min(1.0),
+            (rgba[1] * 0.96).min(1.0),
+            (rgba[2] * 0.96).min(1.0),
+            0.72,
+        );
+        let section = marker.section as f32;
+        let diameter = (27.0 - section * 2.8).clamp(18.0, 27.0);
+        let count = snapshot.display_section_count.max(2) as f32;
+        let left_bias = (count - 1.0) * 5.0;
+        let center_x = 44.0 - left_bias - section * 13.5;
+        let center_y = 44.0 + (section * 1.73).sin() * 5.5;
+        node.left = px(center_x - diameter * 0.5);
+        node.top = px(center_y - diameter * 0.5);
+        node.width = px(diameter);
+        node.height = px(diameter);
+    }
+
+    for (marker, mut node, mut background, mut transform) in &mut mini_queries.p3() {
+        let Some(snapshot) = species_snapshot_by_id(&stats, marker.species) else {
+            continue;
+        };
+        let rgba = cell_display_color(
+            marker.species,
+            snapshot.average_viability,
+            snapshot.average_aggressiveness,
+            snapshot.average_lysis,
+        );
+        background.0 = Color::srgb(
+            (rgba[0] * 1.04).min(1.0),
+            (rgba[1] * 1.04).min(1.0),
+            (rgba[2] * 1.04).min(1.0),
+        );
+        let angle = marker.ray as f32 / 8.0 * std::f32::consts::TAU
+            + snapshot.display_angle_offsets[marker.ray];
+        let radius = snapshot.display_radii[marker.ray].clamp(0.25, 1.45);
+        let length = (13.0 + radius * 17.5).clamp(14.0, 32.0);
+        let thickness = (7.0 + radius * 4.0).clamp(7.5, 13.0);
+        let distance = 5.0 + length * 0.32 + radius * 5.0;
+        node.left = px(44.0 + angle.cos() * distance - length * 0.5);
+        node.top = px(44.0 - angle.sin() * distance - thickness * 0.5);
+        node.width = px(length);
+        node.height = px(thickness);
+        transform.rotation = Rot2::radians(-angle);
+    }
+
+    for (marker, mut node, mut background) in &mut mini_queries.p4() {
+        let Some(snapshot) = species_snapshot_by_id(&stats, marker.species) else {
+            continue;
+        };
+        let rgba = cell_display_color(
+            marker.species,
+            snapshot.average_viability,
+            snapshot.average_aggressiveness,
+            snapshot.average_lysis,
+        );
+        background.0 = Color::srgb(
+            (rgba[0] * 1.08).min(1.0),
+            (rgba[1] * 1.08).min(1.0),
+            (rgba[2] * 1.08).min(1.0),
+        );
+        let angle = marker.ray as f32 / 8.0 * std::f32::consts::TAU
+            + snapshot.display_angle_offsets[marker.ray];
+        let radius = snapshot.display_radii[marker.ray].clamp(0.25, 1.45);
+        let size = (7.0 + radius * 8.0).clamp(8.0, 18.0);
+        let distance = (13.0 + radius * 13.5).clamp(17.0, 31.5);
+        node.left = px(44.0 + angle.cos() * distance - size * 0.5);
+        node.top = px(44.0 - angle.sin() * distance - size * 0.5);
+        node.width = px(size);
+        node.height = px(size);
+    }
+}
+#[allow(dead_code)]
+fn update_species_ledger_details(
+    names: Res<SpeciesNameBook>,
+    stats: Res<SpeciesLedgerStats>,
+    state: Res<SpeciesLedgerUiState>,
+    mut details_panel: Query<&mut Visibility, With<SpeciesLedgerDetailsPanel>>,
+    mut details_text: Query<
+        &mut Text,
+        (
+            With<SpeciesLedgerDetailsText>,
+            Without<SpeciesLedgerNameText>,
+            Without<SpeciesLedgerCountText>,
+        ),
+    >,
+) {
+    if !state.open {
+        for mut visibility in &mut details_panel {
+            *visibility = Visibility::Hidden;
+        }
+        return;
+    }
+
+    let selected_snapshot = state
+        .selected_species
+        .and_then(|species| species_snapshot_by_id(&stats, species));
+    let show = selected_snapshot.is_some();
+    for mut visibility in &mut details_panel {
+        *visibility = if show {
+            Visibility::Visible
+        } else {
+            Visibility::Hidden
+        };
+    }
+    let Ok(mut text) = details_text.single_mut() else {
+        return;
+    };
+    let Some(snapshot) = selected_snapshot else {
+        **text = String::new();
+        return;
+    };
+    let name = species_name_for(&names, snapshot.species);
+    let body = if snapshot.segmented_ratio >= 0.5 {
+        "сегментные"
+    } else {
+        "односекционные"
+    };
+    **text = format!(
+        "{name}\nживых особей: {}\nкластер формы: #{}\nстроение: {body}",
+        snapshot.alive,
+        species_morph_class(snapshot.species) + 1,
+    );
+}
+
+fn species_ledger_scroll_system(
+    time: Res<Time>,
+    mut mouse_wheel: MessageReader<MouseWheel>,
+    mut state: ResMut<SpeciesLedgerUiState>,
+    stats: Res<SpeciesLedgerStats>,
+    windows: Query<&Window, With<PrimaryWindow>>,
+    mut scroll_area: Query<(&ComputedNode, &mut ScrollPosition), With<SpeciesLedgerScrollArea>>,
+    mut scrollbar_tracks: Query<&mut Visibility, With<SpeciesLedgerScrollbarTrack>>,
+    mut scrollbar_thumbs: Query<&mut Node, With<SpeciesLedgerScrollbarThumb>>,
+) {
+    if !state.open {
+        for mut visibility in &mut scrollbar_tracks {
+            *visibility = Visibility::Hidden;
+        }
+        return;
+    }
+
+    let cursor_over_ledger = windows
+        .single()
+        .ok()
+        .and_then(|window| {
+            window
+                .cursor_position()
+                .map(|cursor| cursor_over_species_ledger(window, cursor))
+        })
+        .unwrap_or(false);
+
+    let mut delta = 0.0;
+    for event in mouse_wheel.read() {
+        if !cursor_over_ledger {
+            continue;
+        }
+        let scale = match event.unit {
+            MouseScrollUnit::Line => 30.0,
+            MouseScrollUnit::Pixel => 1.0,
+        };
+        delta -= event.y * scale;
+    }
+
+    let target = state.scroll_target_species.and_then(|species| {
+        stats
+            .snapshots
+            .iter()
+            .position(|snapshot| snapshot.species == species)
+            .map(|index| (index / 3) as f32 * 156.0)
+    });
+
+    for (computed, mut scroll_position) in &mut scroll_area {
+        let row_count = stats.snapshots.len().div_ceil(3).max(1);
+        let estimated_content_height = row_count as f32 * 156.0 + 18.0;
+        let computed_content_height = computed.content_size().y * computed.inverse_scale_factor();
+        let view_height = (computed.size().y * computed.inverse_scale_factor()).max(1.0);
+        let content_height = computed_content_height.max(estimated_content_height);
+        let max_offset = (content_height - view_height).max(0.0);
+        if delta != 0.0 {
+            scroll_position.y = (scroll_position.y + delta).clamp(0.0, max_offset);
+            state.scroll_target_species = None;
+        } else if let Some(target) = target {
+            let target = target.clamp(0.0, max_offset);
+            let follow = 1.0 - (-8.0 * time.delta_secs()).exp();
+            scroll_position.y += (target - scroll_position.y) * follow;
+            if (scroll_position.y - target).abs() < 2.0 {
+                state.scroll_target_species = None;
+            }
+        }
+
+        let visible_ratio = (view_height / content_height).clamp(0.0, 1.0);
+        let thumb_height = (visible_ratio * 100.0).clamp(8.0, 100.0);
+        let thumb_top = if max_offset > 1.0 {
+            (scroll_position.y / max_offset).clamp(0.0, 1.0) * (100.0 - thumb_height)
+        } else {
+            0.0
+        };
+        for mut visibility in &mut scrollbar_tracks {
+            *visibility = if max_offset > 1.0 {
+                Visibility::Visible
+            } else {
+                Visibility::Hidden
+            };
+        }
+        for mut thumb in &mut scrollbar_thumbs {
+            thumb.top = percent(thumb_top);
+            thumb.height = percent(thumb_height);
+        }
+    }
+}
+fn species_ledger_row_system(
+    time: Res<Time>,
+    interactions: Query<(&Interaction, &SpeciesLedgerRow), Changed<Interaction>>,
+    world: Res<WorldState>,
+    mut state: ResMut<SpeciesLedgerUiState>,
+    mut focus: ResMut<SpeciesCameraFocus>,
+    mut selected: ResMut<SelectedCell>,
+) {
+    let now = time.elapsed_secs_f64();
+    for (interaction, row) in &interactions {
+        if *interaction != Interaction::Pressed {
+            continue;
+        }
+        let is_double =
+            state.last_click_species == Some(row.species) && now - state.last_click_time <= 0.42;
+        let was_selected = state.selected_species == Some(row.species);
+        state.last_click_species = Some(row.species);
+        state.last_click_time = now;
+
+        if was_selected && !is_double {
+            state.selected_species = None;
+            state.scroll_target_species = None;
+            continue;
+        }
+
+        state.selected_species = Some(row.species);
+        if is_double {
+            let alive = (0..world.cells.len())
+                .filter(|&index| world.cells.species[index] == row.species)
+                .count();
+            if alive > 0 {
+                let mut rng = rand::rng();
+                let target_ordinal = rng.random_range(0..alive);
+                if let Some(index) = (0..world.cells.len())
+                    .filter(|&index| world.cells.species[index] == row.species)
+                    .nth(target_ordinal)
+                {
+                    selected.cell_id = Some(world.cells.id[index]);
+                    focus.active = true;
+                    focus.target = Vec2::new(world.cells.x[index], world.cells.y[index]);
+                    focus.target_scale = 0.42;
+                }
+            }
+        }
+    }
+}
+
+fn apply_species_camera_focus(
+    time: Res<Time>,
+    mut focus: ResMut<SpeciesCameraFocus>,
+    mut camera: Query<(&mut Transform, &mut Projection), With<MainCamera>>,
+) {
+    if !focus.active {
+        return;
+    }
+    let Ok((mut transform, mut projection)) = camera.single_mut() else {
+        return;
+    };
+    let follow = 1.0 - (-5.5 * time.delta_secs()).exp();
+    transform.translation.x += (focus.target.x - transform.translation.x) * follow;
+    transform.translation.y += (focus.target.y - transform.translation.y) * follow;
+
+    if let Projection::Orthographic(projection) = &mut *projection {
+        projection.scale += (focus.target_scale - projection.scale) * follow;
+        let close_position =
+            (transform.translation.truncate() - focus.target).length_squared() < 16.0;
+        let close_scale = (projection.scale - focus.target_scale).abs() < 0.01;
+        if close_position && close_scale {
+            focus.active = false;
+        }
+    }
+}
+
+fn update_diet_icon_system(
+    asset_server: Res<AssetServer>,
+    world: Res<WorldState>,
+    selected: Res<SelectedCell>,
+    mut gene_icons: Query<(&GeneIconNode, &mut ImageNode)>,
+) {
+    let Some(cell_index) = selected
+        .cell_id
+        .and_then(|cell_id| world.cell_index_by_id(cell_id))
+    else {
+        return;
+    };
+
+    let diet_icon = asset_server.load(trophic_type_icon(world.cells.aggressiveness[cell_index]));
+    for (icon, mut image) in &mut gene_icons {
+        if icon.kind == GeneStatId::Diet {
+            image.image = diet_icon.clone();
+        }
     }
 }
 
