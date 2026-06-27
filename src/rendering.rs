@@ -42,10 +42,10 @@ const SELECTION_ARROW_RADIUS_PX: f32 = 18.0;
 const SELECTION_ARROW_GAP_PX: f32 = 8.0;
 const PERCEPTION_EDGE_WIDTH_PX: f32 = 1.5;
 const TARGET_LINE_WIDTH_PX: f32 = 1.4;
-const MAX_VISIBLE_WAKE_PATCHES: usize = 12_000;
+const MAX_VISIBLE_WAKE_PATCHES: usize = 8_000;
 const MIN_WAKE_SPEED: f32 = 9.0;
 const MIN_WAKE_RADIUS_PX: f32 = 1.15;
-const WAKE_PATCH_LIFETIME: f32 = 2.4;
+const WAKE_PATCH_LIFETIME: f32 = 2.0;
 
 #[derive(Component)]
 pub struct ParticleLayer;
@@ -329,6 +329,22 @@ pub fn sync_instance_data(
     let (branch_z, branch_step) = branch_render_depths(&world.food_growers.branch_layer);
 
     for i in 0..world.cells.len() {
+        let cell_position = Vec2::new(world.cells.x[i], world.cells.y[i]);
+        let section_count = world.cells.section_count[i];
+        let visible_margin = world.cells.radius[i] * 14.0
+            + if section_count >= 2 {
+                world.cells.section_spacing[i] * section_count as f32 * 1.5
+            } else {
+                0.0
+            }
+            + 80.0;
+        let is_visible = (cell_position.x - view_center.x).abs()
+            <= view_half_size.x + visible_margin
+            && (cell_position.y - view_center.y).abs() <= view_half_size.y + visible_margin;
+        if !is_visible {
+            continue;
+        }
+
         let heading = world.cells.heading[i];
         let move_dir_x = heading.cos();
         let move_dir_y = heading.sin();
@@ -352,13 +368,7 @@ pub fn sync_instance_data(
 
         let velocity = Vec2::new(world.cells.vx[i], world.cells.vy[i]);
         let velocity_length = velocity.length();
-        let cell_position = Vec2::new(world.cells.x[i], world.cells.y[i]);
-        let visible_margin = visual_radius * 8.0 + 40.0;
-        let is_visible = (cell_position.x - view_center.x).abs()
-            <= view_half_size.x + visible_margin
-            && (cell_position.y - view_center.y).abs() <= view_half_size.y + visible_margin;
         if i % wake_stride == 0
-            && is_visible
             && world.cells.wake_strength[i] >= 0.015
             && visual_radius / world_units_per_pixel.max(0.001) >= MIN_WAKE_RADIUS_PX
         {
@@ -404,10 +414,6 @@ pub fn sync_instance_data(
                     );
                 }
             }
-        }
-
-        if !is_visible {
-            continue;
         }
 
         if world.cells.section_count[i] >= 2 {
@@ -655,7 +661,7 @@ pub fn sync_instance_data(
         let instance_radius = patch.half_length + patch.half_width * 1.35;
         particles.push(InstanceData {
             pos_radius: [patch.center.x, patch.center.y, 1.92, instance_radius],
-            color: [0.66, 0.92, 1.0, (0.09 + patch.strength * 0.08) * opacity],
+            color: [0.66, 0.92, 1.0, (0.055 + patch.strength * 0.055) * opacity],
             nucleus: [0.0, 0.0, 0.0, 13.0],
             motion: [
                 patch.direction.x,

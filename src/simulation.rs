@@ -77,13 +77,16 @@ const EMERGENCY_REVERSE_DURATION: f32 = 0.38;
 const EMERGENCY_REVERSE_THROTTLE: f32 = 0.18;
 const INITIAL_LYSIS_CHANCE: f64 = 0.075;
 const LYSIS_ACTIVE_THRESHOLD: f32 = 8.0;
-const SPECIES_EPITHET_SLOTS: u32 = 200;
-const SPECIES_GENUS_SLOTS: u32 = 5_000;
+const SPECIES_EPITHET_SLOTS: u32 = 10_000;
+const SPECIES_GENUS_SLOTS: u32 = 1_000;
+const SPECIES_CLASS_STRIDE: u32 = SPECIES_EPITHET_SLOTS * SPECIES_GENUS_SLOTS;
 const LYSIS_COOLDOWN_MIN: f32 = 0.34;
 const LYSIS_COOLDOWN_MAX: f32 = 1.05;
 const LYSIS_REACH_MIN: f32 = 0.65;
 const LYSIS_REACH_MAX: f32 = 5.0;
 const LYSIS_HUNT_PAUSE_AFTER_KILL: f32 = 2.4;
+const LYSIS_TARGET_RECHECK_MIN: f32 = 0.16;
+const LYSIS_TARGET_RECHECK_MAX: f32 = 0.42;
 const LYSIS_ATTACK_DEFORM_DURATION: f32 = 0.38;
 const LYSIS_HIT_DEFORM_DURATION: f32 = 0.46;
 const LYSIS_PARTICLES_PER_HIT: usize = 8;
@@ -95,6 +98,9 @@ const TAIL_LATERAL_DAMPING: f32 = 1.45;
 const MAX_COMPOUND_COLLISION_SEGMENTS: usize = 6;
 const TAIL_MIN_SPACING_FACTOR: f32 = 1.9;
 const TAIL_MAX_SPACING_FACTOR: f32 = 4.4;
+const SEGMENT_SIZE_MIN_FACTOR: f32 = 0.58;
+const SEGMENT_SIZE_MAX_FACTOR: f32 = 1.18;
+const SEGMENT_INHERIT_SHAPE_CHANCE: f64 = 0.36;
 const INITIAL_SEGMENTED_CHANCE: f64 = 0.12;
 const FOOD_CURRENT_SPEED: f32 = 42.0;
 const CELL_CURRENT_SPEED: f32 = 24.0;
@@ -541,9 +547,11 @@ pub struct WorldState {
     pub arena_shape: ArenaShape,
     grid: SpatialGrid,
     cell_grid: CellGrid,
+    cell_grid_dirty: bool,
     obstacle_grid: CellGrid,
     max_obstacle_radius: f32,
     collision_pairs: Vec<(usize, usize)>,
+    collision_bounds: Vec<f32>,
     rng: SmallRng,
     elapsed: f32,
     max_feeder_food: usize,
@@ -779,9 +787,11 @@ impl WorldState {
             arena_shape: config.arena_shape,
             grid,
             cell_grid,
+            cell_grid_dirty: false,
             obstacle_grid,
             max_obstacle_radius,
             collision_pairs: Vec::with_capacity(config.cells.saturating_mul(4)),
+            collision_bounds: Vec::with_capacity(config.cells),
             rng,
             elapsed: 0.0,
             max_feeder_food: feeder_food_capacity,
@@ -809,7 +819,10 @@ impl WorldState {
         self.elapsed += dt;
         self.update_visual_particles(dt);
         self.remove_dead_cells();
-        self.cell_grid.rebuild(&self.cells);
+        if self.cell_grid_dirty {
+            self.cell_grid.rebuild(&self.cells);
+            self.cell_grid_dirty = false;
+        }
         self.advect_obstacles(dt);
         self.obstacle_grid
             .rebuild_points(&self.obstacles.x, &self.obstacles.y);
@@ -836,6 +849,7 @@ impl WorldState {
                     (self.cells.lysis_deform_time[i][section] - dt).max(0.0);
             }
             self.cells.hunt_pause[i] = (self.cells.hunt_pause[i] - dt).max(0.0);
+            self.cells.hunt_recheck[i] = (self.cells.hunt_recheck[i] - dt).max(0.0);
             let x = self.cells.x[i];
             let y = self.cells.y[i];
             let speed = self.effective_cell_speed(i);
@@ -920,6 +934,7 @@ impl WorldState {
                         self.cells.viability[i] - viability_before;
                     self.cells.target_food[i] = -1;
                     self.cells.target_memory[i] = 0.0;
+                    self.cells.target_search_failed[i] = false;
                     self.cell_sound_events
                         .push(Vec2::new(self.cells.x[i], self.cells.y[i]));
                 }
@@ -1269,6 +1284,16 @@ impl WorldState {
             self.cells.target_memory[attacker] = 0.0;
         }
 
+        if self.cells.hunt_recheck[attacker] > 0.0 {
+            return None;
+        }
+        let aggression =
+            (self.cells.aggressiveness[attacker] / CELL_AGGRESSIVENESS_DISPLAY_MAX).clamp(0.0, 1.0);
+        let stagger = (self.cells.id[attacker] % 17) as f32 * 0.004;
+        self.cells.hunt_recheck[attacker] = (LYSIS_TARGET_RECHECK_MAX
+            + (LYSIS_TARGET_RECHECK_MIN - LYSIS_TARGET_RECHECK_MAX) * aggression
+            + stagger)
+            .clamp(LYSIS_TARGET_RECHECK_MIN, LYSIS_TARGET_RECHECK_MAX);
         let (victim, distance_squared) = self.best_lysis_target(attacker)?;
         let target_position = Vec2::new(self.cells.x[victim], self.cells.y[victim]);
         self.cells.target_cell[attacker] = victim as i32;
@@ -1444,6 +1469,7 @@ impl WorldState {
         {
             self.cells.target_food[cell_index] = -1;
             self.cells.target_memory[cell_index] = 0.0;
+            self.cells.target_search_failed[cell_index] = false;
             return None;
         }
 
@@ -1470,6 +1496,7 @@ impl WorldState {
                     self.cells.target_last_x[cell_index] = target_position.x;
                     self.cells.target_last_y[cell_index] = target_position.y;
                     self.cells.target_memory[cell_index] = memory_duration;
+                    self.cells.target_search_failed[cell_index] = false;
                     if self.cells.target_recheck[cell_index] <= 0.0 {
                         self.cells.target_recheck[cell_index] = recheck_interval;
                         if let Some((new_index, dx, dy, new_distance_squared)) =
@@ -1525,9 +1552,23 @@ impl WorldState {
             self.cells.target_food[cell_index] = -1;
         }
 
-        let (index, dx, dy, distance_squared) =
-            self.nearest_edible_food(cell_index, position, perception)?;
+        if self.cells.target_search_failed[cell_index]
+            && self.cells.target_recheck[cell_index] > 0.0
+        {
+            return None;
+        }
+
+        let Some((index, dx, dy, distance_squared)) =
+            self.nearest_edible_food(cell_index, position, perception)
+        else {
+            let stagger = (self.cells.id[cell_index] % 19) as f32 * 0.006;
+            self.cells.target_search_failed[cell_index] = true;
+            self.cells.target_recheck[cell_index] =
+                (recheck_interval * 1.35 + stagger).clamp(0.12, 0.64);
+            return None;
+        };
         let target_position = position + Vec2::new(dx, dy);
+        self.cells.target_search_failed[cell_index] = false;
         self.cells.target_food[cell_index] = index as i32;
         self.cells.target_food_generation[cell_index] = self.food.generation[index];
         self.cells.target_last_x[cell_index] = target_position.x;
@@ -1618,10 +1659,6 @@ impl WorldState {
     fn update_tail_sections(&mut self, dt: f32) {
         for index in 0..self.cells.len() {
             if self.cells.section_count[index] < 2 {
-                self.cells.tail_x[index] = self.cells.x[index];
-                self.cells.tail_y[index] = self.cells.y[index];
-                self.cells.tail_vx[index] = self.cells.vx[index];
-                self.cells.tail_vy[index] = self.cells.vy[index];
                 continue;
             }
             let heading = self.cells.heading[index];
@@ -2872,6 +2909,9 @@ impl WorldState {
             self.spawn_meat_from_cell(cell_index);
             self.cells.swap_remove(cell_index);
         }
+        if !dead_indices.is_empty() {
+            self.cell_grid_dirty = true;
+        }
     }
 
     fn process_cell_lifecycle(&mut self) {
@@ -2948,6 +2988,7 @@ impl WorldState {
             division_offset,
             &mut self.rng,
         );
+        self.cell_grid_dirty = true;
         self.cell_sound_events.push(Vec2::new(
             self.cells.x[parent_index],
             self.cells.y[parent_index],
@@ -3053,13 +3094,23 @@ impl WorldState {
 
     fn solve_cell_collisions(&mut self, dt: f32) {
         self.cell_grid.rebuild(&self.cells);
+        self.cell_grid_dirty = false;
         self.collision_pairs.clear();
-        let max_bound = (0..self.cells.len())
-            .map(|index| self.cells.collision_bound_radius(index))
-            .fold(0.0, f32::max);
+        self.collision_bounds.clear();
+        self.collision_bounds.reserve(
+            self.cells
+                .len()
+                .saturating_sub(self.collision_bounds.capacity()),
+        );
+        let mut max_bound = 0.0_f32;
+        for index in 0..self.cells.len() {
+            let bound = self.cells.collision_bound_radius(index);
+            self.collision_bounds.push(bound);
+            max_bound = max_bound.max(bound);
+        }
 
         for a in 0..self.cells.len() {
-            let bound_a = self.cells.collision_bound_radius(a);
+            let bound_a = self.collision_bounds[a];
             let search_radius = bound_a + max_bound;
             let center_a = Vec2::new(self.cells.x[a], self.cells.y[a]);
             let (min_x, max_x, min_y, max_y) = self.cell_grid.bucket_range(center_a, search_radius);
@@ -3070,7 +3121,7 @@ impl WorldState {
                         if b <= a {
                             continue;
                         }
-                        let bound_b = self.cells.collision_bound_radius(b);
+                        let bound_b = self.collision_bounds[b];
                         let broad_distance = bound_a + bound_b;
                         let dx = self.cells.x[b] - self.cells.x[a];
                         let dy = self.cells.y[b] - self.cells.y[a];
@@ -4245,6 +4296,124 @@ fn mutate_child_soft_body(
 }
 
 #[derive(Clone, Copy)]
+struct SegmentSoftBodyProfile {
+    size: f32,
+    core_radius: f32,
+    collision_radius: f32,
+    base_radii: [f32; SOFT_BODY_POINTS],
+    current_radii: [f32; SOFT_BODY_POINTS],
+    visual_radii: [f32; SOFT_BODY_POINTS],
+    angle_offsets: [f32; SOFT_BODY_POINTS],
+}
+
+impl SegmentSoftBodyProfile {
+    fn from_shape(
+        base_radii: [f32; SOFT_BODY_POINTS],
+        current_radii: [f32; SOFT_BODY_POINTS],
+        angle_offsets: [f32; SOFT_BODY_POINTS],
+    ) -> Self {
+        let size = soft_body_max_radius(&base_radii).max(0.1);
+        let core_radius = size * CORE_RADIUS_FACTOR;
+        let base_radii = base_radii.map(|radius| radius.clamp(core_radius, size));
+        let current_radii = current_radii.map(|radius| radius.clamp(core_radius, size));
+        let collision_radius = soft_body_max_radius(&current_radii).max(core_radius);
+        Self {
+            size,
+            core_radius,
+            collision_radius,
+            base_radii,
+            current_radii,
+            visual_radii: current_radii,
+            angle_offsets,
+        }
+    }
+
+    fn dormant(position_radius: f32) -> Self {
+        let radius = position_radius.max(0.1);
+        Self::from_shape(
+            [radius; SOFT_BODY_POINTS],
+            [radius; SOFT_BODY_POINTS],
+            [0.0; SOFT_BODY_POINTS],
+        )
+    }
+}
+
+fn soft_body_max_radius(radii: &[f32; SOFT_BODY_POINTS]) -> f32 {
+    radii.iter().copied().fold(0.0, f32::max)
+}
+
+fn scaled_soft_body_shape(
+    source_radii: [f32; SOFT_BODY_POINTS],
+    source_offsets: [f32; SOFT_BODY_POINTS],
+    target_size: f32,
+    rng: &mut SmallRng,
+) -> ([f32; SOFT_BODY_POINTS], [f32; SOFT_BODY_POINTS]) {
+    let source_size = soft_body_max_radius(&source_radii).max(0.1);
+    let core = target_size * CORE_RADIUS_FACTOR;
+    let scale = target_size / source_size;
+    let mut radii = source_radii.map(|radius| (radius * scale).clamp(core, target_size));
+    let mut offsets = source_offsets;
+    for ray in 0..SOFT_BODY_POINTS {
+        radii[ray] = (radii[ray] * rng.random_range(0.94..1.06)).clamp(core, target_size);
+        offsets[ray] = (offsets[ray] + rng.random_range(-0.025..0.025))
+            .clamp(-SOFT_BODY_MAX_ANGLE_OFFSET, SOFT_BODY_MAX_ANGLE_OFFSET);
+    }
+    (radii, offsets)
+}
+
+fn random_segment_soft_body(
+    source_radii: [f32; SOFT_BODY_POINTS],
+    source_offsets: [f32; SOFT_BODY_POINTS],
+    source_size: f32,
+    random_geometry: bool,
+    shape_weights: &[f32; CELL_SHAPE_COUNT],
+    rng: &mut SmallRng,
+) -> SegmentSoftBodyProfile {
+    let segment_size = (source_size
+        * rng.random_range(SEGMENT_SIZE_MIN_FACTOR..SEGMENT_SIZE_MAX_FACTOR))
+    .clamp(CELL_SIZE_GENE_MIN * 0.55, CELL_SIZE_GENE_MAX * 1.25);
+    let (base_radii, angle_offsets) = if rng.random_bool(SEGMENT_INHERIT_SHAPE_CHANCE) {
+        scaled_soft_body_shape(source_radii, source_offsets, segment_size, rng)
+    } else if random_geometry && rng.random_bool(0.68) {
+        random_free_shape(segment_size, rng)
+    } else {
+        random_seed_shape(segment_size, None, shape_weights, rng)
+    };
+    SegmentSoftBodyProfile::from_shape(base_radii, base_radii, angle_offsets)
+}
+
+fn mutate_child_segment_soft_body(
+    parent_base: [f32; SOFT_BODY_POINTS],
+    parent_current: [f32; SOFT_BODY_POINTS],
+    parent_offsets: [f32; SOFT_BODY_POINTS],
+    susceptibility: f32,
+    rng: &mut SmallRng,
+) -> SegmentSoftBodyProfile {
+    let parent_size = soft_body_max_radius(&parent_base).max(0.1);
+    let child_size = mutate_gene(
+        parent_size,
+        CELL_SIZE_GENE_MIN * 0.55,
+        CELL_SIZE_GENE_MAX * 1.25,
+        susceptibility,
+        rng,
+    );
+    let source_size = soft_body_max_radius(&parent_current).max(parent_size);
+    let scale = child_size / source_size.max(0.1);
+    let core = child_size * CORE_RADIUS_FACTOR;
+    let scaled_base = parent_base.map(|radius| (radius * scale).clamp(core, child_size));
+    let scaled_current = parent_current.map(|radius| (radius * scale).clamp(core, child_size));
+    let (base_radii, current_radii, angle_offsets) = mutate_child_soft_body(
+        scaled_base,
+        scaled_current,
+        parent_offsets,
+        child_size,
+        susceptibility,
+        rng,
+    );
+    SegmentSoftBodyProfile::from_shape(base_radii, current_radii, angle_offsets)
+}
+
+#[derive(Clone, Copy)]
 pub struct ExtraSection {
     pub x: f32,
     pub y: f32,
@@ -4261,18 +4430,22 @@ pub struct ExtraSection {
 
 impl ExtraSection {
     fn dormant(position: Vec2, radius: f32) -> Self {
-        let radii = [radius; SOFT_BODY_POINTS];
+        let profile = SegmentSoftBodyProfile::dormant(radius);
+        Self::from_profile(position, Vec2::ZERO, profile)
+    }
+
+    fn from_profile(position: Vec2, velocity: Vec2, profile: SegmentSoftBodyProfile) -> Self {
         Self {
             x: position.x,
             y: position.y,
-            vx: 0.0,
-            vy: 0.0,
-            core_radius: radius * CORE_RADIUS_FACTOR,
-            collision_radius: radius,
-            base_radii: radii,
-            current_radii: radii,
-            visual_radii: radii,
-            angle_offsets: [0.0; SOFT_BODY_POINTS],
+            vx: velocity.x,
+            vy: velocity.y,
+            core_radius: profile.core_radius,
+            collision_radius: profile.collision_radius,
+            base_radii: profile.base_radii,
+            current_radii: profile.current_radii,
+            visual_radii: profile.visual_radii,
+            angle_offsets: profile.angle_offsets,
         }
     }
 }
@@ -4300,11 +4473,13 @@ pub struct CellStore {
     lysis_deform_angle: Vec<[f32; 4]>,
     lysis_deform_amount: Vec<[f32; 4]>,
     hunt_pause: Vec<f32>,
+    hunt_recheck: Vec<f32>,
     target_food: Vec<i32>,
     target_food_generation: Vec<u32>,
     target_last_x: Vec<f32>,
     target_last_y: Vec<f32>,
     target_memory: Vec<f32>,
+    target_search_failed: Vec<bool>,
     target_recheck: Vec<f32>,
     target_cell: Vec<i32>,
     target_cell_id: Vec<u64>,
@@ -4396,6 +4571,34 @@ impl CellStore {
             0 => self.collision_radius[index],
             1 => self.tail_collision_radius[index],
             _ => self.extra_sections[index][section as usize - 2].collision_radius,
+        }
+    }
+
+    #[inline]
+    fn section_soft_body_source(
+        &self,
+        index: usize,
+        section: u8,
+    ) -> (
+        [f32; SOFT_BODY_POINTS],
+        [f32; SOFT_BODY_POINTS],
+        [f32; SOFT_BODY_POINTS],
+    ) {
+        match section {
+            0 => (
+                self.base_radii[index],
+                self.current_radii[index],
+                self.angle_offsets[index],
+            ),
+            1 => (
+                self.tail_base_radii[index],
+                self.tail_current_radii[index],
+                self.tail_angle_offsets[index],
+            ),
+            _ => {
+                let extra = self.extra_sections[index][section as usize - 2];
+                (extra.base_radii, extra.current_radii, extra.angle_offsets)
+            }
         }
     }
 
@@ -4640,11 +4843,13 @@ impl CellStore {
             lysis_deform_angle: Vec::with_capacity(count),
             lysis_deform_amount: Vec::with_capacity(count),
             hunt_pause: Vec::with_capacity(count),
+            hunt_recheck: Vec::with_capacity(count),
             target_food: Vec::with_capacity(count),
             target_food_generation: Vec::with_capacity(count),
             target_last_x: Vec::with_capacity(count),
             target_last_y: Vec::with_capacity(count),
             target_memory: Vec::with_capacity(count),
+            target_search_failed: Vec::with_capacity(count),
             target_recheck: Vec::with_capacity(count),
             target_cell: Vec::with_capacity(count),
             target_cell_id: Vec::with_capacity(count),
@@ -4752,11 +4957,15 @@ impl CellStore {
             store.lysis_deform_angle.push([0.0; 4]);
             store.lysis_deform_amount.push([0.0; 4]);
             store.hunt_pause.push(0.0);
+            store
+                .hunt_recheck
+                .push(rng.random_range(0.0..LYSIS_TARGET_RECHECK_MAX));
             store.target_food.push(-1);
             store.target_food_generation.push(0);
             store.target_last_x.push(position.x);
             store.target_last_y.push(position.y);
             store.target_memory.push(0.0);
+            store.target_search_failed.push(false);
             store.target_recheck.push(rng.random_range(0.0..0.24));
             store.target_cell.push(-1);
             store.target_cell_id.push(NO_CELL_TARGET);
@@ -4779,8 +4988,14 @@ impl CellStore {
             } else {
                 0.0
             };
-            let tail_width = rng.random_range(0.62..1.02);
-            let tail_radii = base_radii.map(|ray| (ray * tail_width).max(radius * 0.30));
+            let tail_profile = random_segment_soft_body(
+                base_radii,
+                angle_offsets,
+                radius,
+                random_geometry,
+                shape_weights,
+                rng,
+            );
             let section_angles = [
                 rng.random_range(0.0..std::f32::consts::TAU),
                 rng.random_range(0.0..std::f32::consts::TAU),
@@ -4794,7 +5009,7 @@ impl CellStore {
                     arena_w,
                     arena_h,
                     arena_shape,
-                    radius * tail_width,
+                    tail_profile.collision_radius,
                 )
             } else {
                 position
@@ -4809,31 +5024,27 @@ impl CellStore {
             store.tail_y.push(tail_position.y);
             store.tail_vx.push(c * speed);
             store.tail_vy.push(s * speed);
+            store.tail_core_radius.push(tail_profile.core_radius);
+            store.tail_base_radii.push(tail_profile.base_radii);
+            store.tail_current_radii.push(tail_profile.current_radii);
+            store.tail_visual_radii.push(tail_profile.visual_radii);
+            store.tail_angle_offsets.push(tail_profile.angle_offsets);
             store
-                .tail_core_radius
-                .push(radius * tail_width * CORE_RADIUS_FACTOR);
-            store.tail_base_radii.push(tail_radii);
-            store.tail_current_radii.push(tail_radii);
-            store.tail_visual_radii.push(tail_radii);
-            store.tail_angle_offsets.push(angle_offsets);
-            store.tail_collision_radius.push(
-                tail_radii
-                    .iter()
-                    .copied()
-                    .fold(radius * tail_width * CORE_RADIUS_FACTOR, f32::max),
-            );
+                .tail_collision_radius
+                .push(tail_profile.collision_radius);
             let mut tail_dirs_x = [0.0; SOFT_BODY_POINTS];
             let mut tail_dirs_y = [0.0; SOFT_BODY_POINTS];
             for ray_index in 0..SOFT_BODY_POINTS {
-                let angle = SOFT_BODY_BASE_ANGLES[ray_index] + angle_offsets[ray_index];
+                let angle =
+                    SOFT_BODY_BASE_ANGLES[ray_index] + tail_profile.angle_offsets[ray_index];
                 tail_dirs_x[ray_index] = angle.cos();
                 tail_dirs_y[ray_index] = angle.sin();
             }
             store.tail_ray_dir_x.push(tail_dirs_x);
             store.tail_ray_dir_y.push(tail_dirs_y);
             let mut extras = [
-                ExtraSection::dormant(tail_position, radius * tail_width),
-                ExtraSection::dormant(tail_position, radius * tail_width),
+                ExtraSection::dormant(tail_position, tail_profile.size),
+                ExtraSection::dormant(tail_position, tail_profile.size),
             ];
             let mut generated_positions = [position, tail_position, tail_position, tail_position];
             for extra_index in 0..2 {
@@ -4841,25 +5052,26 @@ impl CellStore {
                     let section = extra_index + 2;
                     let parent = section_parents[section - 1] as usize;
                     let direction = Vec2::from_angle(angle + section_angles[extra_index + 1]);
+                    let extra_profile = random_segment_soft_body(
+                        tail_profile.base_radii,
+                        tail_profile.angle_offsets,
+                        tail_profile.size,
+                        random_geometry,
+                        shape_weights,
+                        rng,
+                    );
                     let generated = clamp_point_to_arena(
                         generated_positions[parent] + direction * spacing,
                         arena_w,
                         arena_h,
                         arena_shape,
-                        radius * tail_width,
+                        extra_profile.collision_radius,
                     );
-                    extras[extra_index] = ExtraSection {
-                        x: generated.x,
-                        y: generated.y,
-                        vx: c * speed,
-                        vy: s * speed,
-                        core_radius: radius * tail_width * CORE_RADIUS_FACTOR,
-                        collision_radius: radius * tail_width,
-                        base_radii: tail_radii,
-                        current_radii: tail_radii,
-                        visual_radii: tail_radii,
-                        angle_offsets,
-                    };
+                    extras[extra_index] = ExtraSection::from_profile(
+                        generated,
+                        Vec2::new(c * speed, s * speed),
+                        extra_profile,
+                    );
                     generated_positions[section] = generated;
                 }
             }
@@ -4892,7 +5104,9 @@ impl CellStore {
             store.morphology_metabolism.push(1.0);
             store.ray_dir_x.push([0.0; SOFT_BODY_POINTS]);
             store.ray_dir_y.push([0.0; SOFT_BODY_POINTS]);
-            store.rebuild_soft_body_cache(store.len() - 1);
+            let store_index = store.len() - 1;
+            store.rebuild_soft_body_cache(store_index);
+            store.rebuild_tail_cache(store_index);
             store.shape_wave_a.push(0.0);
             store.shape_wave_b.push(0.0);
             store
@@ -4990,16 +5204,16 @@ impl CellStore {
         let mut genus_hash = 2166136261u32;
         for radius in self.base_radii[index] {
             let normalized = radius / avg;
-            let quantized = (normalized * 14.0).round().clamp(4.0, 28.0) as u32;
+            let quantized = (normalized * 12.0).round().clamp(4.0, 24.0) as u32;
             let genus_quantized = (normalized * 9.0).round().clamp(3.0, 18.0) as u32;
             Self::taxonomy_hash_step(&mut species_hash, quantized);
             Self::taxonomy_hash_step(&mut genus_hash, genus_quantized);
         }
         for offset in self.angle_offsets[index] {
             let quantized =
-                ((offset + SOFT_BODY_MAX_ANGLE_OFFSET) / (SOFT_BODY_MAX_ANGLE_OFFSET * 2.0) * 10.0)
+                ((offset + SOFT_BODY_MAX_ANGLE_OFFSET) / (SOFT_BODY_MAX_ANGLE_OFFSET * 2.0) * 8.0)
                     .round()
-                    .clamp(0.0, 10.0) as u32;
+                    .clamp(0.0, 8.0) as u32;
             let genus_quantized =
                 ((offset + SOFT_BODY_MAX_ANGLE_OFFSET) / (SOFT_BODY_MAX_ANGLE_OFFSET * 2.0) * 5.0)
                     .round()
@@ -5007,46 +5221,6 @@ impl CellStore {
             Self::taxonomy_hash_step(&mut species_hash, quantized + 31);
             Self::taxonomy_hash_step(&mut genus_hash, genus_quantized + 31);
         }
-        let gene_bins = [
-            strict_gene_bin(self.speed[index], SPEED_GENE_MIN, SPEED_GENE_MAX, 31),
-            strict_gene_bin(self.turn_speed[index], TURN_GENE_MIN, TURN_GENE_MAX, 31),
-            strict_gene_bin(
-                self.perception[index],
-                PERCEPTION_GENE_MIN,
-                PERCEPTION_GENE_MAX,
-                31,
-            ),
-            strict_gene_bin(
-                self.persistence[index],
-                PERSISTENCE_GENE_MIN,
-                PERSISTENCE_GENE_MAX,
-                31,
-            ),
-            strict_gene_bin(
-                self.aggressiveness[index],
-                0.0,
-                CELL_AGGRESSIVENESS_DISPLAY_MAX,
-                31,
-            ),
-            strict_gene_bin(self.lysis[index], 0.0, CELL_LYSIS_DISPLAY_MAX, 31),
-            strict_gene_bin(
-                self.mutation_susceptibility[index],
-                0.0,
-                CELL_MUTATION_DISPLAY_MAX,
-                31,
-            ),
-            strict_gene_bin(
-                self.max_base_radius(index),
-                CELL_SIZE_GENE_MIN,
-                CELL_SIZE_GENE_MAX,
-                31,
-            ),
-            self.section_count[index] as u32,
-        ];
-        for bin in gene_bins {
-            Self::taxonomy_hash_step(&mut species_hash, bin.clamp(0, 31) + 97);
-        }
-
         let trophic_bin = if self.aggressiveness[index] < 40.0 {
             0
         } else if self.aggressiveness[index] < 70.0 {
@@ -5054,79 +5228,122 @@ impl CellStore {
         } else {
             2
         };
-        let genus_bins = [
-            strict_gene_bin(self.speed[index], SPEED_GENE_MIN, SPEED_GENE_MAX, 15),
-            strict_gene_bin(self.turn_speed[index], TURN_GENE_MIN, TURN_GENE_MAX, 15),
+        let lysis_bin = if self.lysis[index] >= LYSIS_ACTIVE_THRESHOLD {
+            1 + strict_gene_bin(
+                self.lysis[index],
+                LYSIS_ACTIVE_THRESHOLD,
+                CELL_LYSIS_DISPLAY_MAX,
+                7,
+            )
+        } else {
+            0
+        };
+        let gene_bins = [
+            strict_gene_bin(self.speed[index], SPEED_GENE_MIN, SPEED_GENE_MAX, 12),
+            strict_gene_bin(self.turn_speed[index], TURN_GENE_MIN, TURN_GENE_MAX, 12),
             strict_gene_bin(
                 self.perception[index],
                 PERCEPTION_GENE_MIN,
                 PERCEPTION_GENE_MAX,
-                15,
+                10,
             ),
             strict_gene_bin(
                 self.persistence[index],
                 PERSISTENCE_GENE_MIN,
                 PERSISTENCE_GENE_MAX,
-                7,
+                10,
             ),
             trophic_bin,
-            if self.lysis[index] >= LYSIS_ACTIVE_THRESHOLD {
-                1 + strict_gene_bin(
-                    self.lysis[index],
-                    LYSIS_ACTIVE_THRESHOLD,
-                    CELL_LYSIS_DISPLAY_MAX,
-                    7,
-                )
-            } else {
-                0
-            },
+            lysis_bin,
             strict_gene_bin(
                 self.mutation_susceptibility[index],
                 0.0,
                 CELL_MUTATION_DISPLAY_MAX,
-                7,
+                8,
             ),
             strict_gene_bin(
                 self.max_base_radius(index),
                 CELL_SIZE_GENE_MIN,
                 CELL_SIZE_GENE_MAX,
-                15,
+                12,
+            ),
+            self.section_count[index] as u32,
+        ];
+        for (slot, bin) in gene_bins.into_iter().enumerate() {
+            Self::taxonomy_hash_step(&mut species_hash, bin.clamp(0, 31) + 97 + slot as u32 * 37);
+        }
+        let genus_bins = [
+            strict_gene_bin(self.speed[index], SPEED_GENE_MIN, SPEED_GENE_MAX, 6),
+            strict_gene_bin(self.turn_speed[index], TURN_GENE_MIN, TURN_GENE_MAX, 6),
+            strict_gene_bin(
+                self.perception[index],
+                PERCEPTION_GENE_MIN,
+                PERCEPTION_GENE_MAX,
+                5,
+            ),
+            strict_gene_bin(
+                self.persistence[index],
+                PERSISTENCE_GENE_MIN,
+                PERSISTENCE_GENE_MAX,
+                5,
+            ),
+            lysis_bin,
+            strict_gene_bin(
+                self.mutation_susceptibility[index],
+                0.0,
+                CELL_MUTATION_DISPLAY_MAX,
+                4,
+            ),
+            strict_gene_bin(
+                self.max_base_radius(index),
+                CELL_SIZE_GENE_MIN,
+                CELL_SIZE_GENE_MAX,
+                6,
             ),
             self.section_count[index] as u32,
         ];
         for bin in genus_bins {
             Self::taxonomy_hash_step(&mut genus_hash, bin + 97);
         }
-        Self::taxonomy_hash_step(
-            &mut species_hash,
+        let section_spacing_bin = if self.section_count[index] >= 2 {
             strict_gene_bin(
                 self.section_spacing[index],
                 CELL_SIZE_GENE_MIN * 0.15,
                 CELL_SIZE_GENE_MAX * 4.8,
                 31,
-            ) + 151,
-        );
-        Self::taxonomy_hash_step(
-            &mut genus_hash,
+            )
+        } else {
+            0
+        };
+        let genus_section_spacing_bin = if self.section_count[index] >= 2 {
             strict_gene_bin(
                 self.section_spacing[index],
                 CELL_SIZE_GENE_MIN * 0.15,
                 CELL_SIZE_GENE_MAX * 4.8,
                 15,
-            ) + 151,
-        );
-        Self::taxonomy_hash_step(
-            &mut species_hash,
-            strict_gene_bin(self.section_bend[index].abs(), 0.0, 1.4, 15) + 193,
-        );
-        Self::taxonomy_hash_step(
-            &mut genus_hash,
-            strict_gene_bin(self.section_bend[index].abs(), 0.0, 1.4, 7) + 193,
-        );
+            )
+        } else {
+            0
+        };
+        let section_bend_bin = if self.section_count[index] >= 2 {
+            strict_gene_bin(self.section_bend[index].abs(), 0.0, 1.4, 15)
+        } else {
+            0
+        };
+        let genus_section_bend_bin = if self.section_count[index] >= 2 {
+            strict_gene_bin(self.section_bend[index].abs(), 0.0, 1.4, 7)
+        } else {
+            0
+        };
+        Self::taxonomy_hash_step(&mut species_hash, section_spacing_bin + 151);
+        Self::taxonomy_hash_step(&mut genus_hash, genus_section_spacing_bin + 151);
+        Self::taxonomy_hash_step(&mut species_hash, section_bend_bin + 193);
+        Self::taxonomy_hash_step(&mut genus_hash, genus_section_bend_bin + 193);
 
         let genus = genus_hash % SPECIES_GENUS_SLOTS;
-        let epithet = species_hash % SPECIES_EPITHET_SLOTS;
-        class_bin * 1_000_000 + genus * SPECIES_EPITHET_SLOTS + epithet
+        let epithet_slots_per_troph = (SPECIES_EPITHET_SLOTS / 3).max(1);
+        let epithet = (species_hash % epithet_slots_per_troph) * 3 + trophic_bin;
+        class_bin * SPECIES_CLASS_STRIDE + genus * SPECIES_EPITHET_SLOTS + epithet
     }
 
     pub fn shape_name(&self, index: usize) -> String {
@@ -5238,11 +5455,14 @@ impl CellStore {
         self.lysis_deform_angle.push([0.0; 4]);
         self.lysis_deform_amount.push([0.0; 4]);
         self.hunt_pause.push(0.0);
+        self.hunt_recheck
+            .push(rng.random_range(0.0..LYSIS_TARGET_RECHECK_MAX));
         self.target_food.push(-1);
         self.target_food_generation.push(0);
         self.target_last_x.push(position.x);
         self.target_last_y.push(position.y);
         self.target_memory.push(0.0);
+        self.target_search_failed.push(false);
         self.target_recheck.push(rng.random_range(0.0..0.24));
         self.target_cell.push(-1);
         self.target_cell_id.push(NO_CELL_TARGET);
@@ -5269,26 +5489,17 @@ impl CellStore {
         } else {
             0.0
         };
-        let tail_source_base = if self.section_count[parent_index] >= 2 {
-            self.tail_base_radii[parent_index]
+        let tail_source_section = if self.section_count[parent_index] >= 2 {
+            1
         } else {
-            self.base_radii[parent_index]
+            0
         };
-        let tail_source_current = if self.section_count[parent_index] >= 2 {
-            self.tail_current_radii[parent_index]
-        } else {
-            self.current_radii[parent_index]
-        };
-        let tail_source_offsets = if self.section_count[parent_index] >= 2 {
-            self.tail_angle_offsets[parent_index]
-        } else {
-            self.angle_offsets[parent_index]
-        };
-        let (tail_base, tail_current, tail_offsets) = mutate_child_soft_body(
+        let (tail_source_base, tail_source_current, tail_source_offsets) =
+            self.section_soft_body_source(parent_index, tail_source_section);
+        let tail_profile = mutate_child_segment_soft_body(
             tail_source_base,
             tail_source_current,
             tail_source_offsets,
-            radius,
             susceptibility,
             rng,
         );
@@ -5319,7 +5530,7 @@ impl CellStore {
                 arena_w,
                 arena_h,
                 arena_shape,
-                radius,
+                tail_profile.collision_radius,
             )
         } else {
             position
@@ -5334,23 +5545,40 @@ impl CellStore {
         self.tail_y.push(tail_position.y);
         self.tail_vx.push(self.vx[parent_index] * 0.35);
         self.tail_vy.push(self.vy[parent_index] * 0.35);
-        self.tail_core_radius.push(radius * CORE_RADIUS_FACTOR);
-        self.tail_base_radii.push(tail_base);
-        self.tail_current_radii.push(tail_current);
-        self.tail_visual_radii.push(tail_current);
-        self.tail_angle_offsets.push(tail_offsets);
-        self.tail_collision_radius.push(radius);
+        self.tail_core_radius.push(tail_profile.core_radius);
+        self.tail_base_radii.push(tail_profile.base_radii);
+        self.tail_current_radii.push(tail_profile.current_radii);
+        self.tail_visual_radii.push(tail_profile.visual_radii);
+        self.tail_angle_offsets.push(tail_profile.angle_offsets);
+        self.tail_collision_radius
+            .push(tail_profile.collision_radius);
         self.tail_ray_dir_x.push([0.0; SOFT_BODY_POINTS]);
         self.tail_ray_dir_y.push([0.0; SOFT_BODY_POINTS]);
         let mut extras = [
-            ExtraSection::dormant(tail_position, radius),
-            ExtraSection::dormant(tail_position, radius),
+            ExtraSection::dormant(tail_position, tail_profile.size),
+            ExtraSection::dormant(tail_position, tail_profile.size),
         ];
         let mut generated_positions = [position, tail_position, tail_position, tail_position];
         for extra_index in 0..2 {
             if child_section_count as usize > extra_index + 2 {
                 let section = extra_index + 2;
                 let parent = section_parents[section - 1] as usize;
+                let source_section = if self.section_count[parent_index] as usize > section {
+                    section as u8
+                } else if parent < child_section_count as usize && parent > 0 {
+                    parent as u8
+                } else {
+                    tail_source_section
+                };
+                let (source_base, source_current, source_offsets) =
+                    self.section_soft_body_source(parent_index, source_section);
+                let extra_profile = mutate_child_segment_soft_body(
+                    source_base,
+                    source_current,
+                    source_offsets,
+                    susceptibility,
+                    rng,
+                );
                 let generated = clamp_point_to_arena(
                     generated_positions[parent]
                         + Vec2::from_angle(child_heading + section_angles[extra_index + 1])
@@ -5358,20 +5586,13 @@ impl CellStore {
                     arena_w,
                     arena_h,
                     arena_shape,
-                    radius,
+                    extra_profile.collision_radius,
                 );
-                extras[extra_index] = ExtraSection {
-                    x: generated.x,
-                    y: generated.y,
-                    vx: self.vx[parent_index] * 0.35,
-                    vy: self.vy[parent_index] * 0.35,
-                    core_radius: radius * CORE_RADIUS_FACTOR,
-                    collision_radius: radius,
-                    base_radii: tail_base,
-                    current_radii: tail_current,
-                    visual_radii: tail_current,
-                    angle_offsets: tail_offsets,
-                };
+                extras[extra_index] = ExtraSection::from_profile(
+                    generated,
+                    Vec2::new(self.vx[parent_index] * 0.35, self.vy[parent_index] * 0.35),
+                    extra_profile,
+                );
                 generated_positions[section] = generated;
             }
         }
@@ -5471,11 +5692,13 @@ impl CellStore {
         self.lysis_deform_angle.swap_remove(index);
         self.lysis_deform_amount.swap_remove(index);
         self.hunt_pause.swap_remove(index);
+        self.hunt_recheck.swap_remove(index);
         self.target_food.swap_remove(index);
         self.target_food_generation.swap_remove(index);
         self.target_last_x.swap_remove(index);
         self.target_last_y.swap_remove(index);
         self.target_memory.swap_remove(index);
+        self.target_search_failed.swap_remove(index);
         self.target_recheck.swap_remove(index);
         self.target_cell.swap_remove(index);
         self.target_cell_id.swap_remove(index);
@@ -5724,15 +5947,14 @@ impl CellStore {
             if self.section_count[index] >= 2 {
                 let mut tail_max = self.tail_core_radius[index];
                 for ray_index in 0..SOFT_BODY_POINTS {
-                    let base = self.tail_base_radii[index][ray_index]
-                        .min(self.radius[index])
-                        .max(self.tail_core_radius[index]);
+                    let base =
+                        self.tail_base_radii[index][ray_index].max(self.tail_core_radius[index]);
                     self.tail_base_radii[index][ray_index] = base;
                     let current = self.tail_current_radii[index][ray_index]
                         .clamp(self.tail_core_radius[index], base);
                     let relaxed = current + (base - current) * elasticity;
                     self.tail_current_radii[index][ray_index] = relaxed;
-                    let visual = self.tail_visual_radii[index][ray_index].min(self.radius[index]);
+                    let visual = self.tail_visual_radii[index][ray_index].min(base);
                     self.tail_visual_radii[index][ray_index] =
                         visual + (relaxed - visual) * visual_follow;
                     tail_max = tail_max.max(relaxed);
@@ -5743,15 +5965,13 @@ impl CellStore {
                     let extra = &mut self.extra_sections[index][extra_index];
                     let mut extra_max = extra.core_radius;
                     for ray_index in 0..SOFT_BODY_POINTS {
-                        let base = extra.base_radii[ray_index]
-                            .min(self.radius[index])
-                            .max(extra.core_radius);
+                        let base = extra.base_radii[ray_index].max(extra.core_radius);
                         extra.base_radii[ray_index] = base;
                         let current = extra.current_radii[ray_index].clamp(extra.core_radius, base);
                         let relaxed = current + (base - current) * elasticity;
                         extra.current_radii[ray_index] = relaxed;
-                        extra.visual_radii[ray_index] +=
-                            (relaxed - extra.visual_radii[ray_index]) * visual_follow;
+                        let visual = extra.visual_radii[ray_index].min(base);
+                        extra.visual_radii[ray_index] = visual + (relaxed - visual) * visual_follow;
                         extra_max = extra_max.max(relaxed);
                         biomass += base;
                     }
@@ -8032,6 +8252,75 @@ mod tests {
     }
 
     #[test]
+    fn taxonomy_splits_trophic_bands_without_splitting_genus() {
+        let mut world = WorldState::new(&SimConfig {
+            cells: 2,
+            food: 0,
+            obstacles: 0,
+            food_growers: 0,
+            segmented_cells: false,
+            ..default()
+        });
+
+        for index in 0..2 {
+            world.cells.section_count[index] = 1;
+            world.cells.base_radii[index] = [7.0; SOFT_BODY_POINTS];
+            world.cells.angle_offsets[index] = [0.0; SOFT_BODY_POINTS];
+            world.cells.speed[index] = 62.0;
+            world.cells.turn_speed[index] = 2.0;
+            world.cells.perception[index] = 420.0;
+            world.cells.persistence[index] = 45.0;
+            world.cells.lysis[index] = 0.0;
+            world.cells.mutation_susceptibility[index] = 30.0;
+            world.cells.rebuild_soft_body_cache(index);
+        }
+        world.cells.aggressiveness[0] = 35.0;
+        world.cells.aggressiveness[1] = 45.0;
+        world.cells.refresh_taxonomy();
+
+        assert_ne!(world.cells.species[0], world.cells.species[1]);
+        assert_eq!(
+            world.cells.species[0] / SPECIES_EPITHET_SLOTS,
+            world.cells.species[1] / SPECIES_EPITHET_SLOTS
+        );
+    }
+
+    #[test]
+    fn taxonomy_keeps_minor_gene_noise_inside_species() {
+        let mut world = WorldState::new(&SimConfig {
+            cells: 2,
+            food: 0,
+            obstacles: 0,
+            food_growers: 0,
+            segmented_cells: false,
+            ..default()
+        });
+
+        for index in 0..2 {
+            world.cells.section_count[index] = 1;
+            world.cells.base_radii[index] = [7.0; SOFT_BODY_POINTS];
+            world.cells.angle_offsets[index] = [0.0; SOFT_BODY_POINTS];
+            world.cells.lysis[index] = 0.0;
+            world.cells.rebuild_soft_body_cache(index);
+        }
+        world.cells.speed[0] = 61.0;
+        world.cells.speed[1] = 62.0;
+        world.cells.turn_speed[0] = 2.00;
+        world.cells.turn_speed[1] = 2.03;
+        world.cells.perception[0] = 450.0;
+        world.cells.perception[1] = 456.0;
+        world.cells.persistence[0] = 35.0;
+        world.cells.persistence[1] = 36.0;
+        world.cells.aggressiveness[0] = 30.0;
+        world.cells.aggressiveness[1] = 31.0;
+        world.cells.mutation_susceptibility[0] = 30.0;
+        world.cells.mutation_susceptibility[1] = 31.0;
+        world.cells.refresh_taxonomy();
+
+        assert_eq!(world.cells.species[0], world.cells.species[1]);
+    }
+
+    #[test]
     fn taxonomy_splits_same_coccus_shape_when_genes_diverge_hard() {
         let mut world = WorldState::new(&SimConfig {
             cells: 4,
@@ -8922,6 +9211,76 @@ mod tests {
         assert_eq!(world.cells.tail_base_radii.len(), world.cells.len());
         assert_eq!(world.cells.tail_current_radii.len(), world.cells.len());
         assert_eq!(world.cells.tail_visual_radii.len(), world.cells.len());
+    }
+
+    #[test]
+    fn segmented_sections_can_have_independent_shapes_and_sizes() {
+        let world = WorldState::new(&SimConfig {
+            cells: 2_000,
+            food: 0,
+            segmented_cells: true,
+            seed: 137,
+            ..default()
+        });
+
+        let varied_tail = world
+            .cells
+            .section_count
+            .iter()
+            .enumerate()
+            .any(|(index, count)| {
+                if *count < 2 {
+                    return false;
+                }
+                let head_size = soft_body_max_radius(&world.cells.base_radii[index]).max(0.1);
+                let tail_size = soft_body_max_radius(&world.cells.tail_base_radii[index]).max(0.1);
+                let size_ratio = tail_size / head_size;
+                let shape_delta = (0..SOFT_BODY_POINTS)
+                    .map(|ray| {
+                        (world.cells.base_radii[index][ray] / head_size
+                            - world.cells.tail_base_radii[index][ray] / tail_size)
+                            .abs()
+                    })
+                    .sum::<f32>()
+                    / SOFT_BODY_POINTS as f32;
+                !(0.92..=1.08).contains(&size_ratio) || shape_delta > 0.045
+            });
+
+        assert!(varied_tail);
+        assert!(
+            world
+                .cells
+                .section_count
+                .iter()
+                .enumerate()
+                .any(|(index, count)| *count >= 3
+                    && soft_body_max_radius(&world.cells.extra_sections[index][0].base_radii)
+                        != soft_body_max_radius(&world.cells.tail_base_radii[index]))
+        );
+    }
+
+    #[test]
+    fn tail_section_size_is_not_clamped_to_head_size() {
+        let mut world = WorldState::new(&SimConfig {
+            cells: 1,
+            food: 0,
+            segmented_cells: false,
+            ..default()
+        });
+        world.cells.section_count[0] = 2;
+        world.cells.radius[0] = 8.0;
+        world.cells.core_radius[0] = 8.0 * CORE_RADIUS_FACTOR;
+        world.cells.base_radii[0] = [8.0; SOFT_BODY_POINTS];
+        world.cells.current_radii[0] = [8.0; SOFT_BODY_POINTS];
+        world.cells.tail_core_radius[0] = 13.0 * CORE_RADIUS_FACTOR;
+        world.cells.tail_base_radii[0] = [13.0; SOFT_BODY_POINTS];
+        world.cells.tail_current_radii[0] = [13.0; SOFT_BODY_POINTS];
+        world.cells.tail_visual_radii[0] = [13.0; SOFT_BODY_POINTS];
+
+        world.cells.relax_soft_body(1.0 / 60.0);
+
+        assert!(world.cells.tail_base_radii[0][0] > world.cells.radius[0]);
+        assert!(world.cells.tail_collision_radius[0] > world.cells.collision_radius[0]);
     }
 
     #[test]

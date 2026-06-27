@@ -3,11 +3,13 @@ mod rendering;
 mod simulation;
 
 use bevy::app::AppExit;
+use bevy::asset::RenderAssetUsages;
 use bevy::audio::{AudioSink, AudioSinkPlayback, PlaybackMode, Volume};
 use bevy::camera::ScalingMode;
 use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
 use bevy::input::mouse::{MouseScrollUnit, MouseWheel};
 use bevy::prelude::*;
+use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::render::view::NoIndirectDrawing;
 use bevy::ui::RelativeCursorPosition;
 use bevy::window::{PresentMode, PrimaryWindow, WindowMode, WindowResolution};
@@ -24,7 +26,7 @@ use simulation::{
     SPEED_GENE_MIN, SimConfig, TURN_GENE_MAX, TURN_GENE_MIN, WorldState, cell_display_color,
     grass_energy_multiplier, lysis_combat_profile, meat_energy_multiplier,
 };
-use std::{fs, path::PathBuf, time::Instant};
+use std::{collections::HashMap, fs, path::PathBuf, time::Instant};
 
 #[derive(States, Debug, Clone, Copy, Eq, PartialEq, Hash, Default)]
 pub enum AppState {
@@ -123,7 +125,22 @@ struct SpeciesLedgerUiState {
     last_click_species: Option<u32>,
     last_click_time: f64,
     rendered_revision: u64,
+    rendered_range_start: usize,
+    rendered_range_end: usize,
     scroll_target_species: Option<u32>,
+}
+
+#[derive(Resource, Default)]
+struct SpeciesLedgerDragState {
+    scrollbar_dragging: bool,
+    scroll_initialized: bool,
+    scroll_target_y: f32,
+}
+
+#[derive(Resource, Default)]
+struct SpeciesMiniatureImageCache {
+    handles: HashMap<u32, Handle<Image>>,
+    signatures: HashMap<u32, u64>,
 }
 
 #[derive(Resource, Default)]
@@ -227,26 +244,8 @@ struct SpeciesLedgerMiniature {
 }
 
 #[derive(Component)]
-struct SpeciesLedgerMiniCore {
+struct SpeciesLedgerMiniImage {
     species: u32,
-}
-
-#[derive(Component)]
-struct SpeciesLedgerMiniSegment {
-    species: u32,
-    section: u8,
-}
-
-#[derive(Component)]
-struct SpeciesLedgerMiniRay {
-    species: u32,
-    ray: usize,
-}
-
-#[derive(Component)]
-struct SpeciesLedgerMiniLobe {
-    species: u32,
-    ray: usize,
 }
 
 #[derive(Resource)]
@@ -254,6 +253,7 @@ struct GameUiState {
     paused: bool,
     passport_open: bool,
     pause_menu_open: bool,
+    speed_panel_open: bool,
     speed_multiplier: f32,
 }
 
@@ -263,6 +263,7 @@ impl Default for GameUiState {
             paused: false,
             passport_open: false,
             pause_menu_open: false,
+            speed_panel_open: true,
             speed_multiplier: 1.0,
         }
     }
@@ -430,9 +431,21 @@ const CAMERA_MOVE_SPEED: f32 = 1_100.0;
 const ZOOM_FACTOR: f32 = 1.18;
 const MIN_ZOOM_SCALE: f32 = 0.08;
 const MAX_ZOOM_SCALE: f32 = 12.0;
-const SPECIES_LEDGER_ROW_LIMIT: usize = 360;
 const SPECIES_LEDGER_SORT_INTERVAL: f32 = 5.0;
-const SPECIES_EPITHET_SLOTS: u32 = 200;
+const SPECIES_LEDGER_COLUMNS: usize = 3;
+const SPECIES_LEDGER_CARD_WIDTH: f32 = 154.0;
+const SPECIES_LEDGER_CARD_HEIGHT: f32 = 148.0;
+const SPECIES_LEDGER_COLUMN_GAP: f32 = 8.0;
+const SPECIES_LEDGER_ROW_GAP: f32 = 8.0;
+const SPECIES_LEDGER_ROW_STRIDE: f32 = SPECIES_LEDGER_CARD_HEIGHT + SPECIES_LEDGER_ROW_GAP;
+const SPECIES_LEDGER_VIRTUAL_BUFFER_ROWS: usize = 2;
+const SPECIES_LEDGER_WHEEL_LINE_SCROLL: f32 = 18.0;
+const SPECIES_LEDGER_WHEEL_PIXEL_SCROLL: f32 = 0.55;
+const SPECIES_LEDGER_SCROLL_FOLLOW: f32 = 15.0;
+const SPECIES_LEDGER_SCROLLBAR_FOLLOW: f32 = 11.0;
+const SPECIES_LEDGER_AUTO_SCROLL_FOLLOW: f32 = 6.5;
+const SPECIES_EPITHET_SLOTS: u32 = 10_000;
+const SPECIES_CLASS_STRIDE: u32 = 10_000_000;
 const UI_FONT: &str = "fonts/FiraSansExtraCondensed-Regular.ttf";
 
 fn relative_cursor_fraction_x(cursor: &RelativeCursorPosition) -> Option<f32> {
@@ -473,6 +486,59 @@ fn cursor_over_species_ledger(window: &Window, cursor: Vec2) -> bool {
     cursor.x >= left && cursor.x <= right && cursor.y >= top && cursor.y <= bottom
 }
 
+fn species_ledger_scrollbar_fraction(window: &Window, cursor: Vec2) -> Option<f32> {
+    let panel_left = 16.0;
+    let panel_right = panel_left + 540.0;
+    let panel_bottom = window.height() - 74.0;
+    let panel_top = panel_bottom - window.height() * 0.64;
+    let track_top = panel_top + 52.0;
+    let track_bottom = panel_bottom - 20.0;
+    if cursor.x < panel_right - 34.0
+        || cursor.x > panel_right - 2.0
+        || cursor.y < track_top
+        || cursor.y > track_bottom
+    {
+        return None;
+    }
+    Some(((cursor.y - track_top) / (track_bottom - track_top).max(1.0)).clamp(0.0, 1.0))
+}
+
+fn species_ledger_row_count(total_species: usize) -> usize {
+    total_species.div_ceil(SPECIES_LEDGER_COLUMNS).max(1)
+}
+
+fn species_ledger_content_height(total_species: usize) -> f32 {
+    species_ledger_row_count(total_species) as f32 * SPECIES_LEDGER_ROW_STRIDE
+        + SPECIES_LEDGER_ROW_GAP * 2.0
+}
+
+fn species_ledger_visible_index_range(
+    total_species: usize,
+    scroll_y: f32,
+    view_height: f32,
+) -> (usize, usize) {
+    if total_species == 0 {
+        return (0, 0);
+    }
+    let row_count = species_ledger_row_count(total_species);
+    let first_visible_row = (scroll_y.max(0.0) / SPECIES_LEDGER_ROW_STRIDE).floor() as usize;
+    let start_row = first_visible_row.saturating_sub(SPECIES_LEDGER_VIRTUAL_BUFFER_ROWS);
+    let visible_rows = (view_height.max(1.0) / SPECIES_LEDGER_ROW_STRIDE).ceil() as usize
+        + SPECIES_LEDGER_VIRTUAL_BUFFER_ROWS * 2
+        + 1;
+    let end_row = (start_row + visible_rows).min(row_count);
+    let start = start_row * SPECIES_LEDGER_COLUMNS;
+    let end = (end_row * SPECIES_LEDGER_COLUMNS).min(total_species);
+    (start, end)
+}
+
+fn species_ledger_scroll_target_y(index: usize, view_height: f32) -> f32 {
+    let row = index / SPECIES_LEDGER_COLUMNS;
+    let row_top = row as f32 * SPECIES_LEDGER_ROW_STRIDE;
+    let row_center = row_top + SPECIES_LEDGER_CARD_HEIGHT * 0.5;
+    (row_center - view_height.max(1.0) * 0.46).max(0.0)
+}
+
 fn main() {
     let mut config = SimConfig::default();
     if std::env::args().len() > 1 {
@@ -496,6 +562,8 @@ fn main() {
         .insert_resource(config.clone())
         .init_resource::<SelectedCell>()
         .init_resource::<SpeciesLedgerUiState>()
+        .init_resource::<SpeciesLedgerDragState>()
+        .init_resource::<SpeciesMiniatureImageCache>()
         .init_resource::<SpeciesCameraFocus>()
         .init_resource::<SpeciesLedgerStats>()
         .init_resource::<GameUiState>()
@@ -580,16 +648,21 @@ fn main() {
         )
         .add_systems(
             Update,
+            update_speed_panel_visibility.run_if(in_state(AppState::Running)),
+        )
+        .add_systems(
+            Update,
             (
                 species_ledger_button_system,
                 update_species_ledger_stats,
+                species_ledger_scroll_system,
                 update_species_ledger_ui,
                 update_species_ledger_row_visuals,
                 update_species_ledger_miniature_visuals,
-                species_ledger_scroll_system,
                 species_ledger_row_system,
                 apply_species_camera_focus,
             )
+                .chain()
                 .run_if(in_state(AppState::Running)),
         )
         .add_systems(
@@ -876,6 +949,45 @@ mod audio_tests {
     }
 }
 
+#[cfg(test)]
+mod species_ledger_tests {
+    use super::*;
+
+    #[test]
+    fn species_ledger_visible_range_keeps_dom_nodes_bounded() {
+        let (start, end) = species_ledger_visible_index_range(10_000, 0.0, 620.0);
+        assert_eq!(start, 0);
+        assert!(
+            end <= 30,
+            "visible cards should stay virtualized, got {end}"
+        );
+
+        let (scrolled_start, scrolled_end) =
+            species_ledger_visible_index_range(10_000, SPECIES_LEDGER_ROW_STRIDE * 120.0, 620.0);
+        assert!(scrolled_start > 0);
+        assert!(scrolled_end - scrolled_start <= 30);
+    }
+
+    #[test]
+    fn species_ledger_content_height_represents_all_species() {
+        let height = species_ledger_content_height(10_000);
+        let expected_rows = 10_000_usize.div_ceil(SPECIES_LEDGER_COLUMNS);
+        assert!(height >= expected_rows as f32 * SPECIES_LEDGER_ROW_STRIDE);
+    }
+
+    #[test]
+    fn species_ledger_scroll_target_centers_species_row() {
+        let first_row = species_ledger_scroll_target_y(0, 620.0);
+        assert_eq!(first_row, 0.0);
+
+        let index = SPECIES_LEDGER_COLUMNS * 42 + 1;
+        let target = species_ledger_scroll_target_y(index, 620.0);
+        let row_top = 42.0 * SPECIES_LEDGER_ROW_STRIDE;
+        assert!(target > row_top - 360.0);
+        assert!(target < row_top);
+    }
+}
+
 fn initialize_world_state(
     mut commands: Commands,
     config: Res<SimConfig>,
@@ -1040,11 +1152,8 @@ fn setup_species_ledger_ui(mut commands: Commands, asset_server: Res<AssetServer
                         .with_child((
                             Node {
                                 width: percent(100),
-                                flex_direction: FlexDirection::Row,
-                                flex_wrap: FlexWrap::Wrap,
-                                align_content: AlignContent::FlexStart,
-                                row_gap: px(8),
-                                column_gap: px(8),
+                                height: px(SPECIES_LEDGER_ROW_STRIDE),
+                                position_type: PositionType::Relative,
                                 ..default()
                             },
                             SpeciesLedgerGrid,
@@ -1054,14 +1163,13 @@ fn setup_species_ledger_ui(mut commands: Commands, asset_server: Res<AssetServer
                         .spawn((
                             Node {
                                 position_type: PositionType::Absolute,
-                                right: px(5),
+                                right: px(3),
                                 top: px(8),
-                                width: px(5),
+                                width: px(18),
                                 height: percent(96),
-                                border_radius: BorderRadius::MAX,
                                 ..default()
                             },
-                            BackgroundColor(Color::srgba(0.15, 0.36, 0.42, 0.48)),
+                            BackgroundColor(Color::srgba(0.15, 0.36, 0.42, 0.30)),
                             Visibility::Hidden,
                             SpeciesLedgerScrollbarTrack,
                         ))
@@ -1069,9 +1177,9 @@ fn setup_species_ledger_ui(mut commands: Commands, asset_server: Res<AssetServer
                             Node {
                                 position_type: PositionType::Absolute,
                                 top: percent(0),
-                                width: percent(100),
+                                left: px(4),
+                                width: px(10),
                                 height: percent(18),
-                                border_radius: BorderRadius::MAX,
                                 ..default()
                             },
                             BackgroundColor(Color::srgb(0.46, 0.86, 0.92)),
@@ -1214,6 +1322,14 @@ fn gene_stat_descriptors() -> Vec<GeneStatDescriptor> {
             category: GeneCategory::Behavior,
             compact: true,
             color: gene_stat_color(GeneStatId::Aggressiveness),
+        },
+        GeneStatDescriptor {
+            id: GeneStatId::Diet,
+            label: "Рацион",
+            icon: "sprites/gene-type-biotroph.png",
+            category: GeneCategory::Behavior,
+            compact: true,
+            color: gene_stat_color(GeneStatId::Diet),
         },
         GeneStatDescriptor {
             id: GeneStatId::Lysis,
@@ -1370,11 +1486,11 @@ fn spawn_passport_panel(
                 top: px(12),
                 right: px(12),
                 width: percent(92),
-                max_width: px(760),
-                padding: UiRect::all(px(18)),
+                max_width: px(820),
+                padding: UiRect::all(px(20)),
                 border: UiRect::all(px(2)),
                 flex_direction: FlexDirection::Column,
-                row_gap: px(14),
+                row_gap: px(16),
                 ..default()
             },
             BorderColor::all(Color::srgb(0.44, 0.74, 0.82)),
@@ -1435,7 +1551,7 @@ fn spawn_passport_panel(
                 .spawn((Node {
                     width: percent(100),
                     flex_direction: FlexDirection::Row,
-                    column_gap: px(14),
+                    column_gap: px(18),
                     align_items: AlignItems::FlexStart,
                     ..default()
                 },))
@@ -1477,7 +1593,7 @@ fn spawn_passport_column(
             flex_basis: px(0),
             flex_grow: 1.0,
             flex_direction: FlexDirection::Column,
-            row_gap: px(10),
+            row_gap: px(12),
             ..default()
         },))
         .with_children(|column| {
@@ -1490,7 +1606,7 @@ fn spawn_passport_column(
                     },
                     TextFont {
                         font: font.clone(),
-                        font_size: 14.0,
+                        font_size: 15.0,
                         ..default()
                     },
                     TextColor(Color::srgb(0.64, 0.93, 0.88)),
@@ -1520,6 +1636,8 @@ fn spawn_biolab_stat_row(
     fill_color: Color,
     show_range: bool,
 ) {
+    let row_min_height = if show_range { 76.0 } else { 68.0 };
+    let row_padding_y = if show_range { 8.0 } else { 7.0 };
     parent
         .spawn((
             Node {
@@ -1527,8 +1645,8 @@ fn spawn_biolab_stat_row(
                 align_items: AlignItems::Center,
                 column_gap: px(11),
                 width: percent(100),
-                min_height: px(68),
-                padding: UiRect::axes(px(9), px(7)),
+                min_height: px(row_min_height),
+                padding: UiRect::axes(px(10), px(row_padding_y)),
                 border: UiRect::left(px(4)),
                 ..default()
             },
@@ -1545,6 +1663,7 @@ fn spawn_biolab_stat_row(
                     height: px(32),
                     ..default()
                 },
+                GeneIconNode { kind },
             ));
 
             row.spawn((Node {
@@ -1567,7 +1686,7 @@ fn spawn_biolab_stat_row(
                                 Text::new(label),
                                 TextFont {
                                     font: font.clone(),
-                                    font_size: 13.0,
+                                    font_size: 13.5,
                                     ..default()
                                 },
                                 TextColor(Color::srgb(0.70, 0.76, 0.80)),
@@ -1577,7 +1696,7 @@ fn spawn_biolab_stat_row(
                                 Text::new("0"),
                                 TextFont {
                                     font: font.clone(),
-                                    font_size: 13.0,
+                                    font_size: 13.5,
                                     ..default()
                                 },
                                 TextColor(Color::srgb(0.91, 0.96, 0.97)),
@@ -1589,7 +1708,7 @@ fn spawn_biolab_stat_row(
                         .spawn((
                             Node {
                                 width: percent(100),
-                                height: px(11),
+                                height: px(12),
                                 border: UiRect::all(px(2)),
                                 ..default()
                             },
@@ -1641,10 +1760,15 @@ fn spawn_biolab_stat_row(
                             Text::new("0-100"),
                             TextFont {
                                 font,
-                                font_size: 11.0,
+                                font_size: 11.5,
                                 ..default()
                             },
-                            TextColor(Color::srgb(0.43, 0.56, 0.60)),
+                            TextColor(Color::srgb(0.58, 0.73, 0.76)),
+                            TextLayout::new_with_linebreak(LineBreak::WordBoundary),
+                            Node {
+                                width: percent(100),
+                                ..default()
+                            },
                             GeneRangeText { kind },
                         ));
                     }
@@ -1703,7 +1827,7 @@ fn spawn_division_tooltip(commands: &mut Commands, font: Handle<Font>) {
                 position_type: PositionType::Absolute,
                 top: px(0),
                 left: px(0),
-                width: px(370),
+                width: px(430),
                 padding: UiRect::all(px(13)),
                 border: UiRect::all(px(3)),
                 flex_direction: FlexDirection::Column,
@@ -1765,7 +1889,7 @@ fn spawn_gene_tooltip(commands: &mut Commands, font: Handle<Font>) {
                 padding: UiRect::all(px(13)),
                 border: UiRect::all(px(3)),
                 flex_direction: FlexDirection::Column,
-                row_gap: px(5),
+                row_gap: px(7),
                 ..default()
             },
             BorderColor::all(Color::srgb(0.38, 0.88, 0.86)),
@@ -1788,13 +1912,17 @@ fn spawn_gene_tooltip(commands: &mut Commands, font: Handle<Font>) {
                 GeneTooltipTitle,
             ));
             tooltip.spawn((
-                Text::new("0"),
+                Text::new(""),
                 TextFont {
                     font: font.clone(),
-                    font_size: 24.0,
+                    font_size: 21.0,
                     ..default()
                 },
                 TextColor(Color::srgb(0.38, 0.88, 0.86)),
+                Node {
+                    display: Display::None,
+                    ..default()
+                },
                 GeneTooltipValue,
             ));
             tooltip.spawn((
@@ -1805,6 +1933,10 @@ fn spawn_gene_tooltip(commands: &mut Commands, font: Handle<Font>) {
                     ..default()
                 },
                 TextColor(Color::srgb(0.84, 0.94, 0.88)),
+                Node {
+                    width: percent(100),
+                    ..default()
+                },
                 GeneTooltipBody,
             ));
         });
@@ -2045,6 +2177,10 @@ fn spawn_speed_panel(commands: &mut Commands, font: Handle<Font>) {
             BackgroundColor(Color::srgb(0.018, 0.027, 0.034)),
             GlobalZIndex(100),
             SpeedPanel,
+            PanelReveal {
+                progress: 1.0,
+                hidden_offset: 82.0,
+            },
             RunningUiEntity,
         ))
         .with_children(|panel| {
@@ -2177,6 +2313,29 @@ fn update_speed_button_styles(
         } else {
             BorderColor::all(Color::srgb(0.34, 0.58, 0.64))
         };
+    }
+}
+
+fn update_speed_panel_visibility(
+    time: Res<Time>,
+    ui_state: Res<GameUiState>,
+    mut panel: Query<(&mut Visibility, &mut Node, &mut PanelReveal), With<SpeedPanel>>,
+) {
+    let Ok((mut visibility, mut node, mut reveal)) = panel.single_mut() else {
+        return;
+    };
+
+    if ui_state.speed_panel_open {
+        *visibility = Visibility::Visible;
+    }
+
+    let target = if ui_state.speed_panel_open { 1.0 } else { 0.0 };
+    let follow = 1.0 - (-12.0 * time.delta_secs()).exp();
+    reveal.progress += (target - reveal.progress) * follow;
+    node.bottom = px(14.0 - reveal.hidden_offset * (1.0 - reveal.progress));
+
+    if !ui_state.speed_panel_open && reveal.progress < 0.002 {
+        *visibility = Visibility::Hidden;
     }
 }
 
@@ -2614,6 +2773,11 @@ fn select_cell_system(
             if is_double {
                 species_ui.scroll_target_species = Some(species);
             }
+        } else if is_double {
+            let species = world.cells.species[index];
+            species_ui.open = true;
+            species_ui.selected_species = Some(species);
+            species_ui.scroll_target_species = Some(species);
         }
     } else {
         selected.cell_id = None;
@@ -2833,6 +2997,10 @@ fn game_ui_input_system(
             species_ui.scroll_target_species = None;
             species_ui.last_click_species = None;
         }
+    }
+
+    if keys.just_pressed(KeyCode::KeyC) {
+        ui_state.speed_panel_open = !ui_state.speed_panel_open;
     }
 
     if keys.just_pressed(KeyCode::Escape) {
@@ -3277,6 +3445,7 @@ fn stat_ui_value(world: &WorldState, cell_index: usize, id: GeneStatId) -> StatU
     let viability_factor = cells.morphology_viability_factor(cell_index);
     let metabolism_factor = cells.morphology_metabolism_factor(cell_index);
     let modifier = |factor: f32| format!("{:+.0}%", (factor - 1.0) * 100.0);
+    let gene_range = |min: f32, max: f32| format!("{min:.0}-{max:.0}");
 
     match id {
         GeneStatId::Viability => StatUiValue {
@@ -3286,7 +3455,7 @@ fn stat_ui_value(world: &WorldState, cell_index: usize, id: GeneStatId) -> StatU
                 CELL_VIABILITY_MAX
             ),
             range: format!(
-                "запас {} | расход {}",
+                "Эффект: запас формы {} | метаболизм {}",
                 modifier(viability_factor),
                 modifier(metabolism_factor)
             ),
@@ -3297,7 +3466,8 @@ fn stat_ui_value(world: &WorldState, cell_index: usize, id: GeneStatId) -> StatU
                 normalized: speed / CELL_SPEED_DISPLAY_MAX,
                 display: format!("{speed:.0} -> {:.0}", speed * speed_factor),
                 range: format!(
-                    "ген {SPEED_GENE_MIN:.0}-{SPEED_GENE_MAX:.0} | форма {} | разгон {}",
+                    "Ген: {} | форма {} | разгон {}",
+                    gene_range(SPEED_GENE_MIN, SPEED_GENE_MAX),
                     modifier(speed_factor),
                     modifier(acceleration_factor)
                 ),
@@ -3309,7 +3479,7 @@ fn stat_ui_value(world: &WorldState, cell_index: usize, id: GeneStatId) -> StatU
                 normalized: turn / CELL_TURN_DISPLAY_MAX,
                 display: format!("{turn:.1} -> {:.1}", turn * turn_factor),
                 range: format!(
-                    "ген {TURN_GENE_MIN:.2}-{TURN_GENE_MAX:.1} | форма {}",
+                    "Ген: {TURN_GENE_MIN:.2}-{TURN_GENE_MAX:.1} | форма {}",
                     modifier(turn_factor)
                 ),
             }
@@ -3319,7 +3489,10 @@ fn stat_ui_value(world: &WorldState, cell_index: usize, id: GeneStatId) -> StatU
             StatUiValue {
                 normalized: perception / CELL_PERCEPTION_DISPLAY_MAX,
                 display: format!("{perception:.0}"),
-                range: format!("{PERCEPTION_GENE_MIN:.0}-{PERCEPTION_GENE_MAX:.0}"),
+                range: format!(
+                    "Ген: {} | радиус обзора",
+                    gene_range(PERCEPTION_GENE_MIN, PERCEPTION_GENE_MAX)
+                ),
             }
         }
         GeneStatId::Persistence => {
@@ -3327,7 +3500,7 @@ fn stat_ui_value(world: &WorldState, cell_index: usize, id: GeneStatId) -> StatU
             StatUiValue {
                 normalized: persistence / CELL_PERSISTENCE_DISPLAY_MAX,
                 display: format!("{persistence:.0}%"),
-                range: "0-100%".to_string(),
+                range: "Ген: 0-100% | удержание цели".to_string(),
             }
         }
         GeneStatId::Aggressiveness => {
@@ -3335,7 +3508,7 @@ fn stat_ui_value(world: &WorldState, cell_index: usize, id: GeneStatId) -> StatU
             StatUiValue {
                 normalized: aggressiveness / CELL_AGGRESSIVENESS_DISPLAY_MAX,
                 display: format!("{aggressiveness:.0}%"),
-                range: "инициатива 0-100% | сдвигает рацион к мясу".to_string(),
+                range: "Ген: 0-100% | охота | сдвиг рациона к мясу".to_string(),
             }
         }
         GeneStatId::Diet => {
@@ -3345,7 +3518,10 @@ fn stat_ui_value(world: &WorldState, cell_index: usize, id: GeneStatId) -> StatU
             StatUiValue {
                 normalized: aggressiveness / CELL_AGGRESSIVENESS_DISPLAY_MAX,
                 display: trophic_type_name(aggressiveness).to_string(),
-                range: format!("трава x{grass_multiplier:.2} | мясо x{meat_multiplier:.2}"),
+                range: format!(
+                    "Троф: {} | трава x{grass_multiplier:.2} | мясо x{meat_multiplier:.2}",
+                    trophic_type_name(aggressiveness)
+                ),
             }
         }
         GeneStatId::Lysis => {
@@ -3359,7 +3535,7 @@ fn stat_ui_value(world: &WorldState, cell_index: usize, id: GeneStatId) -> StatU
                     format!("{lysis:.0}%")
                 },
                 range: format!(
-                    "урон {damage:.1} | цена {self_cost:.2} | КД {cooldown:.2}с | радиус {reach:.1}"
+                    "Урон {damage:.1} | цена {self_cost:.2} | КД {cooldown:.2}с | радиус {reach:.1}"
                 ),
             }
         }
@@ -3368,7 +3544,7 @@ fn stat_ui_value(world: &WorldState, cell_index: usize, id: GeneStatId) -> StatU
             StatUiValue {
                 normalized: mutation / CELL_MUTATION_DISPLAY_MAX,
                 display: format!("{mutation:.0}%"),
-                range: "0-100%".to_string(),
+                range: "Ген: 0-100% | наследственная изменчивость".to_string(),
             }
         }
         GeneStatId::Size => StatUiValue {
@@ -3376,7 +3552,7 @@ fn stat_ui_value(world: &WorldState, cell_index: usize, id: GeneStatId) -> StatU
                 / (CELL_SIZE_GENE_MAX - CELL_SIZE_GENE_MIN))
                 .clamp(0.0, 1.0),
             display: format!("{membrane_size:.1}/{radius:.1}"),
-            range: format!("{CELL_SIZE_GENE_MIN:.1}-{CELL_SIZE_GENE_MAX:.1}"),
+            range: format!("Ген: {CELL_SIZE_GENE_MIN:.1}-{CELL_SIZE_GENE_MAX:.1} | тело и ядро"),
         },
     }
 }
@@ -3476,11 +3652,10 @@ fn update_gene_tooltip(
         return;
     }
 
-    let (Some(kind), Some(cell_index)) = (hovered, selected_index) else {
+    let (Some(kind), Some(_cell_index)) = (hovered, selected_index) else {
         return;
     };
     let (heading, description) = gene_tooltip_copy(kind);
-    let value = stat_ui_value(&world, cell_index, kind);
     let accent = gene_stat_color(kind);
     *border_color = BorderColor::all(accent);
     if let Ok((mut text, mut color)) = tooltip_text.p0().single_mut() {
@@ -3488,18 +3663,18 @@ fn update_gene_tooltip(
         *color = TextColor(accent);
     }
     if let Ok((mut text, mut color)) = tooltip_text.p1().single_mut() {
-        **text = value.display;
+        **text = String::new();
         *color = TextColor(accent);
     }
     if let Ok(mut text) = tooltip_text.p2().single_mut() {
-        **text = format!("{description}\nДиапазон: {}", value.range);
+        **text = description.to_string();
     }
 
     if let Ok(window) = windows.single()
         && let Some(cursor) = window.cursor_position()
     {
-        let width = 370.0;
-        let height = 205.0;
+        let width = 430.0;
+        let height = 184.0;
         let gap = 18.0;
         let position = tooltip_position_near_cursor(window, cursor, width, height, gap);
         node.left = px(position.x);
@@ -3530,12 +3705,13 @@ fn update_species_ledger_stats(
     mut stats: ResMut<SpeciesLedgerStats>,
 ) {
     let dt = time.delta_secs();
+    if !state.open {
+        stats.accumulator = 0.35;
+        return;
+    }
     stats.accumulator += dt;
     stats.sort_accumulator += dt;
-    if stats.accumulator < 0.35
-        && !stats.snapshots.is_empty()
-        && state.scroll_target_species.is_none()
-    {
+    if stats.accumulator < 0.35 && !stats.snapshots.is_empty() {
         return;
     }
     stats.accumulator = 0.0;
@@ -3634,26 +3810,6 @@ fn update_species_ledger_stats(
         });
     }
 
-    if snapshots.len() > SPECIES_LEDGER_ROW_LIMIT {
-        let pinned = [state.selected_species, state.scroll_target_species]
-            .into_iter()
-            .flatten()
-            .collect::<std::collections::HashSet<_>>();
-        let pinned_snapshots = snapshots
-            .iter()
-            .filter(|snapshot| pinned.contains(&snapshot.species))
-            .cloned()
-            .collect::<Vec<_>>();
-        snapshots.truncate(SPECIES_LEDGER_ROW_LIMIT.saturating_sub(pinned_snapshots.len()));
-        for snapshot in pinned_snapshots {
-            if !snapshots
-                .iter()
-                .any(|existing| existing.species == snapshot.species)
-            {
-                snapshots.push(snapshot);
-            }
-        }
-    }
     let new_order = snapshots
         .iter()
         .map(|snapshot| snapshot.species)
@@ -3677,7 +3833,7 @@ fn trophic_icon_tint(aggressiveness: f32) -> Color {
 
 #[allow(dead_code)]
 fn species_morph_class(species: u32) -> u32 {
-    species / 1_000_000
+    species / SPECIES_CLASS_STRIDE
 }
 
 fn species_genus_key(species: u32) -> u32 {
@@ -3694,20 +3850,26 @@ fn spawn_species_ledger_row(
     asset_server: &AssetServer,
     snapshot: &SpeciesSnapshot,
     name: String,
+    index: usize,
 ) {
     let species = snapshot.species;
+    let column = index % SPECIES_LEDGER_COLUMNS;
+    let row = index / SPECIES_LEDGER_COLUMNS;
     parent
         .spawn((
             Button,
             Node {
-                width: px(154),
-                height: px(148),
-                position_type: PositionType::Relative,
+                position_type: PositionType::Absolute,
+                left: px(column as f32 * (SPECIES_LEDGER_CARD_WIDTH + SPECIES_LEDGER_COLUMN_GAP)),
+                top: px(row as f32 * SPECIES_LEDGER_ROW_STRIDE),
+                width: px(SPECIES_LEDGER_CARD_WIDTH),
+                height: px(SPECIES_LEDGER_CARD_HEIGHT),
                 flex_direction: FlexDirection::Column,
                 align_items: AlignItems::Center,
-                justify_content: JustifyContent::SpaceBetween,
+                justify_content: JustifyContent::FlexStart,
                 padding: UiRect::axes(px(8), px(8)),
                 border: UiRect::all(px(2)),
+                overflow: Overflow::clip(),
                 ..default()
             },
             BorderColor::all(Color::srgb(0.18, 0.38, 0.43)),
@@ -3724,6 +3886,7 @@ fn spawn_species_ledger_row(
                     border: UiRect::all(px(2)),
                     align_items: AlignItems::Center,
                     justify_content: JustifyContent::Center,
+                    overflow: Overflow::clip(),
                     ..default()
                 },
                 BorderColor::all(Color::srgb(0.32, 0.58, 0.62)),
@@ -3731,63 +3894,14 @@ fn spawn_species_ledger_row(
                 SpeciesLedgerMiniature { species },
             ))
             .with_children(|mini| {
-                for ray in 0..8 {
-                    mini.spawn((
-                        Node {
-                            position_type: PositionType::Absolute,
-                            left: px(38),
-                            top: px(40),
-                            width: px(14),
-                            height: px(7),
-                            border_radius: BorderRadius::MAX,
-                            ..default()
-                        },
-                        UiTransform::default(),
-                        BackgroundColor(Color::srgb(0.82, 0.96, 0.78)),
-                        SpeciesLedgerMiniRay { species, ray },
-                    ));
-                    mini.spawn((
-                        Node {
-                            position_type: PositionType::Absolute,
-                            left: px(38),
-                            top: px(38),
-                            width: px(10),
-                            height: px(10),
-                            border_radius: BorderRadius::MAX,
-                            ..default()
-                        },
-                        BackgroundColor(Color::srgb(0.82, 0.96, 0.78)),
-                        SpeciesLedgerMiniLobe { species, ray },
-                    ));
-                }
-                for section in 1..4 {
-                    mini.spawn((
-                        Node {
-                            position_type: PositionType::Absolute,
-                            left: px(30),
-                            top: px(30),
-                            width: px(26),
-                            height: px(26),
-                            border_radius: BorderRadius::MAX,
-                            ..default()
-                        },
-                        BackgroundColor(Color::srgba(0.82, 0.96, 0.78, 0.62)),
-                        Visibility::Hidden,
-                        SpeciesLedgerMiniSegment { species, section },
-                    ));
-                }
                 mini.spawn((
+                    ImageNode::default(),
                     Node {
-                        position_type: PositionType::Absolute,
-                        left: px(27),
-                        top: px(27),
-                        width: px(34),
-                        height: px(34),
-                        border_radius: BorderRadius::MAX,
+                        width: px(78),
+                        height: px(78),
                         ..default()
                     },
-                    BackgroundColor(Color::srgb(0.90, 0.98, 0.88)),
-                    SpeciesLedgerMiniCore { species },
+                    SpeciesLedgerMiniImage { species },
                 ));
             });
 
@@ -3868,9 +3982,11 @@ fn spawn_species_ledger_row(
                     ..default()
                 },
                 TextColor(Color::srgb(0.91, 0.96, 0.97)),
+                TextLayout::new_with_justify(Justify::Center),
                 Node {
-                    width: percent(100),
-                    height: px(22),
+                    width: px(126),
+                    height: px(28),
+                    margin: UiRect::top(px(5)),
                     justify_content: JustifyContent::Center,
                     align_items: AlignItems::Center,
                     ..default()
@@ -3887,11 +4003,14 @@ fn update_species_ledger_ui(
     names: Res<SpeciesNameBook>,
     stats: Res<SpeciesLedgerStats>,
     mut state: ResMut<SpeciesLedgerUiState>,
-    mut panel: Query<(&mut Visibility, &mut Node, &mut PanelReveal), With<SpeciesLedgerPanel>>,
-    grid: Query<Entity, With<SpeciesLedgerGrid>>,
-    row_entities: Query<Entity, With<SpeciesLedgerRow>>,
+    mut ui_queries: ParamSet<(
+        Query<(&mut Visibility, &mut Node, &mut PanelReveal), With<SpeciesLedgerPanel>>,
+        Query<(Entity, &mut Node), With<SpeciesLedgerGrid>>,
+        Query<(&ComputedNode, &ScrollPosition), With<SpeciesLedgerScrollArea>>,
+        Query<Entity, With<SpeciesLedgerRow>>,
+    )>,
 ) {
-    if let Ok((mut visibility, mut node, mut reveal)) = panel.single_mut() {
+    if let Ok((mut visibility, mut node, mut reveal)) = ui_queries.p0().single_mut() {
         if state.open {
             *visibility = Visibility::Visible;
             node.display = Display::Flex;
@@ -3906,23 +4025,60 @@ fn update_species_ledger_ui(
         }
     }
 
-    if !state.open || state.rendered_revision == stats.revision {
+    if !state.open {
         return;
     }
 
-    for entity in &row_entities {
+    let (scroll_y, view_height) = ui_queries
+        .p2()
+        .single()
+        .map(|(computed, scroll_position)| {
+            (
+                scroll_position.y.max(0.0),
+                (computed.size().y * computed.inverse_scale_factor()).max(1.0),
+            )
+        })
+        .unwrap_or((0.0, 520.0));
+    let total_height = species_ledger_content_height(stats.snapshots.len());
+    let (range_start, range_end) =
+        species_ledger_visible_index_range(stats.snapshots.len(), scroll_y, view_height);
+    let should_render = state.rendered_revision != stats.revision
+        || state.rendered_range_start != range_start
+        || state.rendered_range_end != range_end;
+
+    let grid_entity = {
+        let mut grid = ui_queries.p1();
+        let Ok((grid_entity, mut grid_node)) = grid.single_mut() else {
+            return;
+        };
+        grid_node.height = px(total_height);
+        if !should_render {
+            return;
+        }
+        grid_entity
+    };
+
+    let row_entities = ui_queries.p3().iter().collect::<Vec<_>>();
+    for entity in row_entities {
         commands.entity(entity).despawn();
     }
-    if let Ok(grid_entity) = grid.single() {
-        let font = asset_server.load(UI_FONT);
-        commands.entity(grid_entity).with_children(|grid| {
-            for snapshot in &stats.snapshots {
-                let name = species_name_for(&names, snapshot.species);
-                spawn_species_ledger_row(grid, font.clone(), &asset_server, snapshot, name);
-            }
-        });
-    }
+
+    let font = asset_server.load(UI_FONT);
+    commands.entity(grid_entity).with_children(|grid| {
+        for (index, snapshot) in stats
+            .snapshots
+            .iter()
+            .enumerate()
+            .skip(range_start)
+            .take(range_end.saturating_sub(range_start))
+        {
+            let name = species_name_for(&names, snapshot.species);
+            spawn_species_ledger_row(grid, font.clone(), &asset_server, snapshot, name, index);
+        }
+    });
     state.rendered_revision = stats.revision;
+    state.rendered_range_start = range_start;
+    state.rendered_range_end = range_end;
 }
 
 fn update_species_ledger_row_visuals(
@@ -3930,11 +4086,7 @@ fn update_species_ledger_row_visuals(
     state: Res<SpeciesLedgerUiState>,
     mut rows: Query<
         (&SpeciesLedgerRow, &mut BackgroundColor, &mut BorderColor),
-        (
-            Without<SpeciesLedgerMiniature>,
-            Without<SpeciesLedgerMiniCore>,
-            Without<SpeciesLedgerMiniRay>,
-        ),
+        Without<SpeciesLedgerMiniature>,
     >,
     mut count_texts: Query<(&SpeciesLedgerCountText, &mut Text), Without<SpeciesLedgerNameText>>,
     mut relation_icons: Query<(&SpeciesLedgerRelationIcon, &mut Visibility)>,
@@ -3994,31 +4146,18 @@ fn update_species_ledger_row_visuals(
 }
 
 fn update_species_ledger_miniature_visuals(
+    mut images: ResMut<Assets<Image>>,
+    mut cache: ResMut<SpeciesMiniatureImageCache>,
     stats: Res<SpeciesLedgerStats>,
     state: Res<SpeciesLedgerUiState>,
-    mut mini_queries: ParamSet<(
-        Query<(&SpeciesLedgerMiniature, &mut BackgroundColor)>,
-        Query<(&SpeciesLedgerMiniCore, &mut BackgroundColor)>,
-        Query<(
-            &SpeciesLedgerMiniSegment,
-            &mut Node,
-            &mut BackgroundColor,
-            &mut Visibility,
-        )>,
-        Query<(
-            &SpeciesLedgerMiniRay,
-            &mut Node,
-            &mut BackgroundColor,
-            &mut UiTransform,
-        )>,
-        Query<(&SpeciesLedgerMiniLobe, &mut Node, &mut BackgroundColor)>,
-    )>,
+    mut miniatures: Query<(&SpeciesLedgerMiniature, &mut BackgroundColor)>,
+    mut mini_images: Query<(&SpeciesLedgerMiniImage, &mut ImageNode)>,
 ) {
     if !state.open {
         return;
     }
 
-    for (marker, mut background) in &mut mini_queries.p0() {
+    for (marker, mut background) in &mut miniatures {
         background.0 = if species_snapshot_by_id(&stats, marker.species).is_some() {
             Color::srgb(0.025, 0.045, 0.050)
         } else {
@@ -4026,108 +4165,288 @@ fn update_species_ledger_miniature_visuals(
         };
     }
 
-    for (marker, mut background) in &mut mini_queries.p1() {
-        let color = species_snapshot_by_id(&stats, marker.species)
-            .map(|snapshot| {
-                let rgba = cell_display_color(
-                    marker.species,
-                    snapshot.average_viability,
-                    snapshot.average_aggressiveness,
-                    snapshot.average_lysis,
-                );
-                Color::srgb(rgba[0], rgba[1], rgba[2])
-            })
-            .unwrap_or(Color::srgb(0.26, 0.32, 0.32));
-        background.0 = color;
-    }
-
-    for (marker, mut node, mut background, mut visibility) in &mut mini_queries.p2() {
+    let mut visible_species = Vec::new();
+    for (marker, mut image_node) in &mut mini_images {
+        visible_species.push(marker.species);
         let Some(snapshot) = species_snapshot_by_id(&stats, marker.species) else {
-            *visibility = Visibility::Hidden;
+            image_node.image = Handle::<Image>::default();
             continue;
         };
-        if marker.section >= snapshot.display_section_count {
-            *visibility = Visibility::Hidden;
-            continue;
+        let signature = species_miniature_signature(snapshot);
+        let refresh = cache
+            .signatures
+            .get(&marker.species)
+            .copied()
+            .is_none_or(|cached| cached != signature)
+            || !cache.handles.contains_key(&marker.species);
+        if refresh {
+            let handle = images.add(render_species_miniature(snapshot));
+            cache.handles.insert(marker.species, handle);
+            cache.signatures.insert(marker.species, signature);
         }
-        *visibility = Visibility::Visible;
-        let rgba = cell_display_color(
-            marker.species,
-            snapshot.average_viability,
-            snapshot.average_aggressiveness,
-            snapshot.average_lysis,
-        );
-        background.0 = Color::srgba(
-            (rgba[0] * 0.96).min(1.0),
-            (rgba[1] * 0.96).min(1.0),
-            (rgba[2] * 0.96).min(1.0),
-            0.72,
-        );
-        let section = marker.section as f32;
-        let diameter = (27.0 - section * 2.8).clamp(18.0, 27.0);
-        let count = snapshot.display_section_count.max(2) as f32;
-        let left_bias = (count - 1.0) * 5.0;
-        let center_x = 44.0 - left_bias - section * 13.5;
-        let center_y = 44.0 + (section * 1.73).sin() * 5.5;
-        node.left = px(center_x - diameter * 0.5);
-        node.top = px(center_y - diameter * 0.5);
-        node.width = px(diameter);
-        node.height = px(diameter);
+        if let Some(handle) = cache.handles.get(&marker.species) {
+            image_node.image = handle.clone();
+            image_node.color = Color::WHITE;
+        }
     }
 
-    for (marker, mut node, mut background, mut transform) in &mut mini_queries.p3() {
-        let Some(snapshot) = species_snapshot_by_id(&stats, marker.species) else {
-            continue;
-        };
-        let rgba = cell_display_color(
-            marker.species,
-            snapshot.average_viability,
-            snapshot.average_aggressiveness,
-            snapshot.average_lysis,
-        );
-        background.0 = Color::srgb(
-            (rgba[0] * 1.04).min(1.0),
-            (rgba[1] * 1.04).min(1.0),
-            (rgba[2] * 1.04).min(1.0),
-        );
-        let angle = marker.ray as f32 / 8.0 * std::f32::consts::TAU
-            + snapshot.display_angle_offsets[marker.ray];
-        let radius = snapshot.display_radii[marker.ray].clamp(0.25, 1.45);
-        let length = (13.0 + radius * 17.5).clamp(14.0, 32.0);
-        let thickness = (7.0 + radius * 4.0).clamp(7.5, 13.0);
-        let distance = 5.0 + length * 0.32 + radius * 5.0;
-        node.left = px(44.0 + angle.cos() * distance - length * 0.5);
-        node.top = px(44.0 - angle.sin() * distance - thickness * 0.5);
-        node.width = px(length);
-        node.height = px(thickness);
-        transform.rotation = Rot2::radians(-angle);
+    if cache.handles.len() > visible_species.len() + 64 {
+        let visible = visible_species
+            .into_iter()
+            .collect::<std::collections::HashSet<_>>();
+        cache.handles.retain(|species, _| visible.contains(species));
+        cache
+            .signatures
+            .retain(|species, _| visible.contains(species));
+    }
+}
+
+fn species_miniature_signature(snapshot: &SpeciesSnapshot) -> u64 {
+    let mut signature = snapshot.species as u64 ^ ((snapshot.display_section_count as u64) << 41);
+    let color = cell_display_color(
+        snapshot.species,
+        snapshot.average_viability,
+        snapshot.average_aggressiveness,
+        snapshot.average_lysis,
+    );
+    for value in color.into_iter().take(3) {
+        let q = (value.clamp(0.0, 1.0) * 255.0).round() as u64;
+        signature = signature.wrapping_mul(1_099_511_628_211).wrapping_add(q);
+    }
+    for ray in 0..8 {
+        let radius = (snapshot.average_radii[ray].clamp(0.25, 1.65) * 128.0).round() as u64;
+        let angle = ((snapshot.average_angle_offsets[ray].clamp(-0.45, 0.45) + 0.45) * 256.0)
+            .round() as u64;
+        signature = signature
+            .wrapping_mul(1_099_511_628_211)
+            .wrapping_add(radius)
+            .wrapping_mul(1_099_511_628_211)
+            .wrapping_add(angle);
+    }
+    signature
+}
+
+fn render_species_miniature(snapshot: &SpeciesSnapshot) -> Image {
+    const SIZE: u32 = 72;
+    let mut data = vec![0_u8; (SIZE * SIZE * 4) as usize];
+    let base = cell_display_color(
+        snapshot.species,
+        snapshot.average_viability,
+        snapshot.average_aggressiveness,
+        snapshot.average_lysis,
+    );
+    let body = mini_rgba(base[0] * 0.98, base[1] * 0.98, base[2] * 0.98, 0.84);
+    let membrane = mini_rgba(
+        (base[0] * 1.17).min(1.0),
+        (base[1] * 1.17).min(1.0),
+        (base[2] * 1.17).min(1.0),
+        0.98,
+    );
+    let core = mini_rgba(0.94, 1.0, 0.92, 0.92);
+
+    let count = snapshot.display_section_count.clamp(1, 4) as usize;
+    let scale = if count == 1 { 21.0 } else { 15.2 };
+    let spacing = if count == 1 { 0.0 } else { scale * 0.88 };
+    let total_width = spacing * (count.saturating_sub(1) as f32);
+    let mut centers = Vec::with_capacity(count);
+    for section in 0..count {
+        let section_f = section as f32;
+        centers.push(Vec2::new(
+            SIZE as f32 * 0.5 + total_width * 0.5 - section_f * spacing,
+            SIZE as f32 * 0.5 + (section_f * 1.31 + snapshot.species as f32 * 0.013).sin() * 3.0,
+        ));
     }
 
-    for (marker, mut node, mut background) in &mut mini_queries.p4() {
-        let Some(snapshot) = species_snapshot_by_id(&stats, marker.species) else {
-            continue;
-        };
-        let rgba = cell_display_color(
-            marker.species,
-            snapshot.average_viability,
-            snapshot.average_aggressiveness,
-            snapshot.average_lysis,
-        );
-        background.0 = Color::srgb(
-            (rgba[0] * 1.08).min(1.0),
-            (rgba[1] * 1.08).min(1.0),
-            (rgba[2] * 1.08).min(1.0),
-        );
-        let angle = marker.ray as f32 / 8.0 * std::f32::consts::TAU
-            + snapshot.display_angle_offsets[marker.ray];
-        let radius = snapshot.display_radii[marker.ray].clamp(0.25, 1.45);
-        let size = (7.0 + radius * 8.0).clamp(8.0, 18.0);
-        let distance = (13.0 + radius * 13.5).clamp(17.0, 31.5);
-        node.left = px(44.0 + angle.cos() * distance - size * 0.5);
-        node.top = px(44.0 - angle.sin() * distance - size * 0.5);
-        node.width = px(size);
-        node.height = px(size);
+    for pair in centers.windows(2) {
+        draw_mini_capsule(&mut data, SIZE, pair[0], pair[1], scale * 0.58, body);
     }
+
+    for (section, center) in centers.iter().enumerate().rev() {
+        let section_scale = scale * (1.0 - section as f32 * 0.045).max(0.82);
+        let vertices = species_miniature_vertices(snapshot, *center, section_scale);
+        draw_mini_polygon(&mut data, SIZE, &vertices, body, membrane);
+        draw_mini_disc(&mut data, SIZE, *center, section_scale * 0.34, core);
+    }
+
+    let mut image = Image::new_fill(
+        Extent3d {
+            width: SIZE,
+            height: SIZE,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        &[0, 0, 0, 0],
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
+    );
+    image.data = Some(data);
+    image
+}
+
+fn species_miniature_vertices(snapshot: &SpeciesSnapshot, center: Vec2, scale: f32) -> [Vec2; 8] {
+    std::array::from_fn(|ray| {
+        let angle = ray as f32 / 8.0 * std::f32::consts::TAU + snapshot.average_angle_offsets[ray];
+        let radius = snapshot.average_radii[ray].clamp(0.30, 1.62);
+        center + Vec2::new(angle.cos(), -angle.sin()) * scale * radius
+    })
+}
+
+fn draw_mini_polygon(
+    data: &mut [u8],
+    size: u32,
+    vertices: &[Vec2; 8],
+    body: [u8; 4],
+    membrane: [u8; 4],
+) {
+    let (min, max) = mini_bounds(vertices, size, 3.0);
+    for y in min.y as u32..=max.y as u32 {
+        for x in min.x as u32..=max.x as u32 {
+            let point = Vec2::new(x as f32 + 0.5, y as f32 + 0.5);
+            if !point_in_polygon(point, vertices) {
+                continue;
+            }
+            let edge = polygon_edge_distance(point, vertices);
+            let t = (1.0 - edge / 2.4).clamp(0.0, 1.0);
+            let color = if t > 0.0 {
+                mini_lerp_rgba(body, membrane, t)
+            } else {
+                body
+            };
+            write_mini_pixel(data, size, x, y, color);
+        }
+    }
+}
+
+fn draw_mini_capsule(data: &mut [u8], size: u32, a: Vec2, b: Vec2, radius: f32, color: [u8; 4]) {
+    let min = a.min(b) - Vec2::splat(radius + 2.0);
+    let max = a.max(b) + Vec2::splat(radius + 2.0);
+    let min_x = min.x.floor().clamp(0.0, (size - 1) as f32) as u32;
+    let min_y = min.y.floor().clamp(0.0, (size - 1) as f32) as u32;
+    let max_x = max.x.ceil().clamp(0.0, (size - 1) as f32) as u32;
+    let max_y = max.y.ceil().clamp(0.0, (size - 1) as f32) as u32;
+    for y in min_y..=max_y {
+        for x in min_x..=max_x {
+            let point = Vec2::new(x as f32 + 0.5, y as f32 + 0.5);
+            let distance = distance_to_segment(point, a, b);
+            if distance <= radius {
+                let edge = (1.0 - distance / radius.max(0.1)).clamp(0.0, 1.0);
+                let mut faded = color;
+                faded[3] = ((color[3] as f32) * (0.55 + edge * 0.35)).round() as u8;
+                write_mini_pixel(data, size, x, y, faded);
+            }
+        }
+    }
+}
+
+fn draw_mini_disc(data: &mut [u8], size: u32, center: Vec2, radius: f32, color: [u8; 4]) {
+    let min_x = (center.x - radius - 1.0)
+        .floor()
+        .clamp(0.0, (size - 1) as f32) as u32;
+    let min_y = (center.y - radius - 1.0)
+        .floor()
+        .clamp(0.0, (size - 1) as f32) as u32;
+    let max_x = (center.x + radius + 1.0)
+        .ceil()
+        .clamp(0.0, (size - 1) as f32) as u32;
+    let max_y = (center.y + radius + 1.0)
+        .ceil()
+        .clamp(0.0, (size - 1) as f32) as u32;
+    for y in min_y..=max_y {
+        for x in min_x..=max_x {
+            let point = Vec2::new(x as f32 + 0.5, y as f32 + 0.5);
+            if point.distance(center) <= radius {
+                write_mini_pixel(data, size, x, y, color);
+            }
+        }
+    }
+}
+
+fn mini_bounds(vertices: &[Vec2; 8], size: u32, padding: f32) -> (Vec2, Vec2) {
+    let mut min = Vec2::splat(f32::MAX);
+    let mut max = Vec2::splat(f32::MIN);
+    for vertex in vertices {
+        min = min.min(*vertex);
+        max = max.max(*vertex);
+    }
+    (
+        (min - Vec2::splat(padding)).clamp(Vec2::ZERO, Vec2::splat((size - 1) as f32)),
+        (max + Vec2::splat(padding)).clamp(Vec2::ZERO, Vec2::splat((size - 1) as f32)),
+    )
+}
+
+fn point_in_polygon(point: Vec2, vertices: &[Vec2; 8]) -> bool {
+    let mut inside = false;
+    let mut previous = vertices.len() - 1;
+    for current in 0..vertices.len() {
+        let a = vertices[current];
+        let b = vertices[previous];
+        if (a.y > point.y) != (b.y > point.y) {
+            let dy = b.y - a.y;
+            if dy.abs() <= 0.0001 {
+                previous = current;
+                continue;
+            }
+            let x_intersect = (b.x - a.x) * (point.y - a.y) / dy + a.x;
+            if point.x < x_intersect {
+                inside = !inside;
+            }
+        }
+        previous = current;
+    }
+    inside
+}
+
+fn polygon_edge_distance(point: Vec2, vertices: &[Vec2; 8]) -> f32 {
+    let mut distance = f32::MAX;
+    for current in 0..vertices.len() {
+        let next = (current + 1) % vertices.len();
+        distance = distance.min(distance_to_segment(
+            point,
+            vertices[current],
+            vertices[next],
+        ));
+    }
+    distance
+}
+
+fn distance_to_segment(point: Vec2, a: Vec2, b: Vec2) -> f32 {
+    let ab = b - a;
+    let t = ((point - a).dot(ab) / ab.length_squared().max(0.0001)).clamp(0.0, 1.0);
+    point.distance(a + ab * t)
+}
+
+fn mini_lerp_rgba(a: [u8; 4], b: [u8; 4], t: f32) -> [u8; 4] {
+    std::array::from_fn(|channel| {
+        (a[channel] as f32 + (b[channel] as f32 - a[channel] as f32) * t)
+            .round()
+            .clamp(0.0, 255.0) as u8
+    })
+}
+
+fn mini_rgba(r: f32, g: f32, b: f32, a: f32) -> [u8; 4] {
+    [
+        (r.clamp(0.0, 1.0) * 255.0).round() as u8,
+        (g.clamp(0.0, 1.0) * 255.0).round() as u8,
+        (b.clamp(0.0, 1.0) * 255.0).round() as u8,
+        (a.clamp(0.0, 1.0) * 255.0).round() as u8,
+    ]
+}
+
+fn write_mini_pixel(data: &mut [u8], size: u32, x: u32, y: u32, color: [u8; 4]) {
+    let index = ((y * size + x) * 4) as usize;
+    let src_a = color[3] as f32 / 255.0;
+    let dst_a = data[index + 3] as f32 / 255.0;
+    let out_a = src_a + dst_a * (1.0 - src_a);
+    if out_a <= f32::EPSILON {
+        return;
+    }
+    for channel in 0..3 {
+        let src = color[channel] as f32 / 255.0;
+        let dst = data[index + channel] as f32 / 255.0;
+        data[index + channel] =
+            (((src * src_a + dst * dst_a * (1.0 - src_a)) / out_a) * 255.0).round() as u8;
+    }
+    data[index + 3] = (out_a * 255.0).round() as u8;
 }
 #[allow(dead_code)]
 fn update_species_ledger_details(
@@ -4185,7 +4504,9 @@ fn update_species_ledger_details(
 fn species_ledger_scroll_system(
     time: Res<Time>,
     mut mouse_wheel: MessageReader<MouseWheel>,
+    mouse: Res<ButtonInput<MouseButton>>,
     mut state: ResMut<SpeciesLedgerUiState>,
+    mut drag: ResMut<SpeciesLedgerDragState>,
     stats: Res<SpeciesLedgerStats>,
     windows: Query<&Window, With<PrimaryWindow>>,
     mut scroll_area: Query<(&ComputedNode, &mut ScrollPosition), With<SpeciesLedgerScrollArea>>,
@@ -4193,21 +4514,30 @@ fn species_ledger_scroll_system(
     mut scrollbar_thumbs: Query<&mut Node, With<SpeciesLedgerScrollbarThumb>>,
 ) {
     if !state.open {
+        drag.scrollbar_dragging = false;
+        drag.scroll_initialized = false;
+        drag.scroll_target_y = 0.0;
         for mut visibility in &mut scrollbar_tracks {
             *visibility = Visibility::Hidden;
         }
         return;
     }
 
-    let cursor_over_ledger = windows
-        .single()
-        .ok()
-        .and_then(|window| {
-            window
-                .cursor_position()
-                .map(|cursor| cursor_over_species_ledger(window, cursor))
-        })
+    let window = windows.single().ok();
+    let cursor = window.and_then(Window::cursor_position);
+    let cursor_over_ledger = window
+        .zip(cursor)
+        .map(|(window, cursor)| cursor_over_species_ledger(window, cursor))
         .unwrap_or(false);
+    if mouse.just_pressed(MouseButton::Left) {
+        drag.scrollbar_dragging = window
+            .zip(cursor)
+            .and_then(|(window, cursor)| species_ledger_scrollbar_fraction(window, cursor))
+            .is_some();
+    }
+    if !mouse.pressed(MouseButton::Left) {
+        drag.scrollbar_dragging = false;
+    }
 
     let mut delta = 0.0;
     for event in mouse_wheel.read() {
@@ -4215,38 +4545,62 @@ fn species_ledger_scroll_system(
             continue;
         }
         let scale = match event.unit {
-            MouseScrollUnit::Line => 30.0,
-            MouseScrollUnit::Pixel => 1.0,
+            MouseScrollUnit::Line => SPECIES_LEDGER_WHEEL_LINE_SCROLL,
+            MouseScrollUnit::Pixel => SPECIES_LEDGER_WHEEL_PIXEL_SCROLL,
         };
         delta -= event.y * scale;
     }
 
-    let target = state.scroll_target_species.and_then(|species| {
+    let target_index = state.scroll_target_species.and_then(|species| {
         stats
             .snapshots
             .iter()
             .position(|snapshot| snapshot.species == species)
-            .map(|index| (index / 3) as f32 * 156.0)
     });
 
     for (computed, mut scroll_position) in &mut scroll_area {
-        let row_count = stats.snapshots.len().div_ceil(3).max(1);
-        let estimated_content_height = row_count as f32 * 156.0 + 18.0;
+        let estimated_content_height = species_ledger_content_height(stats.snapshots.len());
         let computed_content_height = computed.content_size().y * computed.inverse_scale_factor();
         let view_height = (computed.size().y * computed.inverse_scale_factor()).max(1.0);
         let content_height = computed_content_height.max(estimated_content_height);
         let max_offset = (content_height - view_height).max(0.0);
-        if delta != 0.0 {
-            scroll_position.y = (scroll_position.y + delta).clamp(0.0, max_offset);
+        let dragged_fraction = if drag.scrollbar_dragging {
+            window
+                .zip(cursor)
+                .and_then(|(window, cursor)| species_ledger_scrollbar_fraction(window, cursor))
+        } else {
+            None
+        };
+
+        if !drag.scroll_initialized {
+            drag.scroll_target_y = scroll_position.y.clamp(0.0, max_offset);
+            drag.scroll_initialized = true;
+        }
+        drag.scroll_target_y = drag.scroll_target_y.clamp(0.0, max_offset);
+
+        let mut follow_rate = SPECIES_LEDGER_SCROLL_FOLLOW;
+        if let Some(fraction) = dragged_fraction {
+            drag.scroll_target_y = (fraction * max_offset).clamp(0.0, max_offset);
+            follow_rate = SPECIES_LEDGER_SCROLLBAR_FOLLOW;
             state.scroll_target_species = None;
-        } else if let Some(target) = target {
-            let target = target.clamp(0.0, max_offset);
-            let follow = 1.0 - (-8.0 * time.delta_secs()).exp();
-            scroll_position.y += (target - scroll_position.y) * follow;
+        } else if delta != 0.0 {
+            drag.scroll_target_y = (drag.scroll_target_y + delta).clamp(0.0, max_offset);
+            state.scroll_target_species = None;
+        } else if let Some(index) = target_index {
+            let target = species_ledger_scroll_target_y(index, view_height).clamp(0.0, max_offset);
+            drag.scroll_target_y = target;
+            follow_rate = SPECIES_LEDGER_AUTO_SCROLL_FOLLOW;
             if (scroll_position.y - target).abs() < 2.0 {
                 state.scroll_target_species = None;
             }
         }
+
+        let follow = 1.0 - (-follow_rate * time.delta_secs()).exp();
+        scroll_position.y += (drag.scroll_target_y - scroll_position.y) * follow;
+        if (scroll_position.y - drag.scroll_target_y).abs() < 0.35 {
+            scroll_position.y = drag.scroll_target_y;
+        }
+        scroll_position.y = scroll_position.y.clamp(0.0, max_offset);
 
         let visible_ratio = (view_height / content_height).clamp(0.0, 1.0);
         let thumb_height = (visible_ratio * 100.0).clamp(8.0, 100.0);
