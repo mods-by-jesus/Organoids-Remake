@@ -40,6 +40,7 @@ impl Plugin for MenuPlugin {
 struct MenuUiState {
     advanced_open: bool,
     shapes_open: bool,
+    keybinds_open: bool,
 }
 
 #[derive(Component)]
@@ -58,6 +59,7 @@ struct PresetButton(MenuPreset);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum MenuPreset {
+    MicroTest,
     Simulator,
     Balanced,
     Performance,
@@ -97,6 +99,7 @@ enum MenuTextValue {
 enum MenuSection {
     Advanced,
     Shapes,
+    Keybinds,
 }
 
 #[derive(Component)]
@@ -169,6 +172,7 @@ fn setup_menu(
 ) {
     menu_state.advanced_open = false;
     menu_state.shapes_open = false;
+    menu_state.keybinds_open = false;
     let font = asset_server.load(UI_FONT);
 
     commands
@@ -345,6 +349,31 @@ fn spawn_settings_column(
                     }
                 });
 
+            spawn_keybinds_toggle(column, font.clone());
+            column
+                .spawn((
+                    Node {
+                        width: percent(100),
+                        display: Display::None,
+                        flex_direction: FlexDirection::Column,
+                        row_gap: px(8),
+                        ..default()
+                    },
+                    MenuSectionBody {
+                        section: MenuSection::Keybinds,
+                    },
+                ))
+                .with_children(|keybinds| {
+                    spawn_keybind_row(keybinds, font.clone(), "Пауза", "Space");
+                    spawn_keybind_row(keybinds, font.clone(), "Паспорт клетки", "Tab");
+                    spawn_keybind_row(keybinds, font.clone(), "Реестр видов", "Q");
+                    spawn_keybind_row(keybinds, font.clone(), "Биожурнал выбранного вида", "E");
+                    spawn_keybind_row(keybinds, font.clone(), "Панель скорости", "C");
+                    spawn_keybind_row(keybinds, font.clone(), "Меню паузы", "Esc");
+                    spawn_keybind_row(keybinds, font.clone(), "Камера", "W A S D + колесо");
+                    spawn_keybind_row(keybinds, font.clone(), "Скорость симуляции", "1-7");
+                });
+
             spawn_advanced_toggle(column, font.clone());
             column
                 .spawn((
@@ -485,6 +514,79 @@ fn spawn_shapes_toggle(parent: &mut ChildSpawnerCommands, font: Handle<Font>) {
         ));
 }
 
+fn spawn_keybinds_toggle(parent: &mut ChildSpawnerCommands, font: Handle<Font>) {
+    parent
+        .spawn((
+            Button,
+            Node {
+                width: percent(100),
+                height: px(36),
+                border: UiRect::all(px(1)),
+                justify_content: JustifyContent::Center,
+                align_items: AlignItems::Center,
+                ..default()
+            },
+            BorderColor::all(Color::srgb(0.28, 0.48, 0.54)),
+            BackgroundColor(NORMAL_BG),
+            MenuSectionToggle {
+                section: MenuSection::Keybinds,
+            },
+        ))
+        .with_child((
+            Text::new("Кейбинды"),
+            TextFont {
+                font,
+                font_size: 14.0,
+                ..default()
+            },
+            TextColor(Color::srgb(0.72, 0.86, 0.88)),
+        ));
+}
+
+fn spawn_keybind_row(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    action: &str,
+    key: &str,
+) {
+    parent
+        .spawn((
+            Node {
+                width: percent(100),
+                min_height: px(30),
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::SpaceBetween,
+                column_gap: px(10),
+                padding: UiRect::axes(px(10), px(5)),
+                border: UiRect::left(px(3)),
+                ..default()
+            },
+            BorderColor::all(Color::srgb(0.30, 0.58, 0.64)),
+            BackgroundColor(Color::srgb(0.032, 0.052, 0.060)),
+        ))
+        .with_children(|row| {
+            row.spawn((
+                Text::new(action),
+                TextFont {
+                    font: font.clone(),
+                    font_size: 13.5,
+                    ..default()
+                },
+                TextColor(Color::srgb(0.72, 0.82, 0.84)),
+            ));
+            row.spawn((
+                Text::new(key),
+                TextFont {
+                    font,
+                    font_size: 14.0,
+                    ..default()
+                },
+                TextColor(Color::srgb(0.88, 1.0, 0.96)),
+            ));
+        });
+}
+
 fn spawn_random_geometry_row(parent: &mut ChildSpawnerCommands, font: Handle<Font>, enabled: bool) {
     parent
         .spawn((
@@ -612,6 +714,13 @@ fn spawn_launch_column(parent: &mut ChildSpawnerCommands, font: Handle<Font>, co
         ))
         .with_children(|column| {
             spawn_section_title(column, font.clone(), "Пресеты");
+            spawn_preset_button(
+                column,
+                font.clone(),
+                MenuPreset::MicroTest,
+                "Микро-тест",
+                "1 клетка, 100 еды, 1 кормушка",
+            );
             spawn_preset_button(
                 column,
                 font.clone(),
@@ -1127,12 +1236,21 @@ fn menu_interaction_system(
                     menu_state.advanced_open = !menu_state.advanced_open;
                     if menu_state.advanced_open {
                         menu_state.shapes_open = false;
+                        menu_state.keybinds_open = false;
                     }
                 }
                 MenuSection::Shapes => {
                     menu_state.shapes_open = !menu_state.shapes_open;
                     if menu_state.shapes_open {
                         menu_state.advanced_open = false;
+                        menu_state.keybinds_open = false;
+                    }
+                }
+                MenuSection::Keybinds => {
+                    menu_state.keybinds_open = !menu_state.keybinds_open;
+                    if menu_state.keybinds_open {
+                        menu_state.advanced_open = false;
+                        menu_state.shapes_open = false;
                     }
                 }
             }
@@ -1344,7 +1462,8 @@ fn menu_section_visibility_system(
         node.display = match section.section {
             MenuSection::Advanced if menu_state.advanced_open => Display::Flex,
             MenuSection::Shapes if menu_state.shapes_open => Display::Flex,
-            MenuSection::Advanced | MenuSection::Shapes => Display::None,
+            MenuSection::Keybinds if menu_state.keybinds_open => Display::Flex,
+            MenuSection::Advanced | MenuSection::Shapes | MenuSection::Keybinds => Display::None,
         };
     }
 }
@@ -1480,6 +1599,19 @@ fn sync_menu_audio_sliders(
 
 fn apply_preset(preset: MenuPreset, config: &mut SimConfig) {
     match preset {
+        MenuPreset::MicroTest => {
+            config.cells = 1;
+            config.food = 100;
+            config.width = 2_200.0;
+            config.height = 1_400.0;
+            config.arena_shape = ArenaShape::Rectangle;
+            config.obstacles = 0;
+            config.food_growers = 1;
+            config.collision_stiffness = 500.0;
+            config.collision_damping = 15.0;
+            config.random_cell_geometry = false;
+            config.segmented_cells = true;
+        }
         MenuPreset::Simulator => {
             config.cells = 10_000;
             config.food = 3_000;
@@ -1521,8 +1653,8 @@ fn apply_preset(preset: MenuPreset, config: &mut SimConfig) {
 }
 
 fn clamp_launch_config(config: &mut SimConfig) {
-    config.cells = config.cells.max(10);
-    config.food = config.food.max(10);
+    config.cells = config.cells.max(1);
+    config.food = config.food.max(1);
     config.width = config.width.max(1_000.0);
     config.height = config.height.max(1_000.0);
     config.obstacles = config.obstacles.min(500);

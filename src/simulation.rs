@@ -80,6 +80,30 @@ const LYSIS_ACTIVE_THRESHOLD: f32 = 8.0;
 const SPECIES_EPITHET_SLOTS: u32 = 10_000;
 const SPECIES_GENUS_SLOTS: u32 = 1_000;
 const SPECIES_CLASS_STRIDE: u32 = SPECIES_EPITHET_SLOTS * SPECIES_GENUS_SLOTS;
+const TAXONOMY_SPECIES_RADIUS_SCALE: f32 = 8.0;
+const TAXONOMY_GENUS_RADIUS_SCALE: f32 = 5.0;
+const TAXONOMY_SPECIES_OFFSET_BINS: f32 = 5.0;
+const TAXONOMY_GENUS_OFFSET_BINS: f32 = 3.0;
+const TAXONOMY_SPECIES_SECTION_SIZE_BINS: u32 = 6;
+const TAXONOMY_GENUS_SECTION_SIZE_BINS: u32 = 3;
+const TAXONOMY_SPECIES_SPEED_BINS: u32 = 7;
+const TAXONOMY_GENUS_SPEED_BINS: u32 = 4;
+const TAXONOMY_SPECIES_TURN_BINS: u32 = 7;
+const TAXONOMY_GENUS_TURN_BINS: u32 = 3;
+const TAXONOMY_SPECIES_PERCEPTION_BINS: u32 = 6;
+const TAXONOMY_GENUS_PERCEPTION_BINS: u32 = 3;
+const TAXONOMY_SPECIES_PERCENT_BINS: u32 = 6;
+const TAXONOMY_GENUS_PERCENT_BINS: u32 = 3;
+const TAXONOMY_SPECIES_MUTATION_BINS: u32 = 5;
+const TAXONOMY_GENUS_MUTATION_BINS: u32 = 3;
+const TAXONOMY_SPECIES_SIZE_BINS: u32 = 7;
+const TAXONOMY_GENUS_SIZE_BINS: u32 = 4;
+const TAXONOMY_SPECIES_LYSIS_BINS: u32 = 4;
+const TAXONOMY_GENUS_LYSIS_BINS: u32 = 2;
+const TAXONOMY_SPECIES_SPACING_BINS: u32 = 18;
+const TAXONOMY_GENUS_SPACING_BINS: u32 = 8;
+const TAXONOMY_SPECIES_BEND_BINS: u32 = 8;
+const TAXONOMY_GENUS_BEND_BINS: u32 = 4;
 const LYSIS_COOLDOWN_MIN: f32 = 0.34;
 const LYSIS_COOLDOWN_MAX: f32 = 1.05;
 const LYSIS_REACH_MIN: f32 = 0.65;
@@ -396,7 +420,7 @@ fn strict_gene_bin(value: f32, min: f32, max: f32, bins: u32) -> u32 {
         return 0;
     }
     let normalized = ((value - min) / (max - min).max(0.001)).clamp(0.0, 1.0);
-    (normalized * bins as f32).round() as u32
+    (normalized * bins as f32).floor() as u32
 }
 
 fn lysis_size_damage_multiplier(attacker_biomass: f32, victim_biomass: f32) -> f32 {
@@ -5170,6 +5194,121 @@ impl CellStore {
         *hash = hash.wrapping_mul(16777619);
     }
 
+    fn taxonomy_class_bin(class: CellShapeClass) -> u32 {
+        match class {
+            CellShapeClass::Coccus => 0,
+            CellShapeClass::Bacillus => 1,
+            CellShapeClass::Filament => 2,
+            CellShapeClass::Spirillum => 3,
+            CellShapeClass::Vibrio => 4,
+            CellShapeClass::Diplococcus => 5,
+            CellShapeClass::Fusiform => 6,
+            CellShapeClass::Cuboid => 7,
+            CellShapeClass::Triquetrum => 8,
+            CellShapeClass::Stauromorph => 9,
+            CellShapeClass::Lancetiform => 10,
+            CellShapeClass::Placoid => 11,
+            CellShapeClass::Lobatum => 12,
+        }
+    }
+
+    fn taxonomy_section_source(
+        &self,
+        index: usize,
+        section: u8,
+    ) -> ([f32; SOFT_BODY_POINTS], [f32; SOFT_BODY_POINTS]) {
+        match section {
+            0 => (self.base_radii[index], self.angle_offsets[index]),
+            1 => (self.tail_base_radii[index], self.tail_angle_offsets[index]),
+            _ => {
+                let extra = self.extra_sections[index][section as usize - 2];
+                (extra.base_radii, extra.angle_offsets)
+            }
+        }
+    }
+
+    fn taxonomy_hash_section_profile(
+        species_hash: &mut u32,
+        genus_hash: &mut u32,
+        section: u8,
+        radii: [f32; SOFT_BODY_POINTS],
+        offsets: [f32; SOFT_BODY_POINTS],
+        head_avg: f32,
+    ) {
+        let avg = (radii.iter().sum::<f32>() / SOFT_BODY_POINTS as f32).max(0.1);
+        let section_shape = analyze_cell_shape_class(&SoftBodyCell {
+            speed: 0.0,
+            energy: 0.0,
+            agility: 0.0,
+            perception: 0.0,
+            persistence: 0.0,
+            mutation_factor: 0.0,
+            size: avg,
+            base_radii: radii,
+            current_radii: radii,
+            angle_offsets: offsets,
+        });
+        Self::taxonomy_hash_step(
+            species_hash,
+            Self::taxonomy_class_bin(section_shape) + 701 + section as u32 * 29,
+        );
+        Self::taxonomy_hash_step(
+            genus_hash,
+            Self::taxonomy_class_bin(section_shape) + 701 + section as u32 * 29,
+        );
+
+        let size_ratio = avg / head_avg.max(0.1);
+        Self::taxonomy_hash_step(
+            species_hash,
+            strict_gene_bin(size_ratio, 0.45, 1.85, TAXONOMY_SPECIES_SECTION_SIZE_BINS)
+                + 739
+                + section as u32 * 31,
+        );
+        Self::taxonomy_hash_step(
+            genus_hash,
+            strict_gene_bin(size_ratio, 0.45, 1.85, TAXONOMY_GENUS_SECTION_SIZE_BINS)
+                + 739
+                + section as u32 * 31,
+        );
+
+        for ray in 0..SOFT_BODY_POINTS {
+            let normalized = radii[ray] / avg;
+            let species_radius = (normalized * TAXONOMY_SPECIES_RADIUS_SCALE)
+                .round()
+                .clamp(2.0, 18.0) as u32;
+            let genus_radius = (normalized * TAXONOMY_GENUS_RADIUS_SCALE)
+                .round()
+                .clamp(1.0, 12.0) as u32;
+            Self::taxonomy_hash_step(
+                species_hash,
+                species_radius + 773 + section as u32 * 53 + ray as u32,
+            );
+            Self::taxonomy_hash_step(
+                genus_hash,
+                genus_radius + 773 + section as u32 * 53 + ray as u32,
+            );
+
+            let species_offset = ((offsets[ray] + SOFT_BODY_MAX_ANGLE_OFFSET)
+                / (SOFT_BODY_MAX_ANGLE_OFFSET * 2.0)
+                * TAXONOMY_SPECIES_OFFSET_BINS)
+                .round()
+                .clamp(0.0, TAXONOMY_SPECIES_OFFSET_BINS) as u32;
+            let genus_offset = ((offsets[ray] + SOFT_BODY_MAX_ANGLE_OFFSET)
+                / (SOFT_BODY_MAX_ANGLE_OFFSET * 2.0)
+                * TAXONOMY_GENUS_OFFSET_BINS)
+                .round()
+                .clamp(0.0, TAXONOMY_GENUS_OFFSET_BINS) as u32;
+            Self::taxonomy_hash_step(
+                species_hash,
+                species_offset + 991 + section as u32 * 41 + ray as u32,
+            );
+            Self::taxonomy_hash_step(
+                genus_hash,
+                genus_offset + 991 + section as u32 * 41 + ray as u32,
+            );
+        }
+    }
+
     fn taxonomy_species_id(&self, index: usize) -> u32 {
         let avg = (self.base_radii[index].iter().sum::<f32>() / SOFT_BODY_POINTS as f32).max(0.1);
         let class = if self.section_count[index] >= 2 {
@@ -5185,41 +5324,26 @@ impl CellStore {
         } else {
             analyze_cell_shape_class(&self.soft_body_profile(index))
         };
-        let class_bin: u32 = match class {
-            CellShapeClass::Coccus => 0,
-            CellShapeClass::Bacillus => 1,
-            CellShapeClass::Filament => 2,
-            CellShapeClass::Spirillum => 3,
-            CellShapeClass::Vibrio => 4,
-            CellShapeClass::Diplococcus => 5,
-            CellShapeClass::Fusiform => 6,
-            CellShapeClass::Cuboid => 7,
-            CellShapeClass::Triquetrum => 8,
-            CellShapeClass::Stauromorph => 9,
-            CellShapeClass::Lancetiform => 10,
-            CellShapeClass::Placoid => 11,
-            CellShapeClass::Lobatum => 12,
-        };
+        let class_bin = Self::taxonomy_class_bin(class);
         let mut species_hash = 2166136261u32;
         let mut genus_hash = 2166136261u32;
-        for radius in self.base_radii[index] {
-            let normalized = radius / avg;
-            let quantized = (normalized * 12.0).round().clamp(4.0, 24.0) as u32;
-            let genus_quantized = (normalized * 9.0).round().clamp(3.0, 18.0) as u32;
-            Self::taxonomy_hash_step(&mut species_hash, quantized);
-            Self::taxonomy_hash_step(&mut genus_hash, genus_quantized);
+        for section in 0..self.section_count[index] {
+            let (radii, offsets) = self.taxonomy_section_source(index, section);
+            Self::taxonomy_hash_section_profile(
+                &mut species_hash,
+                &mut genus_hash,
+                section,
+                radii,
+                offsets,
+                avg,
+            );
         }
-        for offset in self.angle_offsets[index] {
-            let quantized =
-                ((offset + SOFT_BODY_MAX_ANGLE_OFFSET) / (SOFT_BODY_MAX_ANGLE_OFFSET * 2.0) * 8.0)
-                    .round()
-                    .clamp(0.0, 8.0) as u32;
-            let genus_quantized =
-                ((offset + SOFT_BODY_MAX_ANGLE_OFFSET) / (SOFT_BODY_MAX_ANGLE_OFFSET * 2.0) * 5.0)
-                    .round()
-                    .clamp(0.0, 5.0) as u32;
-            Self::taxonomy_hash_step(&mut species_hash, quantized + 31);
-            Self::taxonomy_hash_step(&mut genus_hash, genus_quantized + 31);
+        if self.section_count[index] >= 2 {
+            for edge in 0..(self.section_count[index] as usize - 1) {
+                let parent = self.section_parents[index][edge].min(edge as u8);
+                Self::taxonomy_hash_step(&mut species_hash, parent as u32 + 1_229 + edge as u32);
+                Self::taxonomy_hash_step(&mut genus_hash, parent as u32 + 1_229 + edge as u32);
+            }
         }
         let trophic_bin = if self.aggressiveness[index] < 40.0 {
             0
@@ -5233,25 +5357,45 @@ impl CellStore {
                 self.lysis[index],
                 LYSIS_ACTIVE_THRESHOLD,
                 CELL_LYSIS_DISPLAY_MAX,
-                7,
+                TAXONOMY_SPECIES_LYSIS_BINS,
+            )
+        } else {
+            0
+        };
+        let genus_lysis_bin = if self.lysis[index] >= LYSIS_ACTIVE_THRESHOLD {
+            1 + strict_gene_bin(
+                self.lysis[index],
+                LYSIS_ACTIVE_THRESHOLD,
+                CELL_LYSIS_DISPLAY_MAX,
+                TAXONOMY_GENUS_LYSIS_BINS,
             )
         } else {
             0
         };
         let gene_bins = [
-            strict_gene_bin(self.speed[index], SPEED_GENE_MIN, SPEED_GENE_MAX, 12),
-            strict_gene_bin(self.turn_speed[index], TURN_GENE_MIN, TURN_GENE_MAX, 12),
+            strict_gene_bin(
+                self.speed[index],
+                SPEED_GENE_MIN,
+                SPEED_GENE_MAX,
+                TAXONOMY_SPECIES_SPEED_BINS,
+            ),
+            strict_gene_bin(
+                self.turn_speed[index],
+                TURN_GENE_MIN,
+                TURN_GENE_MAX,
+                TAXONOMY_SPECIES_TURN_BINS,
+            ),
             strict_gene_bin(
                 self.perception[index],
                 PERCEPTION_GENE_MIN,
                 PERCEPTION_GENE_MAX,
-                10,
+                TAXONOMY_SPECIES_PERCEPTION_BINS,
             ),
             strict_gene_bin(
                 self.persistence[index],
                 PERSISTENCE_GENE_MIN,
                 PERSISTENCE_GENE_MAX,
-                10,
+                TAXONOMY_SPECIES_PERCENT_BINS,
             ),
             trophic_bin,
             lysis_bin,
@@ -5259,13 +5403,13 @@ impl CellStore {
                 self.mutation_susceptibility[index],
                 0.0,
                 CELL_MUTATION_DISPLAY_MAX,
-                8,
+                TAXONOMY_SPECIES_MUTATION_BINS,
             ),
             strict_gene_bin(
                 self.max_base_radius(index),
                 CELL_SIZE_GENE_MIN,
                 CELL_SIZE_GENE_MAX,
-                12,
+                TAXONOMY_SPECIES_SIZE_BINS,
             ),
             self.section_count[index] as u32,
         ];
@@ -5273,32 +5417,42 @@ impl CellStore {
             Self::taxonomy_hash_step(&mut species_hash, bin.clamp(0, 31) + 97 + slot as u32 * 37);
         }
         let genus_bins = [
-            strict_gene_bin(self.speed[index], SPEED_GENE_MIN, SPEED_GENE_MAX, 6),
-            strict_gene_bin(self.turn_speed[index], TURN_GENE_MIN, TURN_GENE_MAX, 6),
+            strict_gene_bin(
+                self.speed[index],
+                SPEED_GENE_MIN,
+                SPEED_GENE_MAX,
+                TAXONOMY_GENUS_SPEED_BINS,
+            ),
+            strict_gene_bin(
+                self.turn_speed[index],
+                TURN_GENE_MIN,
+                TURN_GENE_MAX,
+                TAXONOMY_GENUS_TURN_BINS,
+            ),
             strict_gene_bin(
                 self.perception[index],
                 PERCEPTION_GENE_MIN,
                 PERCEPTION_GENE_MAX,
-                5,
+                TAXONOMY_GENUS_PERCEPTION_BINS,
             ),
             strict_gene_bin(
                 self.persistence[index],
                 PERSISTENCE_GENE_MIN,
                 PERSISTENCE_GENE_MAX,
-                5,
+                TAXONOMY_GENUS_PERCENT_BINS,
             ),
-            lysis_bin,
+            genus_lysis_bin,
             strict_gene_bin(
                 self.mutation_susceptibility[index],
                 0.0,
                 CELL_MUTATION_DISPLAY_MAX,
-                4,
+                TAXONOMY_GENUS_MUTATION_BINS,
             ),
             strict_gene_bin(
                 self.max_base_radius(index),
                 CELL_SIZE_GENE_MIN,
                 CELL_SIZE_GENE_MAX,
-                6,
+                TAXONOMY_GENUS_SIZE_BINS,
             ),
             self.section_count[index] as u32,
         ];
@@ -5310,7 +5464,7 @@ impl CellStore {
                 self.section_spacing[index],
                 CELL_SIZE_GENE_MIN * 0.15,
                 CELL_SIZE_GENE_MAX * 4.8,
-                31,
+                TAXONOMY_SPECIES_SPACING_BINS,
             )
         } else {
             0
@@ -5320,18 +5474,28 @@ impl CellStore {
                 self.section_spacing[index],
                 CELL_SIZE_GENE_MIN * 0.15,
                 CELL_SIZE_GENE_MAX * 4.8,
-                15,
+                TAXONOMY_GENUS_SPACING_BINS,
             )
         } else {
             0
         };
         let section_bend_bin = if self.section_count[index] >= 2 {
-            strict_gene_bin(self.section_bend[index].abs(), 0.0, 1.4, 15)
+            strict_gene_bin(
+                self.section_bend[index].abs(),
+                0.0,
+                1.4,
+                TAXONOMY_SPECIES_BEND_BINS,
+            )
         } else {
             0
         };
         let genus_section_bend_bin = if self.section_count[index] >= 2 {
-            strict_gene_bin(self.section_bend[index].abs(), 0.0, 1.4, 7)
+            strict_gene_bin(
+                self.section_bend[index].abs(),
+                0.0,
+                1.4,
+                TAXONOMY_GENUS_BEND_BINS,
+            )
         } else {
             0
         };
@@ -8283,6 +8447,50 @@ mod tests {
             world.cells.species[0] / SPECIES_EPITHET_SLOTS,
             world.cells.species[1] / SPECIES_EPITHET_SLOTS
         );
+    }
+
+    #[test]
+    fn taxonomy_uses_segment_shapes_for_segmented_species() {
+        let mut world = WorldState::new(&SimConfig {
+            cells: 2,
+            food: 0,
+            obstacles: 0,
+            food_growers: 0,
+            segmented_cells: false,
+            ..default()
+        });
+
+        for index in 0..2 {
+            world.cells.section_count[index] = 2;
+            world.cells.section_spacing[index] = 18.0;
+            world.cells.section_bend[index] = 0.0;
+            world.cells.section_angles[index] = [std::f32::consts::PI, 0.0, 0.0];
+            world.cells.section_parents[index] = [0, 0, 0];
+            world.cells.base_radii[index] = [7.0; SOFT_BODY_POINTS];
+            world.cells.current_radii[index] = [7.0; SOFT_BODY_POINTS];
+            world.cells.angle_offsets[index] = [0.0; SOFT_BODY_POINTS];
+            world.cells.tail_angle_offsets[index] = [0.0; SOFT_BODY_POINTS];
+            world.cells.speed[index] = 62.0;
+            world.cells.turn_speed[index] = 2.0;
+            world.cells.perception[index] = 420.0;
+            world.cells.persistence[index] = 45.0;
+            world.cells.aggressiveness[index] = 30.0;
+            world.cells.lysis[index] = 0.0;
+            world.cells.mutation_susceptibility[index] = 30.0;
+        }
+
+        world.cells.tail_base_radii[0] = [7.0; SOFT_BODY_POINTS];
+        world.cells.tail_current_radii[0] = [7.0; SOFT_BODY_POINTS];
+        world.cells.tail_base_radii[1] = [12.0, 5.0, 4.0, 5.0, 12.0, 5.0, 4.0, 5.0];
+        world.cells.tail_current_radii[1] = world.cells.tail_base_radii[1];
+
+        for index in 0..2 {
+            world.cells.rebuild_soft_body_cache(index);
+            world.cells.rebuild_tail_cache(index);
+        }
+        world.cells.refresh_taxonomy();
+
+        assert_ne!(world.cells.species[0], world.cells.species[1]);
     }
 
     #[test]

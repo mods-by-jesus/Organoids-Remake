@@ -8,8 +8,9 @@ use bevy::audio::{AudioSink, AudioSinkPlayback, PlaybackMode, Volume};
 use bevy::camera::ScalingMode;
 use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
 use bevy::input::mouse::{MouseScrollUnit, MouseWheel};
+use bevy::mesh::Indices;
 use bevy::prelude::*;
-use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
+use bevy::render::render_resource::{Extent3d, PrimitiveTopology, TextureDimension, TextureFormat};
 use bevy::render::view::NoIndirectDrawing;
 use bevy::ui::RelativeCursorPosition;
 use bevy::window::{PresentMode, PrimaryWindow, WindowMode, WindowResolution};
@@ -121,6 +122,7 @@ struct SelectedCell {
 #[derive(Resource, Default)]
 struct SpeciesLedgerUiState {
     open: bool,
+    journal_open: bool,
     selected_species: Option<u32>,
     last_click_species: Option<u32>,
     last_click_time: f64,
@@ -141,6 +143,8 @@ struct SpeciesLedgerDragState {
 struct SpeciesMiniatureImageCache {
     handles: HashMap<u32, Handle<Image>>,
     signatures: HashMap<u32, u64>,
+    journal_handles: HashMap<u32, Handle<Image>>,
+    journal_signatures: HashMap<u32, u64>,
 }
 
 #[derive(Resource, Default)]
@@ -149,6 +153,9 @@ struct SpeciesCameraFocus {
     target: Vec2,
     target_scale: f32,
 }
+
+#[derive(Component)]
+struct SpeciesAreaHighlightEntity;
 
 #[derive(Resource, Default)]
 struct SpeciesNameBook {
@@ -161,7 +168,10 @@ struct SpeciesNameBook {
 struct SpeciesSnapshot {
     species: u32,
     alive: usize,
+    alive_delta: isize,
     average_position: Vec2,
+    area_min: Vec2,
+    area_max: Vec2,
     representative_cell_id: Option<u64>,
     average_viability: f32,
     average_speed: f32,
@@ -178,6 +188,15 @@ struct SpeciesSnapshot {
     display_radii: [f32; 8],
     display_angle_offsets: [f32; 8],
     display_section_count: u8,
+    display_section_radii: [[f32; 8]; 4],
+    display_section_angle_offsets: [[f32; 8]; 4],
+    display_section_scale: [f32; 4],
+    display_section_spacing: f32,
+    display_section_centers: [Vec2; 4],
+    display_section_headings: [f32; 4],
+    display_section_angles: [f32; 3],
+    display_section_parents: [u8; 3],
+    display_edge_controls: [Vec2; 3],
 }
 
 #[derive(Resource, Default)]
@@ -246,6 +265,69 @@ struct SpeciesLedgerMiniature {
 #[derive(Component)]
 struct SpeciesLedgerMiniImage {
     species: u32,
+}
+
+#[derive(Component)]
+struct SpeciesJournalPanel;
+
+#[derive(Component)]
+struct SpeciesJournalPortraitImage;
+
+#[derive(Component)]
+struct SpeciesJournalTitleText;
+
+#[derive(Component)]
+struct SpeciesJournalSubtitleText;
+
+#[derive(Component)]
+struct SpeciesJournalTrendText;
+
+#[derive(Component)]
+struct SpeciesJournalBodyText;
+
+#[derive(Component)]
+struct SpeciesJournalAreaRow;
+
+#[derive(Component)]
+struct SpeciesJournalAreaText;
+
+#[derive(Component)]
+struct SpeciesJournalDietIcon;
+
+#[derive(Component, Clone, Copy)]
+enum SpeciesJournalMetric {
+    Population,
+    Viability,
+    Size,
+    Speed,
+    Turn,
+    Perception,
+    Persistence,
+    Aggressiveness,
+    Lysis,
+    Mutation,
+}
+
+#[derive(Component)]
+struct SpeciesJournalMetricFill {
+    metric: SpeciesJournalMetric,
+}
+
+#[derive(Component)]
+struct SpeciesJournalMetricValue {
+    metric: SpeciesJournalMetric,
+}
+
+#[derive(Clone, Copy)]
+enum SpeciesJournalTooltipKind {
+    Portrait,
+    Diet,
+    Metric(SpeciesJournalMetric),
+}
+
+#[derive(Component)]
+struct SpeciesJournalTooltipTarget {
+    kind: SpeciesJournalTooltipKind,
 }
 
 #[derive(Resource)]
@@ -432,6 +514,17 @@ const ZOOM_FACTOR: f32 = 1.18;
 const MIN_ZOOM_SCALE: f32 = 0.08;
 const MAX_ZOOM_SCALE: f32 = 12.0;
 const SPECIES_LEDGER_SORT_INTERVAL: f32 = 5.0;
+const SPECIES_LEDGER_PANEL_LEFT: f32 = 16.0;
+const SPECIES_LEDGER_PANEL_WIDTH: f32 = 540.0;
+const SPECIES_LEDGER_PANEL_BOTTOM: f32 = 74.0;
+const SPECIES_LEDGER_PANEL_HEIGHT_PERCENT: f32 = 64.0;
+const SPECIES_LEDGER_PANEL_REVEAL_OFFSET: f32 = 590.0;
+const SPECIES_JOURNAL_PANEL_GAP: f32 = 12.0;
+const SPECIES_JOURNAL_PANEL_WIDTH: f32 = 620.0;
+const SPECIES_JOURNAL_PANEL_LEFT: f32 =
+    SPECIES_LEDGER_PANEL_LEFT + SPECIES_LEDGER_PANEL_WIDTH + SPECIES_JOURNAL_PANEL_GAP;
+const SPECIES_JOURNAL_PANEL_REVEAL_OFFSET: f32 =
+    SPECIES_JOURNAL_PANEL_LEFT + SPECIES_JOURNAL_PANEL_WIDTH + 24.0;
 const SPECIES_LEDGER_COLUMNS: usize = 3;
 const SPECIES_LEDGER_CARD_WIDTH: f32 = 154.0;
 const SPECIES_LEDGER_CARD_HEIGHT: f32 = 148.0;
@@ -461,36 +554,37 @@ fn tooltip_position_near_cursor(
     height: f32,
     gap: f32,
 ) -> Vec2 {
-    let x = if cursor.x + width + gap > window.width() {
-        cursor.x - width - gap
-    } else {
-        cursor.x + gap
-    }
-    .clamp(8.0, (window.width() - width - 8.0).max(8.0));
-
-    let y = if cursor.y + height + gap > window.height() {
-        cursor.y - height - gap
-    } else {
-        cursor.y + gap
-    }
-    .clamp(8.0, (window.height() - height - 8.0).max(8.0));
+    let x = tooltip_axis_position(cursor.x, window.width(), width, gap);
+    let y = tooltip_axis_position(cursor.y, window.height(), height, gap);
 
     Vec2::new(x, y)
 }
 
+fn tooltip_axis_position(cursor_axis: f32, viewport_size: f32, tooltip_size: f32, gap: f32) -> f32 {
+    (cursor_axis + gap).clamp(8.0, (viewport_size - tooltip_size - 8.0).max(8.0))
+}
+
 fn cursor_over_species_ledger(window: &Window, cursor: Vec2) -> bool {
-    let left = 16.0;
-    let right = left + 540.0;
-    let bottom = window.height() - 74.0;
-    let top = bottom - window.height() * 0.64;
+    let left = SPECIES_LEDGER_PANEL_LEFT;
+    let right = left + SPECIES_LEDGER_PANEL_WIDTH;
+    let bottom = window.height() - SPECIES_LEDGER_PANEL_BOTTOM;
+    let top = bottom - window.height() * (SPECIES_LEDGER_PANEL_HEIGHT_PERCENT / 100.0);
+    cursor.x >= left && cursor.x <= right && cursor.y >= top && cursor.y <= bottom
+}
+
+fn cursor_over_species_journal(window: &Window, cursor: Vec2) -> bool {
+    let left = SPECIES_JOURNAL_PANEL_LEFT;
+    let right = left + SPECIES_JOURNAL_PANEL_WIDTH;
+    let bottom = window.height() - SPECIES_LEDGER_PANEL_BOTTOM;
+    let top = bottom - window.height() * (SPECIES_LEDGER_PANEL_HEIGHT_PERCENT / 100.0);
     cursor.x >= left && cursor.x <= right && cursor.y >= top && cursor.y <= bottom
 }
 
 fn species_ledger_scrollbar_fraction(window: &Window, cursor: Vec2) -> Option<f32> {
-    let panel_left = 16.0;
-    let panel_right = panel_left + 540.0;
-    let panel_bottom = window.height() - 74.0;
-    let panel_top = panel_bottom - window.height() * 0.64;
+    let panel_left = SPECIES_LEDGER_PANEL_LEFT;
+    let panel_right = panel_left + SPECIES_LEDGER_PANEL_WIDTH;
+    let panel_bottom = window.height() - SPECIES_LEDGER_PANEL_BOTTOM;
+    let panel_top = panel_bottom - window.height() * (SPECIES_LEDGER_PANEL_HEIGHT_PERCENT / 100.0);
     let track_top = panel_top + 52.0;
     let track_bottom = panel_bottom - 20.0;
     if cursor.x < panel_right - 34.0
@@ -659,6 +753,8 @@ fn main() {
                 update_species_ledger_ui,
                 update_species_ledger_row_visuals,
                 update_species_ledger_miniature_visuals,
+                update_species_journal_ui,
+                species_journal_area_row_system,
                 species_ledger_row_system,
                 apply_species_camera_focus,
             )
@@ -954,6 +1050,12 @@ mod species_ledger_tests {
     use super::*;
 
     #[test]
+    fn tooltip_position_clamps_to_bottom_without_large_flip() {
+        let y = tooltip_axis_position(590.0, 600.0, 122.0, 14.0);
+        assert_eq!(y, 470.0);
+    }
+
+    #[test]
     fn species_ledger_visible_range_keeps_dom_nodes_bounded() {
         let (start, end) = species_ledger_visible_index_range(10_000, 0.0, 620.0);
         assert_eq!(start, 0);
@@ -1084,10 +1186,10 @@ fn setup_species_ledger_ui(mut commands: Commands, asset_server: Res<AssetServer
         .spawn((
             Node {
                 position_type: PositionType::Absolute,
-                left: px(-590),
-                bottom: px(74),
-                width: px(540),
-                height: percent(64),
+                left: px(SPECIES_LEDGER_PANEL_LEFT - SPECIES_LEDGER_PANEL_REVEAL_OFFSET),
+                bottom: px(SPECIES_LEDGER_PANEL_BOTTOM),
+                width: px(SPECIES_LEDGER_PANEL_WIDTH),
+                height: percent(SPECIES_LEDGER_PANEL_HEIGHT_PERCENT),
                 flex_direction: FlexDirection::Column,
                 row_gap: px(8),
                 padding: UiRect::all(px(12)),
@@ -1099,7 +1201,7 @@ fn setup_species_ledger_ui(mut commands: Commands, asset_server: Res<AssetServer
             BorderColor::all(Color::srgb(0.39, 0.64, 0.70)),
             BackgroundColor(Color::srgba(0.012, 0.018, 0.022, 0.96)),
             Visibility::Hidden,
-            PanelReveal::horizontal(590.0),
+            PanelReveal::horizontal(SPECIES_LEDGER_PANEL_REVEAL_OFFSET),
             SpeciesLedgerPanel,
             RunningUiEntity,
         ))
@@ -1187,7 +1289,397 @@ fn setup_species_ledger_ui(mut commands: Commands, asset_server: Res<AssetServer
                         ));
                 });
         });
+
+    spawn_species_journal_panel(&mut commands, font.clone());
 }
+
+fn spawn_species_journal_panel(commands: &mut Commands, font: Handle<Font>) {
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: px(SPECIES_JOURNAL_PANEL_LEFT - SPECIES_JOURNAL_PANEL_REVEAL_OFFSET),
+                bottom: px(SPECIES_LEDGER_PANEL_BOTTOM),
+                width: px(SPECIES_JOURNAL_PANEL_WIDTH),
+                height: percent(SPECIES_LEDGER_PANEL_HEIGHT_PERCENT),
+                flex_direction: FlexDirection::Column,
+                row_gap: px(12),
+                padding: UiRect::all(px(14)),
+                border: UiRect::all(px(2)),
+                overflow: Overflow::clip(),
+                display: Display::None,
+                ..default()
+            },
+            BorderColor::all(Color::srgb(0.39, 0.64, 0.70)),
+            BackgroundColor(Color::srgba(0.010, 0.017, 0.020, 0.97)),
+            Visibility::Hidden,
+            Pickable::default(),
+            PanelReveal::horizontal(SPECIES_JOURNAL_PANEL_REVEAL_OFFSET),
+            SpeciesJournalPanel,
+            RunningUiEntity,
+        ))
+        .with_children(|journal| {
+            journal
+                .spawn((Node {
+                    width: percent(100),
+                    height: px(32),
+                    flex_direction: FlexDirection::Row,
+                    align_items: AlignItems::Center,
+                    justify_content: JustifyContent::SpaceBetween,
+                    ..default()
+                },))
+                .with_children(|header| {
+                    header.spawn((
+                        Text::new("БИОЖУРНАЛ ВИДА"),
+                        TextFont {
+                            font: font.clone(),
+                            font_size: 18.0,
+                            ..default()
+                        },
+                        TextColor(Color::srgb(0.76, 0.96, 0.93)),
+                    ));
+                    header.spawn((
+                        Text::new(""),
+                        TextFont {
+                            font: font.clone(),
+                            font_size: 14.0,
+                            ..default()
+                        },
+                        TextColor(Color::srgb(0.74, 1.0, 0.78)),
+                        SpeciesJournalTrendText,
+                    ));
+                });
+
+            journal
+                .spawn((Node {
+                    width: percent(100),
+                    height: px(228),
+                    flex_direction: FlexDirection::Row,
+                    column_gap: px(14),
+                    min_height: px(0),
+                    ..default()
+                },))
+                .with_children(|summary| {
+                    summary
+                        .spawn((
+                            Node {
+                                width: px(222),
+                                height: px(222),
+                                border: UiRect::all(px(2)),
+                                align_items: AlignItems::Center,
+                                justify_content: JustifyContent::Center,
+                                overflow: Overflow::clip(),
+                                ..default()
+                            },
+                            BorderColor::all(Color::srgb(0.32, 0.68, 0.74)),
+                            BackgroundColor(Color::srgb(0.012, 0.027, 0.032)),
+                            Interaction::default(),
+                            SpeciesJournalTooltipTarget {
+                                kind: SpeciesJournalTooltipKind::Portrait,
+                            },
+                        ))
+                        .with_child((
+                            ImageNode::default(),
+                            Node {
+                                width: px(206),
+                                height: px(206),
+                                ..default()
+                            },
+                            SpeciesJournalPortraitImage,
+                        ));
+
+                    summary
+                        .spawn((Node {
+                            flex_grow: 1.0,
+                            min_width: px(0),
+                            height: percent(100),
+                            flex_direction: FlexDirection::Column,
+                            row_gap: px(8),
+                            justify_content: JustifyContent::Center,
+                            ..default()
+                        },))
+                        .with_children(|info| {
+                            info.spawn((
+                                Text::new(""),
+                                TextFont {
+                                    font: font.clone(),
+                                    font_size: 19.0,
+                                    ..default()
+                                },
+                                TextColor(Color::srgb(0.90, 1.0, 0.96)),
+                                SpeciesJournalTitleText,
+                            ));
+                            info.spawn((
+                                Text::new(""),
+                                TextFont {
+                                    font: font.clone(),
+                                    font_size: 12.0,
+                                    ..default()
+                                },
+                                TextColor(Color::srgb(0.54, 0.78, 0.82)),
+                                SpeciesJournalSubtitleText,
+                            ));
+
+                            info.spawn((
+                                Node {
+                                    width: percent(100),
+                                    height: px(44),
+                                    flex_direction: FlexDirection::Row,
+                                    align_items: AlignItems::Center,
+                                    column_gap: px(10),
+                                    padding: UiRect::new(px(8), px(8), px(0), px(0)),
+                                    border: UiRect::left(px(3)),
+                                    ..default()
+                                },
+                                BorderColor::all(Color::srgb(0.32, 0.72, 0.68)),
+                                BackgroundColor(Color::srgb(0.018, 0.038, 0.043)),
+                                Interaction::default(),
+                                SpeciesJournalTooltipTarget {
+                                    kind: SpeciesJournalTooltipKind::Diet,
+                                },
+                            ))
+                            .with_children(|diet_row| {
+                                diet_row.spawn((
+                                    ImageNode::default(),
+                                    Node {
+                                        width: px(28),
+                                        height: px(28),
+                                        ..default()
+                                    },
+                                    SpeciesJournalDietIcon,
+                                ));
+                                diet_row.spawn((
+                                    Text::new(""),
+                                    TextFont {
+                                        font: font.clone(),
+                                        font_size: 11.5,
+                                        ..default()
+                                    },
+                                    TextColor(Color::srgb(0.74, 0.91, 0.90)),
+                                    SpeciesJournalBodyText,
+                                ));
+                            });
+                            info.spawn((
+                                Node {
+                                    width: percent(100),
+                                    height: px(40),
+                                    flex_direction: FlexDirection::Row,
+                                    align_items: AlignItems::Center,
+                                    justify_content: JustifyContent::SpaceBetween,
+                                    column_gap: px(10),
+                                    padding: UiRect::new(px(10), px(10), px(0), px(0)),
+                                    border: UiRect::left(px(3)),
+                                    ..default()
+                                },
+                                BorderColor::all(Color::srgb(0.32, 0.72, 0.68)),
+                                BackgroundColor(Color::srgb(0.012, 0.030, 0.034)),
+                                Interaction::default(),
+                                Pickable::default(),
+                                SpeciesJournalAreaRow,
+                            ))
+                            .with_children(|area_row| {
+                                area_row.spawn((
+                                    Text::new("Ареал"),
+                                    TextFont {
+                                        font: font.clone(),
+                                        font_size: 12.5,
+                                        ..default()
+                                    },
+                                    TextColor(Color::srgb(0.74, 0.96, 0.92)),
+                                    Pickable::IGNORE,
+                                ));
+                                area_row.spawn((
+                                    Text::new(""),
+                                    TextFont {
+                                        font: font.clone(),
+                                        font_size: 11.0,
+                                        ..default()
+                                    },
+                                    TextColor(Color::srgb(0.58, 0.82, 0.84)),
+                                    SpeciesJournalAreaText,
+                                    Pickable::IGNORE,
+                                ));
+                            });
+                        });
+                });
+
+            journal.spawn((
+                Node {
+                    width: percent(100),
+                    height: px(1),
+                    ..default()
+                },
+                BackgroundColor(Color::srgb(0.18, 0.39, 0.44)),
+            ));
+
+            journal.spawn((
+                Text::new("ДИНАМИКА ВИДА"),
+                TextFont {
+                    font: font.clone(),
+                    font_size: 14.0,
+                    ..default()
+                },
+                TextColor(Color::srgb(0.70, 0.91, 0.89)),
+            ));
+
+            journal
+                .spawn((Node {
+                    width: percent(100),
+                    flex_grow: 1.0,
+                    min_height: px(0),
+                    flex_direction: FlexDirection::Row,
+                    column_gap: px(10),
+                    ..default()
+                },))
+                .with_children(|metrics| {
+                    metrics
+                        .spawn((Node {
+                            flex_grow: 1.0,
+                            min_width: px(0),
+                            flex_direction: FlexDirection::Column,
+                            row_gap: px(9),
+                            ..default()
+                        },))
+                        .with_children(|left| {
+                            for metric in [
+                                SpeciesJournalMetric::Population,
+                                SpeciesJournalMetric::Viability,
+                                SpeciesJournalMetric::Size,
+                                SpeciesJournalMetric::Mutation,
+                            ] {
+                                spawn_species_journal_metric(left, font.clone(), metric);
+                            }
+                        });
+                    metrics
+                        .spawn((Node {
+                            flex_grow: 1.0,
+                            min_width: px(0),
+                            flex_direction: FlexDirection::Column,
+                            row_gap: px(9),
+                            ..default()
+                        },))
+                        .with_children(|right| {
+                            for metric in [
+                                SpeciesJournalMetric::Speed,
+                                SpeciesJournalMetric::Turn,
+                                SpeciesJournalMetric::Perception,
+                                SpeciesJournalMetric::Persistence,
+                                SpeciesJournalMetric::Aggressiveness,
+                                SpeciesJournalMetric::Lysis,
+                            ] {
+                                spawn_species_journal_metric(right, font.clone(), metric);
+                            }
+                        });
+                });
+        });
+}
+
+fn species_journal_metric_label(metric: SpeciesJournalMetric) -> &'static str {
+    match metric {
+        SpeciesJournalMetric::Population => "Численность",
+        SpeciesJournalMetric::Viability => "Жизнь",
+        SpeciesJournalMetric::Size => "Размер",
+        SpeciesJournalMetric::Speed => "Скорость",
+        SpeciesJournalMetric::Turn => "Поворот",
+        SpeciesJournalMetric::Perception => "Восприятие",
+        SpeciesJournalMetric::Persistence => "Настойчивость",
+        SpeciesJournalMetric::Aggressiveness => "Агрессия",
+        SpeciesJournalMetric::Lysis => "Лизис",
+        SpeciesJournalMetric::Mutation => "Мутации",
+    }
+}
+
+fn species_journal_metric_color(metric: SpeciesJournalMetric) -> Color {
+    match metric {
+        SpeciesJournalMetric::Population => Color::srgb(0.52, 1.0, 0.62),
+        SpeciesJournalMetric::Viability => gene_stat_color(GeneStatId::Viability),
+        SpeciesJournalMetric::Size => gene_stat_color(GeneStatId::Size),
+        SpeciesJournalMetric::Speed => gene_stat_color(GeneStatId::Speed),
+        SpeciesJournalMetric::Turn => gene_stat_color(GeneStatId::Turn),
+        SpeciesJournalMetric::Perception => gene_stat_color(GeneStatId::Perception),
+        SpeciesJournalMetric::Persistence => gene_stat_color(GeneStatId::Persistence),
+        SpeciesJournalMetric::Aggressiveness => gene_stat_color(GeneStatId::Aggressiveness),
+        SpeciesJournalMetric::Lysis => gene_stat_color(GeneStatId::Lysis),
+        SpeciesJournalMetric::Mutation => gene_stat_color(GeneStatId::Mutation),
+    }
+}
+
+fn spawn_species_journal_metric(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    metric: SpeciesJournalMetric,
+) {
+    parent
+        .spawn((
+            Node {
+                width: percent(100),
+                height: px(46),
+                flex_direction: FlexDirection::Column,
+                row_gap: px(6),
+                padding: UiRect::new(px(10), px(10), px(7), px(7)),
+                border: UiRect::left(px(3)),
+                ..default()
+            },
+            BorderColor::all(species_journal_metric_color(metric)),
+            BackgroundColor(Color::srgb(0.016, 0.031, 0.036)),
+            Interaction::default(),
+            SpeciesJournalTooltipTarget {
+                kind: SpeciesJournalTooltipKind::Metric(metric),
+            },
+        ))
+        .with_children(|row| {
+            row.spawn((Node {
+                width: percent(100),
+                height: px(15),
+                flex_direction: FlexDirection::Row,
+                justify_content: JustifyContent::SpaceBetween,
+                align_items: AlignItems::Center,
+                ..default()
+            },))
+                .with_children(|label_row| {
+                    label_row.spawn((
+                        Text::new(species_journal_metric_label(metric)),
+                        TextFont {
+                            font: font.clone(),
+                            font_size: 12.0,
+                            ..default()
+                        },
+                        TextColor(Color::srgb(0.68, 0.83, 0.84)),
+                    ));
+                    label_row.spawn((
+                        Text::new(""),
+                        TextFont {
+                            font: font.clone(),
+                            font_size: 12.0,
+                            ..default()
+                        },
+                        TextColor(Color::srgb(0.88, 1.0, 0.96)),
+                        SpeciesJournalMetricValue { metric },
+                    ));
+                });
+
+            row.spawn((
+                Node {
+                    width: percent(100),
+                    height: px(7),
+                    border: UiRect::all(px(1)),
+                    ..default()
+                },
+                BorderColor::all(Color::srgb(0.18, 0.38, 0.43)),
+                BackgroundColor(Color::srgb(0.018, 0.034, 0.039)),
+            ))
+            .with_child((
+                Node {
+                    width: percent(0),
+                    height: percent(100),
+                    ..default()
+                },
+                BackgroundColor(species_journal_metric_color(metric)),
+                SpeciesJournalMetricFill { metric },
+            ));
+        });
+}
+
 fn setup_game_stats_ui(mut commands: Commands, asset_server: Res<AssetServer>) {
     let font = asset_server.load(UI_FONT);
     commands
@@ -1885,7 +2377,7 @@ fn spawn_gene_tooltip(commands: &mut Commands, font: Handle<Font>) {
                 position_type: PositionType::Absolute,
                 top: px(0),
                 left: px(0),
-                width: px(370),
+                width: px(430),
                 padding: UiRect::all(px(13)),
                 border: UiRect::all(px(3)),
                 flex_direction: FlexDirection::Column,
@@ -2718,7 +3210,10 @@ fn select_cell_system(
         return;
     }
 
-    if species_ui.open && cursor_over_species_ledger(window, cursor) {
+    if species_ui.open
+        && (cursor_over_species_ledger(window, cursor)
+            || (species_ui.journal_open && cursor_over_species_journal(window, cursor)))
+    {
         return;
     }
 
@@ -2782,6 +3277,7 @@ fn select_cell_system(
     } else {
         selected.cell_id = None;
         species_ui.selected_species = None;
+        species_ui.journal_open = false;
         species_ui.scroll_target_species = None;
         ui_state.passport_open = false;
     }
@@ -2861,7 +3357,11 @@ fn camera_controls(
 
     let cursor_over_ledger = window
         .cursor_position()
-        .map(|cursor| species_ui.open && cursor_over_species_ledger(window, cursor))
+        .map(|cursor| {
+            species_ui.open
+                && (cursor_over_species_ledger(window, cursor)
+                    || (species_ui.journal_open && cursor_over_species_journal(window, cursor)))
+        })
         .unwrap_or(false);
 
     if scroll != 0.0 && !cursor_over_ledger {
@@ -2993,9 +3493,18 @@ fn game_ui_input_system(
     if keys.just_pressed(KeyCode::KeyQ) {
         species_ui.open = !species_ui.open;
         if !species_ui.open {
+            species_ui.journal_open = false;
             species_ui.selected_species = None;
             species_ui.scroll_target_species = None;
             species_ui.last_click_species = None;
+        }
+    }
+
+    if keys.just_pressed(KeyCode::KeyE) {
+        if species_ui.open && species_ui.selected_species.is_some() {
+            species_ui.journal_open = !species_ui.journal_open;
+        } else {
+            species_ui.journal_open = false;
         }
     }
 
@@ -3600,12 +4109,104 @@ fn gene_tooltip_copy(kind: GeneStatId) -> (&'static str, &'static str) {
         ),
     }
 }
+
+fn species_journal_tooltip_copy(
+    kind: SpeciesJournalTooltipKind,
+    snapshot: &SpeciesSnapshot,
+    stats: &SpeciesLedgerStats,
+    names: &SpeciesNameBook,
+) -> (String, String, Color) {
+    match kind {
+        SpeciesJournalTooltipKind::Portrait => {
+            let name = species_name_for(names, snapshot.species);
+            let shape = species_shape_label_from_id(snapshot.species);
+            let section_text = if snapshot.display_section_count <= 1 {
+                "одна секция".to_string()
+            } else {
+                format!(
+                    "{} секции, spacing x{:.2}",
+                    snapshot.display_section_count, snapshot.display_section_spacing
+                )
+            };
+            (
+                "ПОРТРЕТ ВИДА".to_string(),
+                format!(
+                    "{name}\nФорма: {shape}; {section_text}. Портрет строится из формы живого представителя: лучи, угловые смещения, размеры сегментов и связи между ними."
+                ),
+                Color::srgb(0.42, 0.86, 0.92),
+            )
+        }
+        SpeciesJournalTooltipKind::Diet => {
+            let diet = trophic_type_name(snapshot.average_aggressiveness);
+            let grass = grass_energy_multiplier(snapshot.average_aggressiveness);
+            let meat = meat_energy_multiplier(snapshot.average_aggressiveness);
+            (
+                "РАЦИОН ВИДА".to_string(),
+                format!(
+                    "{diet}: трава x{grass:.2}, мясо x{meat:.2}. Рацион выводится из средней агрессивности вида, а не задается отдельным типом."
+                ),
+                gene_stat_color(GeneStatId::Diet),
+            )
+        }
+        SpeciesJournalTooltipKind::Metric(metric) => {
+            let max_alive = stats
+                .snapshots
+                .iter()
+                .map(|candidate| candidate.alive)
+                .max()
+                .unwrap_or(snapshot.alive);
+            let (_, display, color) = species_journal_metric_sample(snapshot, max_alive, metric);
+            let description = match metric {
+                SpeciesJournalMetric::Population => {
+                    "Количество живых особей этого вида. Изменение рядом показывает разницу с прошлым обновлением реестра."
+                }
+                SpeciesJournalMetric::Viability => {
+                    "Средний процент текущей жизнеспособности: общий запас энергии и здоровья особей вида."
+                }
+                SpeciesJournalMetric::Size => {
+                    "Средний физический размер тела. Размер влияет на массу, метаболизм, столкновения и уязвимость к крупным хищникам."
+                }
+                SpeciesJournalMetric::Speed => {
+                    "Средняя генетическая скорость вида до геометрических штрафов и бонусов формы."
+                }
+                SpeciesJournalMetric::Turn => {
+                    "Средняя поворотливость головы. Длинные и многосегментные тела обычно хуже разворачиваются."
+                }
+                SpeciesJournalMetric::Perception => {
+                    "Средний радиус видимости. Цели за пределами восприятия для клеток фактически не существуют."
+                }
+                SpeciesJournalMetric::Persistence => {
+                    "Средняя настойчивость: насколько долго клетки держатся выбранной цели и последней известной позиции."
+                }
+                SpeciesJournalMetric::Aggressiveness => {
+                    "Средняя агрессивность. Она повышает склонность к охоте и сдвигает усвоение энергии от травы к мясу."
+                }
+                SpeciesJournalMetric::Lysis => {
+                    "Средний уровень контактной атаки. Лизис нужен для ближнего урона по жизнеспособности жертвы."
+                }
+                SpeciesJournalMetric::Mutation => {
+                    "Средняя наследственная изменчивость: сила и частота изменений генов, лучей формы и сегментов при делении."
+                }
+            };
+            (
+                species_journal_metric_label(metric).to_uppercase(),
+                format!("{display}\n{description}"),
+                color,
+            )
+        }
+    }
+}
+
 fn update_gene_tooltip(
     time: Res<Time>,
     windows: Query<&Window, With<PrimaryWindow>>,
     selected: Res<SelectedCell>,
     world: Res<WorldState>,
+    species_state: Res<SpeciesLedgerUiState>,
+    species_stats: Res<SpeciesLedgerStats>,
+    species_names: Res<SpeciesNameBook>,
     targets: Query<(&Interaction, &GeneTooltipTarget)>,
+    journal_targets: Query<(&Interaction, &SpeciesJournalTooltipTarget)>,
     division_markers: Query<&Interaction, With<DivisionThresholdMarker>>,
     mut tooltip: Query<(
         &mut Visibility,
@@ -3623,9 +4224,17 @@ fn update_gene_tooltip(
     let marker_hovered = division_markers
         .iter()
         .any(|interaction| *interaction != Interaction::None);
-    let hovered = (!marker_hovered)
+    let gene_hovered = (!marker_hovered)
         .then(|| {
             targets
+                .iter()
+                .find(|(interaction, _)| **interaction != Interaction::None)
+                .map(|(_, target)| target.kind)
+        })
+        .flatten();
+    let journal_hovered = (!marker_hovered && gene_hovered.is_none())
+        .then(|| {
+            journal_targets
                 .iter()
                 .find(|(interaction, _)| **interaction != Interaction::None)
                 .map(|(_, target)| target.kind)
@@ -3634,7 +4243,34 @@ fn update_gene_tooltip(
     let selected_index = selected
         .cell_id
         .and_then(|cell_id| world.cell_index_by_id(cell_id));
-    let show = hovered.is_some() && selected_index.is_some();
+    let selected_snapshot = (species_state.open && species_state.journal_open)
+        .then_some(())
+        .and_then(|_| {
+            species_state
+                .selected_species
+                .and_then(|species| species_snapshot_by_id(&species_stats, species))
+        });
+    let gene_payload = gene_hovered.and_then(|kind| {
+        selected_index.map(|_| {
+            let (heading, description) = gene_tooltip_copy(kind);
+            (
+                heading.to_string(),
+                description.to_string(),
+                gene_stat_color(kind),
+                430.0,
+                184.0,
+            )
+        })
+    });
+    let journal_payload = journal_hovered.and_then(|kind| {
+        selected_snapshot.map(|snapshot| {
+            let (heading, description, accent) =
+                species_journal_tooltip_copy(kind, snapshot, &species_stats, &species_names);
+            (heading, description, accent, 460.0, 196.0)
+        })
+    });
+    let payload = gene_payload.or(journal_payload);
+    let show = payload.is_some();
     let Ok((mut visibility, mut node, mut transform, mut reveal, mut border_color)) =
         tooltip.single_mut()
     else {
@@ -3652,14 +4288,12 @@ fn update_gene_tooltip(
         return;
     }
 
-    let (Some(kind), Some(_cell_index)) = (hovered, selected_index) else {
+    let Some((heading, description, accent, width, height)) = payload else {
         return;
     };
-    let (heading, description) = gene_tooltip_copy(kind);
-    let accent = gene_stat_color(kind);
     *border_color = BorderColor::all(accent);
     if let Ok((mut text, mut color)) = tooltip_text.p0().single_mut() {
-        **text = heading.to_string();
+        **text = heading;
         *color = TextColor(accent);
     }
     if let Ok((mut text, mut color)) = tooltip_text.p1().single_mut() {
@@ -3667,16 +4301,15 @@ fn update_gene_tooltip(
         *color = TextColor(accent);
     }
     if let Ok(mut text) = tooltip_text.p2().single_mut() {
-        **text = description.to_string();
+        **text = description;
     }
 
     if let Ok(window) = windows.single()
         && let Some(cursor) = window.cursor_position()
     {
-        let width = 430.0;
-        let height = 184.0;
         let gap = 18.0;
         let position = tooltip_position_near_cursor(window, cursor, width, height, gap);
+        node.width = px(width);
         node.left = px(position.x);
         node.top = px(position.y);
     }
@@ -3690,12 +4323,38 @@ fn species_ledger_button_system(
         if *interaction == Interaction::Pressed {
             state.open = !state.open;
             if !state.open {
+                state.journal_open = false;
                 state.selected_species = None;
                 state.scroll_target_species = None;
                 state.last_click_species = None;
             }
         }
     }
+}
+
+fn section_profile_for_species_snapshot(
+    world: &WorldState,
+    cell_index: usize,
+    section: u8,
+) -> ([f32; 8], [f32; 8]) {
+    match section {
+        0 => (
+            world.cells.base_radii[cell_index],
+            world.cells.angle_offsets[cell_index],
+        ),
+        1 => (
+            world.cells.tail_base_radii[cell_index],
+            world.cells.tail_angle_offsets[cell_index],
+        ),
+        _ => {
+            let extra = world.cells.extra_sections[cell_index][section as usize - 2];
+            (extra.base_radii, extra.angle_offsets)
+        }
+    }
+}
+
+fn max_section_radius(radii: &[f32; 8]) -> f32 {
+    radii.iter().copied().fold(0.1, f32::max)
 }
 
 fn update_species_ledger_stats(
@@ -3721,6 +4380,11 @@ fn update_species_ledger_stats(
         .iter()
         .map(|snapshot| snapshot.species)
         .collect::<Vec<_>>();
+    let previous_alive = stats
+        .snapshots
+        .iter()
+        .map(|snapshot| (snapshot.species, snapshot.alive))
+        .collect::<std::collections::HashMap<_, _>>();
     let mut by_species = std::collections::HashMap::<u32, SpeciesSnapshot>::new();
 
     for index in 0..world.cells.len() {
@@ -3729,10 +4393,15 @@ fn update_species_ledger_stats(
             .entry(species)
             .or_insert_with(|| SpeciesSnapshot {
                 species,
+                area_min: Vec2::splat(f32::MAX),
+                area_max: Vec2::splat(f32::MIN),
                 ..default()
             });
         snapshot.alive += 1;
-        snapshot.average_position += Vec2::new(world.cells.x[index], world.cells.y[index]);
+        let cell_position = Vec2::new(world.cells.x[index], world.cells.y[index]);
+        snapshot.average_position += cell_position;
+        snapshot.area_min = snapshot.area_min.min(cell_position);
+        snapshot.area_max = snapshot.area_max.max(cell_position);
         snapshot.average_viability +=
             world.cells.viability[index] / world.cells.max_viability[index].max(1.0);
         snapshot.average_speed += world.cells.speed[index];
@@ -3756,16 +4425,74 @@ fn update_species_ledger_stats(
         if snapshot.representative_cell_id.is_none() {
             snapshot.representative_cell_id = Some(world.cells.id[index]);
             snapshot.display_section_count = world.cells.section_count[index];
+            snapshot.display_section_angles = world.cells.section_angles[index];
+            snapshot.display_section_parents = world.cells.section_parents[index];
+            snapshot.display_section_spacing =
+                (world.cells.section_spacing[index] / base_radius).clamp(0.75, 4.60);
+            let head_center = world.cells.section_center(index, 0);
+            let (sin, cos) = (-world.cells.heading[index]).sin_cos();
+            for section in 0..snapshot.display_section_count.clamp(1, 4) {
+                let slot = section as usize;
+                let center = world.cells.section_center(index, section);
+                let relative = center - head_center;
+                snapshot.display_section_centers[slot] = Vec2::new(
+                    relative.x * cos - relative.y * sin,
+                    relative.x * sin + relative.y * cos,
+                ) / base_radius;
+            }
+            for section in 1..snapshot.display_section_count.clamp(1, 4) {
+                let slot = section as usize;
+                let parent = snapshot.display_section_parents[slot - 1].min(section - 1);
+                let delta = snapshot.display_section_centers[parent as usize]
+                    - snapshot.display_section_centers[slot];
+                snapshot.display_section_headings[slot] = (-delta.y).atan2(delta.x);
+            }
+            for edge in 0..snapshot.display_section_count.saturating_sub(1).min(3) as usize {
+                let child = edge as u8 + 1;
+                let parent = snapshot.display_section_parents[edge].min(child - 1);
+                let parent_center = world.cells.section_center(index, parent);
+                let child_center = world.cells.section_center(index, child);
+                let side = (child_center - parent_center)
+                    .try_normalize()
+                    .map(|direction| Vec2::new(-direction.y, direction.x))
+                    .unwrap_or(Vec2::Y);
+                let control = (parent_center + child_center) * 0.5
+                    + side * world.cells.edge_curve_offsets[index][edge];
+                let relative = control - head_center;
+                snapshot.display_edge_controls[edge] = Vec2::new(
+                    relative.x * cos - relative.y * sin,
+                    relative.x * sin + relative.y * cos,
+                ) / base_radius;
+            }
             for ray in 0..8 {
                 snapshot.display_radii[ray] =
                     (world.cells.base_radii[index][ray] / base_radius).clamp(0.25, 1.35);
                 snapshot.display_angle_offsets[ray] = world.cells.angle_offsets[index][ray];
+            }
+            let head_radius = base_radius.max(0.1);
+            for section in 0..snapshot.display_section_count.clamp(1, 4) {
+                let (radii, offsets) =
+                    section_profile_for_species_snapshot(world.as_ref(), index, section);
+                let section_radius = max_section_radius(&radii).max(0.1);
+                let slot = section as usize;
+                snapshot.display_section_scale[slot] =
+                    (section_radius / head_radius).clamp(0.50, 1.70);
+                for ray in 0..8 {
+                    snapshot.display_section_radii[slot][ray] =
+                        (radii[ray] / section_radius).clamp(0.24, 1.72);
+                    snapshot.display_section_angle_offsets[slot][ray] = offsets[ray];
+                }
             }
         }
     }
 
     let mut snapshots = by_species.into_values().collect::<Vec<_>>();
     for snapshot in &mut snapshots {
+        let previous = previous_alive
+            .get(&snapshot.species)
+            .copied()
+            .unwrap_or(snapshot.alive);
+        snapshot.alive_delta = snapshot.alive as isize - previous as isize;
         let inv = (snapshot.alive as f32).recip();
         snapshot.average_position *= inv;
         snapshot.average_viability *= inv;
@@ -3831,6 +4558,133 @@ fn trophic_icon_tint(aggressiveness: f32) -> Color {
     }
 }
 
+fn trophic_spectrum_color(aggressiveness: f32, alpha: f32) -> Color {
+    let ratio = (aggressiveness / CELL_AGGRESSIVENESS_DISPLAY_MAX).clamp(0.0, 1.0);
+    let (r, g, b) = if ratio <= 0.5 {
+        let t = ratio / 0.5;
+        (0.34 + t * 0.66, 1.0 - t * 0.10, 0.42 - t * 0.16)
+    } else {
+        let t = (ratio - 0.5) / 0.5;
+        (1.0, 0.90 - t * 0.55, 0.26 - t * 0.08)
+    };
+    Color::srgba(r, g, b.max(0.12), alpha)
+}
+
+fn species_area_center(snapshot: &SpeciesSnapshot) -> Vec2 {
+    if snapshot.area_min.x.is_finite()
+        && snapshot.area_max.x.is_finite()
+        && snapshot.area_min.x <= snapshot.area_max.x
+    {
+        (snapshot.area_min + snapshot.area_max) * 0.5
+    } else {
+        snapshot.average_position
+    }
+}
+
+fn species_area_half_size(snapshot: &SpeciesSnapshot) -> Vec2 {
+    let raw = if snapshot.area_min.x.is_finite()
+        && snapshot.area_max.x.is_finite()
+        && snapshot.area_min.x <= snapshot.area_max.x
+    {
+        (snapshot.area_max - snapshot.area_min).abs() * 0.5
+    } else {
+        Vec2::ZERO
+    };
+    let padding = (snapshot.average_size * 18.0).clamp(90.0, 360.0);
+    let minimum = (snapshot.average_size * 32.0).clamp(190.0, 620.0);
+    (raw + Vec2::splat(padding)).max(Vec2::splat(minimum))
+}
+
+fn species_area_focus_scale(snapshot: &SpeciesSnapshot) -> f32 {
+    let half = species_area_half_size(snapshot);
+    (half.x.max(half.y) * 2.35 / START_VIEW_HEIGHT).clamp(0.42, 7.0)
+}
+
+fn species_area_polygon(snapshot: &SpeciesSnapshot, expand: f32) -> Vec<Vec2> {
+    let center = species_area_center(snapshot);
+    let half = species_area_half_size(snapshot) * expand;
+    let sides = 14;
+    let phase = snapshot.species as f32 * 0.071;
+    (0..sides)
+        .map(|index| {
+            let angle = index as f32 / sides as f32 * std::f32::consts::TAU + 0.13;
+            let ripple = 1.0
+                + (phase + index as f32 * 1.37).sin() * 0.055
+                + (phase * 0.7 + index as f32 * 2.11).cos() * 0.035;
+            center + Vec2::new(angle.cos() * half.x, angle.sin() * half.y) * ripple
+        })
+        .collect()
+}
+
+fn species_area_polygon_mesh(points: &[Vec2], center: Vec2) -> Mesh {
+    let mut positions = Vec::with_capacity(points.len() + 1);
+    let mut normals = Vec::with_capacity(points.len() + 1);
+    let mut uvs = Vec::with_capacity(points.len() + 1);
+    let mut indices = Vec::with_capacity(points.len() * 3);
+
+    positions.push([0.0, 0.0, 0.0]);
+    normals.push([0.0, 0.0, 1.0]);
+    uvs.push([0.5, 0.5]);
+    for point in points {
+        let local = *point - center;
+        positions.push([local.x, local.y, 0.0]);
+        normals.push([0.0, 0.0, 1.0]);
+        uvs.push([0.5 + local.x.signum() * 0.5, 0.5 + local.y.signum() * 0.5]);
+    }
+    for index in 0..points.len() {
+        let next = if index + 1 == points.len() {
+            1
+        } else {
+            index + 2
+        };
+        indices.extend_from_slice(&[0, (index + 1) as u32, next as u32]);
+    }
+
+    let mut mesh = Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::RENDER_WORLD,
+    );
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
+    mesh.insert_indices(Indices::U32(indices));
+    mesh
+}
+
+fn spawn_species_area_highlight(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<StandardMaterial>,
+    snapshot: &SpeciesSnapshot,
+) {
+    let center = species_area_center(snapshot);
+    let color_alpha_layers = [
+        (1.18, 0.025, 1.82),
+        (1.10, 0.040, 1.84),
+        (1.04, 0.070, 1.86),
+        (1.00, 0.115, 1.88),
+    ];
+    for (expand, alpha, z) in color_alpha_layers {
+        let points = species_area_polygon(snapshot, expand);
+        let mesh = meshes.add(species_area_polygon_mesh(&points, center));
+        let material = materials.add(StandardMaterial {
+            base_color: trophic_spectrum_color(snapshot.average_aggressiveness, alpha),
+            alpha_mode: AlphaMode::Blend,
+            unlit: true,
+            cull_mode: None,
+            ..default()
+        });
+        commands.spawn((
+            Name::new("species_area_highlight"),
+            Mesh3d(mesh),
+            MeshMaterial3d(material),
+            Transform::from_xyz(center.x, center.y, z),
+            SimulationRenderEntity,
+            SpeciesAreaHighlightEntity,
+        ));
+    }
+}
+
 #[allow(dead_code)]
 fn species_morph_class(species: u32) -> u32 {
     species / SPECIES_CLASS_STRIDE
@@ -3838,6 +4692,33 @@ fn species_morph_class(species: u32) -> u32 {
 
 fn species_genus_key(species: u32) -> u32 {
     species / SPECIES_EPITHET_SLOTS
+}
+
+fn species_genus_name_for(names: &SpeciesNameBook, species: u32) -> String {
+    let prefix_count = names.prefixes.len().max(1);
+    let suffix_count = names.suffixes.len().max(1);
+    let genus_key = species_genus_key(species) as usize;
+    let prefix = &names.prefixes[genus_key % prefix_count];
+    let suffix = &names.suffixes[(genus_key / prefix_count) % suffix_count];
+    format!("{prefix}{suffix}")
+}
+
+fn species_shape_label_from_id(species: u32) -> &'static str {
+    match species_morph_class(species) {
+        0 => "Кокк",
+        1 => "Бацилла",
+        2 => "Филамент",
+        3 => "Спирилла",
+        4 => "Вибрион",
+        5 => "Диплококк",
+        6 => "Веретено",
+        7 => "Кубоид",
+        8 => "Триквитрум",
+        9 => "Ставроморф",
+        10 => "Ланцетовидная",
+        11 => "Плакоид",
+        _ => "Лобатум",
+    }
 }
 
 fn species_snapshots_related(a: &SpeciesSnapshot, b: &SpeciesSnapshot) -> bool {
@@ -4018,7 +4899,7 @@ fn update_species_ledger_ui(
         let target = if state.open { 1.0 } else { 0.0 };
         let follow = 1.0 - (-13.0 * time.delta_secs()).exp();
         reveal.progress += (target - reveal.progress) * follow;
-        node.left = px(16.0 - reveal.hidden_offset * (1.0 - reveal.progress));
+        node.left = px(SPECIES_LEDGER_PANEL_LEFT - reveal.hidden_offset * (1.0 - reveal.progress));
         if !state.open && reveal.progress < 0.002 {
             *visibility = Visibility::Hidden;
             node.display = Display::None;
@@ -4203,6 +5084,9 @@ fn update_species_ledger_miniature_visuals(
 
 fn species_miniature_signature(snapshot: &SpeciesSnapshot) -> u64 {
     let mut signature = snapshot.species as u64 ^ ((snapshot.display_section_count as u64) << 41);
+    signature = signature
+        .wrapping_mul(1_099_511_628_211)
+        .wrapping_add((snapshot.display_section_spacing.clamp(0.0, 5.0) * 128.0).round() as u64);
     let color = cell_display_color(
         snapshot.species,
         snapshot.average_viability,
@@ -4213,65 +5097,231 @@ fn species_miniature_signature(snapshot: &SpeciesSnapshot) -> u64 {
         let q = (value.clamp(0.0, 1.0) * 255.0).round() as u64;
         signature = signature.wrapping_mul(1_099_511_628_211).wrapping_add(q);
     }
-    for ray in 0..8 {
-        let radius = (snapshot.average_radii[ray].clamp(0.25, 1.65) * 128.0).round() as u64;
-        let angle = ((snapshot.average_angle_offsets[ray].clamp(-0.45, 0.45) + 0.45) * 256.0)
+    for section in 0..snapshot.display_section_count.clamp(1, 4) as usize {
+        let scale =
+            (snapshot.display_section_scale[section].clamp(0.45, 1.85) * 96.0).round() as u64;
+        signature = signature
+            .wrapping_mul(1_099_511_628_211)
+            .wrapping_add(scale);
+        if section > 0 {
+            signature = signature
+                .wrapping_mul(1_099_511_628_211)
+                .wrapping_add(snapshot.display_section_parents[section - 1] as u64)
+                .wrapping_mul(1_099_511_628_211)
+                .wrapping_add(
+                    ((snapshot.display_section_angles[section - 1]
+                        .rem_euclid(std::f32::consts::TAU)
+                        / std::f32::consts::TAU)
+                        * 64.0)
+                        .round() as u64,
+                );
+            let control = snapshot.display_edge_controls[section - 1];
+            let control_x = ((control.x.clamp(-6.0, 6.0) + 6.0) * 64.0).round() as u64;
+            let control_y = ((control.y.clamp(-6.0, 6.0) + 6.0) * 64.0).round() as u64;
+            signature = signature
+                .wrapping_mul(1_099_511_628_211)
+                .wrapping_add(control_x)
+                .wrapping_mul(1_099_511_628_211)
+                .wrapping_add(control_y);
+        }
+        let center = snapshot.display_section_centers[section];
+        let cx = ((center.x.clamp(-6.0, 6.0) + 6.0) * 64.0).round() as u64;
+        let cy = ((center.y.clamp(-6.0, 6.0) + 6.0) * 64.0).round() as u64;
+        let heading = ((snapshot.display_section_headings[section]
+            .rem_euclid(std::f32::consts::TAU)
+            / std::f32::consts::TAU)
+            * 128.0)
             .round() as u64;
         signature = signature
             .wrapping_mul(1_099_511_628_211)
-            .wrapping_add(radius)
+            .wrapping_add(cx)
             .wrapping_mul(1_099_511_628_211)
-            .wrapping_add(angle);
+            .wrapping_add(cy)
+            .wrapping_mul(1_099_511_628_211)
+            .wrapping_add(heading);
+        for ray in 0..8 {
+            let radius = (snapshot.display_section_radii[section][ray].clamp(0.24, 1.72) * 128.0)
+                .round() as u64;
+            let angle = ((snapshot.display_section_angle_offsets[section][ray].clamp(-0.45, 0.45)
+                + 0.45)
+                * 256.0)
+                .round() as u64;
+            signature = signature
+                .wrapping_mul(1_099_511_628_211)
+                .wrapping_add(radius)
+                .wrapping_mul(1_099_511_628_211)
+                .wrapping_add(angle);
+        }
     }
     signature
 }
 
 fn render_species_miniature(snapshot: &SpeciesSnapshot) -> Image {
-    const SIZE: u32 = 72;
-    let mut data = vec![0_u8; (SIZE * SIZE * 4) as usize];
+    render_species_portrait(snapshot, 192, 10.0)
+}
+
+fn render_species_journal_portrait(snapshot: &SpeciesSnapshot) -> Image {
+    render_species_portrait(snapshot, 384, 24.0)
+}
+
+fn render_species_portrait(snapshot: &SpeciesSnapshot, size: u32, padding: f32) -> Image {
+    let mut data = vec![0_u8; (size * size * 4) as usize];
     let base = cell_display_color(
         snapshot.species,
         snapshot.average_viability,
         snapshot.average_aggressiveness,
         snapshot.average_lysis,
     );
-    let body = mini_rgba(base[0] * 0.98, base[1] * 0.98, base[2] * 0.98, 0.84);
+    let body = mini_rgba(base[0] * 0.96, base[1] * 0.96, base[2] * 0.96, 0.82);
+    let gel_highlight = mini_rgba(
+        (base[0] * 1.23).min(1.0),
+        (base[1] * 1.23).min(1.0),
+        (base[2] * 1.23).min(1.0),
+        0.76,
+    );
     let membrane = mini_rgba(
-        (base[0] * 1.17).min(1.0),
-        (base[1] * 1.17).min(1.0),
-        (base[2] * 1.17).min(1.0),
+        (base[0] * 1.33).min(1.0),
+        (base[1] * 1.33).min(1.0),
+        (base[2] * 1.33).min(1.0),
         0.98,
     );
-    let core = mini_rgba(0.94, 1.0, 0.92, 0.92);
-
+    let core_outer = mini_rgba(0.77, 0.96, 0.78, 0.76);
+    let core_inner = mini_rgba(0.95, 1.0, 0.90, 0.95);
+    let ray_color = mini_rgba(0.90, 1.0, 0.90, 0.18);
     let count = snapshot.display_section_count.clamp(1, 4) as usize;
-    let scale = if count == 1 { 21.0 } else { 15.2 };
-    let spacing = if count == 1 { 0.0 } else { scale * 0.88 };
-    let total_width = spacing * (count.saturating_sub(1) as f32);
-    let mut centers = Vec::with_capacity(count);
+    let mut local_centers = snapshot.display_section_centers;
+    let mut local_controls = snapshot.display_edge_controls;
+    let mut local_scales = [1.0; 4];
+    for (section, scale) in local_scales.iter_mut().enumerate().take(count) {
+        let value = snapshot.display_section_scale[section];
+        *scale = if value > 0.01 { value } else { 1.0 }.clamp(0.48, 1.78);
+    }
+    let has_stored_pose = count <= 1
+        || local_centers
+            .iter()
+            .take(count)
+            .skip(1)
+            .any(|center| center.length_squared() > 0.0001);
+    if !has_stored_pose {
+        let section_spacing = if snapshot.display_section_spacing > 0.01 {
+            snapshot.display_section_spacing
+        } else {
+            (local_scales[0] * 2.05).max(1.15)
+        }
+        .clamp(0.75, 4.60);
+        for section in 1..count {
+            let parent =
+                snapshot.display_section_parents[section - 1].min((section - 1) as u8) as usize;
+            let angle = snapshot.display_section_angles[section - 1];
+            let direction = Vec2::new(angle.cos(), -angle.sin());
+            local_centers[section] = local_centers[parent] + direction * section_spacing;
+        }
+    }
+    for section in 1..count {
+        let parent =
+            snapshot.display_section_parents[section - 1].min((section - 1) as u8) as usize;
+        if local_controls[section - 1].length_squared() <= 0.0001 {
+            local_controls[section - 1] = mini_bridge_fallback_control(
+                snapshot.species,
+                section,
+                local_centers[parent],
+                local_centers[section],
+            );
+        }
+    }
+
+    let mut min = Vec2::splat(f32::MAX);
+    let mut max = Vec2::splat(f32::MIN);
     for section in 0..count {
-        let section_f = section as f32;
-        centers.push(Vec2::new(
-            SIZE as f32 * 0.5 + total_width * 0.5 - section_f * spacing,
-            SIZE as f32 * 0.5 + (section_f * 1.31 + snapshot.species as f32 * 0.013).sin() * 3.0,
-        ));
+        let vertices = species_miniature_vertices(snapshot, section, local_centers[section], 1.0);
+        let outline = smooth_mini_contour(&vertices, local_centers[section], 5);
+        let (section_min, section_max) = mini_bounds_unclamped(&outline);
+        min = min.min(section_min);
+        max = max.max(section_max);
+    }
+    for section in 1..count {
+        let parent =
+            snapshot.display_section_parents[section - 1].min((section - 1) as u8) as usize;
+        let delta = local_centers[section] - local_centers[parent];
+        if delta.length_squared() > 0.0001 {
+            let arch = local_controls[section - 1];
+            min = min.min(arch - Vec2::splat(delta.length() * 0.45 + 0.8));
+            max = max.max(arch + Vec2::splat(delta.length() * 0.45 + 0.8));
+        }
+    }
+    let span = (max - min).max(Vec2::splat(0.1));
+    let draw_scale = ((size as f32 - padding * 2.0) / span.x.max(span.y))
+        .clamp(size as f32 * 0.11, size as f32 * 0.36);
+    let offset = Vec2::splat(size as f32 * 0.5) - (min + span * 0.5) * draw_scale;
+
+    let mut centers = [Vec2::ZERO; 4];
+    for section in 0..count {
+        centers[section] = local_centers[section] * draw_scale + offset;
+    }
+    let mut controls = [Vec2::ZERO; 3];
+    for edge in 0..count.saturating_sub(1) {
+        controls[edge] = local_controls[edge] * draw_scale + offset;
     }
 
-    for pair in centers.windows(2) {
-        draw_mini_capsule(&mut data, SIZE, pair[0], pair[1], scale * 0.58, body);
+    let mut section_vertices = Vec::with_capacity(count);
+    let mut section_outlines = Vec::with_capacity(count);
+    for section in 0..count {
+        let vertices = species_miniature_vertices(snapshot, section, centers[section], draw_scale);
+        let outline =
+            smooth_mini_contour(&vertices, centers[section], if size >= 256 { 8 } else { 6 });
+        section_vertices.push(vertices);
+        section_outlines.push(outline);
     }
 
-    for (section, center) in centers.iter().enumerate().rev() {
-        let section_scale = scale * (1.0 - section as f32 * 0.045).max(0.82);
-        let vertices = species_miniature_vertices(snapshot, *center, section_scale);
-        draw_mini_polygon(&mut data, SIZE, &vertices, body, membrane);
-        draw_mini_disc(&mut data, SIZE, *center, section_scale * 0.34, core);
+    let mut body_polygons = Vec::with_capacity(count * 2);
+    for outline in &section_outlines {
+        body_polygons.push(outline.clone());
+    }
+    for section in 1..count {
+        let parent =
+            snapshot.display_section_parents[section - 1].min((section - 1) as u8) as usize;
+        if let Some(ribbon) = mini_segment_bridge_ribbon(
+            size,
+            snapshot.species,
+            section,
+            centers[parent],
+            centers[section],
+            controls[section - 1],
+            &section_vertices[parent],
+            &section_vertices[section],
+        ) {
+            body_polygons.push(ribbon);
+        }
+    }
+
+    let union_center = centers.iter().take(count).copied().sum::<Vec2>() / count as f32;
+    draw_mini_union_body(
+        &mut data,
+        size,
+        &body_polygons,
+        union_center,
+        body,
+        gel_highlight,
+        membrane,
+    );
+
+    for section in (0..count).rev() {
+        let vertices = &section_vertices[section];
+        draw_mini_internal_rays(&mut data, size, centers[section], vertices, ray_color);
+        draw_mini_core(
+            &mut data,
+            size,
+            centers[section],
+            draw_scale * local_scales[section] * 0.25,
+            core_outer,
+            core_inner,
+        );
     }
 
     let mut image = Image::new_fill(
         Extent3d {
-            width: SIZE,
-            height: SIZE,
+            width: size,
+            height: size,
             depth_or_array_layers: 1,
         },
         TextureDimension::D2,
@@ -4283,37 +5333,248 @@ fn render_species_miniature(snapshot: &SpeciesSnapshot) -> Image {
     image
 }
 
-fn species_miniature_vertices(snapshot: &SpeciesSnapshot, center: Vec2, scale: f32) -> [Vec2; 8] {
+fn species_miniature_vertices(
+    snapshot: &SpeciesSnapshot,
+    section: usize,
+    center: Vec2,
+    scale: f32,
+) -> [Vec2; 8] {
+    let section_scale = {
+        let value = snapshot.display_section_scale[section];
+        if value > 0.01 { value } else { 1.0 }.clamp(0.48, 1.78)
+    };
     std::array::from_fn(|ray| {
-        let angle = ray as f32 / 8.0 * std::f32::consts::TAU + snapshot.average_angle_offsets[ray];
-        let radius = snapshot.average_radii[ray].clamp(0.30, 1.62);
-        center + Vec2::new(angle.cos(), -angle.sin()) * scale * radius
+        let angle = ray as f32 / 8.0 * std::f32::consts::TAU
+            + snapshot.display_section_headings[section]
+            + snapshot.display_section_angle_offsets[section][ray];
+        let radius = snapshot.display_section_radii[section][ray].clamp(0.24, 1.72);
+        center + Vec2::new(angle.cos(), -angle.sin()) * scale * radius * section_scale
     })
 }
 
-fn draw_mini_polygon(
+fn smooth_mini_contour(vertices: &[Vec2; 8], center: Vec2, detail: usize) -> Vec<Vec2> {
+    let detail = detail.max(2);
+    let mut contour = Vec::with_capacity(vertices.len() * detail);
+    for index in 0..vertices.len() {
+        let p0 = vertices[(index + vertices.len() - 1) % vertices.len()];
+        let p1 = vertices[index];
+        let p2 = vertices[(index + 1) % vertices.len()];
+        let p3 = vertices[(index + 2) % vertices.len()];
+        for step in 0..detail {
+            let t = step as f32 / detail as f32;
+            let t2 = t * t;
+            let t3 = t2 * t;
+            let point = (p1 * 2.0
+                + (p2 - p0) * t
+                + (p0 * 2.0 - p1 * 5.0 + p2 * 4.0 - p3) * t2
+                + (-p0 + p1 * 3.0 - p2 * 3.0 + p3) * t3)
+                * 0.5;
+            let normal = (point - center).try_normalize().unwrap_or(Vec2::Y);
+            let wave = ((index as f32 * 1.73 + step as f32 * 0.91).sin()) * 0.35;
+            contour.push(point + normal * wave);
+        }
+    }
+    contour
+}
+
+fn mini_bridge_fallback_control(species: u32, section: usize, parent: Vec2, child: Vec2) -> Vec2 {
+    let delta = child - parent;
+    let Some(direction) = delta.try_normalize() else {
+        return parent.lerp(child, 0.5);
+    };
+    let side = Vec2::new(-direction.y, direction.x);
+    let bend_seed = (species as f32 * 0.017 + section as f32 * 1.791).sin();
+    parent.lerp(child, 0.5) + side * delta.length() * 0.16 * bend_seed
+}
+
+fn mini_shape_support_radius(vertices: &[Vec2; 8], center: Vec2, direction: Vec2) -> f32 {
+    let Some(direction) = direction.try_normalize() else {
+        return 1.0;
+    };
+    vertices
+        .iter()
+        .map(|vertex| (*vertex - center).dot(direction))
+        .fold(0.0, f32::max)
+        .max(1.0)
+}
+
+fn quadratic_mini_point(start: Vec2, control: Vec2, end: Vec2, t: f32) -> Vec2 {
+    start.lerp(control, t).lerp(control.lerp(end, t), t)
+}
+
+fn quadratic_mini_tangent(start: Vec2, control: Vec2, end: Vec2, t: f32) -> Vec2 {
+    ((control - start) * (1.0 - t) + (end - control) * t)
+        .try_normalize()
+        .unwrap_or_else(|| (end - start).try_normalize().unwrap_or(Vec2::X))
+}
+
+fn mini_segment_bridge_ribbon(
+    size: u32,
+    species: u32,
+    section: usize,
+    parent_center: Vec2,
+    child_center: Vec2,
+    control: Vec2,
+    parent_vertices: &[Vec2; 8],
+    child_vertices: &[Vec2; 8],
+) -> Option<Vec<Vec2>> {
+    let center_delta = child_center - parent_center;
+    let distance = center_delta.length();
+    if distance < 1.0 {
+        return None;
+    }
+
+    let samples = if size >= 256 { 28 } else { 18 };
+    let mut left = Vec::with_capacity(samples + 1);
+    let mut right = Vec::with_capacity(samples + 1);
+    let organic_seed = species as f32 * 0.031 + section as f32 * 2.137;
+
+    for step in 0..=samples {
+        let t = step as f32 / samples as f32;
+        let point = quadratic_mini_point(parent_center, control, child_center, t);
+        let tangent = quadratic_mini_tangent(parent_center, control, child_center, t);
+        let normal = Vec2::new(-tangent.y, tangent.x);
+        let parent_left = mini_shape_support_radius(parent_vertices, parent_center, normal);
+        let child_left = mini_shape_support_radius(child_vertices, child_center, normal);
+        let parent_right = mini_shape_support_radius(parent_vertices, parent_center, -normal);
+        let child_right = mini_shape_support_radius(child_vertices, child_center, -normal);
+        let end_blend = (t * 2.0 - 1.0).powi(2);
+        let waist = 0.76 + end_blend * 0.24;
+        let ripple_a = (t * std::f32::consts::TAU * 2.0 + organic_seed).sin() * 0.045;
+        let ripple_b = (t * std::f32::consts::TAU * 2.7 + organic_seed * 1.37).sin() * 0.035;
+        let left_radius =
+            (parent_left + (child_left - parent_left) * t) * waist * (1.0 + ripple_a + ripple_b);
+        let right_radius = (parent_right + (child_right - parent_right) * t)
+            * waist
+            * (1.0 - ripple_a + ripple_b * 0.6);
+        left.push(point + normal * left_radius.max(1.0));
+        right.push(point - normal * right_radius.max(1.0));
+    }
+
+    let mut ribbon = left;
+    ribbon.extend(right.into_iter().rev());
+    Some(ribbon)
+}
+
+fn draw_mini_union_body(
     data: &mut [u8],
     size: u32,
-    vertices: &[Vec2; 8],
+    polygons: &[Vec<Vec2>],
+    center: Vec2,
     body: [u8; 4],
+    highlight: [u8; 4],
     membrane: [u8; 4],
 ) {
-    let (min, max) = mini_bounds(vertices, size, 3.0);
-    for y in min.y as u32..=max.y as u32 {
-        for x in min.x as u32..=max.x as u32 {
+    if polygons.is_empty() {
+        return;
+    }
+    let mut min = Vec2::splat(f32::MAX);
+    let mut max = Vec2::splat(f32::MIN);
+    for polygon in polygons {
+        let (poly_min, poly_max) = mini_bounds(polygon, size, 8.0);
+        min = min.min(poly_min);
+        max = max.max(poly_max);
+    }
+    let min_x = min.x.floor().clamp(0.0, (size - 1) as f32) as u32;
+    let min_y = min.y.floor().clamp(0.0, (size - 1) as f32) as u32;
+    let max_x = max.x.ceil().clamp(0.0, (size - 1) as f32) as u32;
+    let max_y = max.y.ceil().clamp(0.0, (size - 1) as f32) as u32;
+    let mut mask = vec![false; (size * size) as usize];
+    let max_radius = polygons
+        .iter()
+        .flat_map(|polygon| polygon.iter())
+        .map(|vertex| vertex.distance(center))
+        .fold(1.0, f32::max);
+    let light_dir = Vec2::new(-0.58, -0.82).normalize();
+
+    for y in min_y..=max_y {
+        for x in min_x..=max_x {
             let point = Vec2::new(x as f32 + 0.5, y as f32 + 0.5);
-            if !point_in_polygon(point, vertices) {
+            let inside = polygons
+                .iter()
+                .any(|polygon| point_in_polygon(point, polygon));
+            mask[(y * size + x) as usize] = inside;
+        }
+    }
+
+    for y in min_y..=max_y {
+        for x in min_x..=max_x {
+            let point = Vec2::new(x as f32 + 0.5, y as f32 + 0.5);
+            let inside = mask[(y * size + x) as usize];
+            let edge = mini_union_mask_edge_distance(&mask, size, x, y, inside);
+            if !inside && edge > 2.5 {
                 continue;
             }
-            let edge = polygon_edge_distance(point, vertices);
-            let t = (1.0 - edge / 2.4).clamp(0.0, 1.0);
-            let color = if t > 0.0 {
-                mini_lerp_rgba(body, membrane, t)
+
+            let from_center = point - center;
+            let radial = (from_center.length() / max_radius).clamp(0.0, 1.0);
+            let light = from_center
+                .try_normalize()
+                .map(|normal| normal.dot(light_dir).max(0.0))
+                .unwrap_or(0.0);
+            let gel_t = (0.16 + light * 0.22 + (1.0 - radial) * 0.14).clamp(0.0, 0.48);
+            let membrane_t = if inside {
+                (1.0 - edge / 7.0).clamp(0.0, 1.0).powf(0.65)
             } else {
-                body
+                1.0
             };
+            let outer_fade = if inside {
+                1.0
+            } else {
+                (1.0 - edge / 2.5).clamp(0.0, 1.0)
+            };
+            let gel = mini_lerp_rgba(body, highlight, gel_t);
+            let mut color = mini_lerp_rgba(gel, membrane, membrane_t);
+            let alpha = if inside {
+                0.70 + membrane_t * 0.25
+            } else {
+                0.22 * outer_fade
+            };
+            color[3] = ((color[3] as f32) * alpha).round().clamp(0.0, 255.0) as u8;
             write_mini_pixel(data, size, x, y, color);
         }
+    }
+}
+
+fn mini_union_mask_edge_distance(mask: &[bool], size: u32, x: u32, y: u32, inside: bool) -> f32 {
+    let max_radius = if inside { 8 } else { 3 };
+    let size_i = size as i32;
+    let mut best = f32::MAX;
+    for dy in -max_radius..=max_radius {
+        for dx in -max_radius..=max_radius {
+            if dx == 0 && dy == 0 {
+                continue;
+            }
+            let nx = x as i32 + dx;
+            let ny = y as i32 + dy;
+            let different = if nx < 0 || ny < 0 || nx >= size_i || ny >= size_i {
+                inside
+            } else {
+                mask[(ny as u32 * size + nx as u32) as usize] != inside
+            };
+            if different {
+                best = best.min(((dx * dx + dy * dy) as f32).sqrt());
+            }
+        }
+    }
+    if best.is_finite() {
+        (best - 0.5).max(0.0)
+    } else {
+        (max_radius + 1) as f32
+    }
+}
+
+fn draw_mini_internal_rays(
+    data: &mut [u8],
+    size: u32,
+    center: Vec2,
+    vertices: &[Vec2; 8],
+    color: [u8; 4],
+) {
+    for vertex in vertices {
+        let start = center.lerp(*vertex, 0.30);
+        let end = center.lerp(*vertex, 0.82);
+        draw_mini_capsule(data, size, start, end, 0.55, color);
     }
 }
 
@@ -4336,6 +5597,56 @@ fn draw_mini_capsule(data: &mut [u8], size: u32, a: Vec2, b: Vec2, radius: f32, 
             }
         }
     }
+}
+
+fn draw_mini_core(
+    data: &mut [u8],
+    size: u32,
+    center: Vec2,
+    radius: f32,
+    outer: [u8; 4],
+    inner: [u8; 4],
+) {
+    let min_x = (center.x - radius - 2.0)
+        .floor()
+        .clamp(0.0, (size - 1) as f32) as u32;
+    let min_y = (center.y - radius - 2.0)
+        .floor()
+        .clamp(0.0, (size - 1) as f32) as u32;
+    let max_x = (center.x + radius + 2.0)
+        .ceil()
+        .clamp(0.0, (size - 1) as f32) as u32;
+    let max_y = (center.y + radius + 2.0)
+        .ceil()
+        .clamp(0.0, (size - 1) as f32) as u32;
+
+    for y in min_y..=max_y {
+        for x in min_x..=max_x {
+            let point = Vec2::new(x as f32 + 0.5, y as f32 + 0.5);
+            let distance = point.distance(center);
+            if distance > radius + 1.6 {
+                continue;
+            }
+            let inside = (1.0 - distance / radius.max(0.1)).clamp(0.0, 1.0);
+            let edge = if distance <= radius {
+                1.0
+            } else {
+                (1.0 - (distance - radius) / 1.6).clamp(0.0, 1.0)
+            };
+            let mut color = mini_lerp_rgba(outer, inner, inside.powf(0.55));
+            color[3] = ((color[3] as f32) * edge).round().clamp(0.0, 255.0) as u8;
+            write_mini_pixel(data, size, x, y, color);
+        }
+    }
+
+    let highlight = mini_rgba(1.0, 1.0, 0.96, 0.42);
+    draw_mini_disc(
+        data,
+        size,
+        center + Vec2::new(-radius * 0.25, -radius * 0.30),
+        radius * 0.28,
+        highlight,
+    );
 }
 
 fn draw_mini_disc(data: &mut [u8], size: u32, center: Vec2, radius: f32, color: [u8; 4]) {
@@ -4361,7 +5672,7 @@ fn draw_mini_disc(data: &mut [u8], size: u32, center: Vec2, radius: f32, color: 
     }
 }
 
-fn mini_bounds(vertices: &[Vec2; 8], size: u32, padding: f32) -> (Vec2, Vec2) {
+fn mini_bounds(vertices: &[Vec2], size: u32, padding: f32) -> (Vec2, Vec2) {
     let mut min = Vec2::splat(f32::MAX);
     let mut max = Vec2::splat(f32::MIN);
     for vertex in vertices {
@@ -4374,7 +5685,17 @@ fn mini_bounds(vertices: &[Vec2; 8], size: u32, padding: f32) -> (Vec2, Vec2) {
     )
 }
 
-fn point_in_polygon(point: Vec2, vertices: &[Vec2; 8]) -> bool {
+fn mini_bounds_unclamped(vertices: &[Vec2]) -> (Vec2, Vec2) {
+    let mut min = Vec2::splat(f32::MAX);
+    let mut max = Vec2::splat(f32::MIN);
+    for vertex in vertices {
+        min = min.min(*vertex);
+        max = max.max(*vertex);
+    }
+    (min, max)
+}
+
+fn point_in_polygon(point: Vec2, vertices: &[Vec2]) -> bool {
     let mut inside = false;
     let mut previous = vertices.len() - 1;
     for current in 0..vertices.len() {
@@ -4394,19 +5715,6 @@ fn point_in_polygon(point: Vec2, vertices: &[Vec2; 8]) -> bool {
         previous = current;
     }
     inside
-}
-
-fn polygon_edge_distance(point: Vec2, vertices: &[Vec2; 8]) -> f32 {
-    let mut distance = f32::MAX;
-    for current in 0..vertices.len() {
-        let next = (current + 1) % vertices.len();
-        distance = distance.min(distance_to_segment(
-            point,
-            vertices[current],
-            vertices[next],
-        ));
-    }
-    distance
 }
 
 fn distance_to_segment(point: Vec2, a: Vec2, b: Vec2) -> f32 {
@@ -4448,6 +5756,314 @@ fn write_mini_pixel(data: &mut [u8], size: u32, x: u32, y: u32, color: [u8; 4]) 
     }
     data[index + 3] = (out_a * 255.0).round() as u8;
 }
+
+fn species_journal_metric_sample(
+    snapshot: &SpeciesSnapshot,
+    max_alive: usize,
+    metric: SpeciesJournalMetric,
+) -> (f32, String, Color) {
+    match metric {
+        SpeciesJournalMetric::Population => {
+            let normalized = snapshot.alive as f32 / max_alive.max(1) as f32;
+            let color = if snapshot.alive_delta > 0 {
+                Color::srgb(0.50, 1.0, 0.58)
+            } else if snapshot.alive_delta < 0 {
+                Color::srgb(1.0, 0.36, 0.32)
+            } else {
+                Color::srgb(0.78, 0.93, 0.92)
+            };
+            (
+                normalized.clamp(0.0, 1.0),
+                format!("{} {:+}", snapshot.alive, snapshot.alive_delta),
+                color,
+            )
+        }
+        SpeciesJournalMetric::Viability => (
+            snapshot.average_viability.clamp(0.0, 1.0),
+            format!("{:.0}%", snapshot.average_viability * 100.0),
+            Color::srgb(0.78, 1.0, 0.82),
+        ),
+        SpeciesJournalMetric::Size => (
+            ((snapshot.average_size - CELL_SIZE_GENE_MIN)
+                / (CELL_SIZE_GENE_MAX - CELL_SIZE_GENE_MIN))
+                .clamp(0.0, 1.0),
+            format!("{:.1}", snapshot.average_size),
+            gene_stat_color(GeneStatId::Size),
+        ),
+        SpeciesJournalMetric::Speed => (
+            (snapshot.average_speed / CELL_SPEED_DISPLAY_MAX).clamp(0.0, 1.0),
+            format!("{:.0}", snapshot.average_speed),
+            Color::srgb(0.78, 0.91, 1.0),
+        ),
+        SpeciesJournalMetric::Turn => (
+            (snapshot.average_turn / CELL_TURN_DISPLAY_MAX).clamp(0.0, 1.0),
+            format!("{:.1}", snapshot.average_turn),
+            gene_stat_color(GeneStatId::Turn),
+        ),
+        SpeciesJournalMetric::Perception => (
+            (snapshot.average_perception / CELL_PERCEPTION_DISPLAY_MAX).clamp(0.0, 1.0),
+            format!("{:.0}", snapshot.average_perception),
+            gene_stat_color(GeneStatId::Perception),
+        ),
+        SpeciesJournalMetric::Persistence => (
+            (snapshot.average_persistence / CELL_PERSISTENCE_DISPLAY_MAX).clamp(0.0, 1.0),
+            format!("{:.0}%", snapshot.average_persistence),
+            gene_stat_color(GeneStatId::Persistence),
+        ),
+        SpeciesJournalMetric::Aggressiveness => (
+            (snapshot.average_aggressiveness / CELL_AGGRESSIVENESS_DISPLAY_MAX).clamp(0.0, 1.0),
+            format!("{:.0}%", snapshot.average_aggressiveness),
+            gene_stat_color(GeneStatId::Aggressiveness),
+        ),
+        SpeciesJournalMetric::Lysis => (
+            (snapshot.average_lysis / CELL_LYSIS_DISPLAY_MAX).clamp(0.0, 1.0),
+            if snapshot.average_lysis < 8.0 {
+                "нет".to_string()
+            } else {
+                format!("{:.0}%", snapshot.average_lysis)
+            },
+            if snapshot.average_lysis < 8.0 {
+                Color::srgb(0.58, 0.70, 0.72)
+            } else {
+                Color::srgb(1.0, 0.54, 0.68)
+            },
+        ),
+        SpeciesJournalMetric::Mutation => (
+            (snapshot.average_mutation / CELL_MUTATION_DISPLAY_MAX).clamp(0.0, 1.0),
+            format!("{:.0}%", snapshot.average_mutation),
+            gene_stat_color(GeneStatId::Mutation),
+        ),
+    }
+}
+
+fn update_species_journal_ui(
+    time: Res<Time>,
+    asset_server: Res<AssetServer>,
+    names: Res<SpeciesNameBook>,
+    stats: Res<SpeciesLedgerStats>,
+    state: Res<SpeciesLedgerUiState>,
+    mut images: ResMut<Assets<Image>>,
+    mut cache: ResMut<SpeciesMiniatureImageCache>,
+    mut panels: Query<(&mut Visibility, &mut Node, &mut PanelReveal), With<SpeciesJournalPanel>>,
+    mut image_queries: ParamSet<(
+        Query<&mut ImageNode, With<SpeciesJournalPortraitImage>>,
+        Query<&mut ImageNode, With<SpeciesJournalDietIcon>>,
+    )>,
+    mut text_queries: ParamSet<(
+        Query<&mut Text, With<SpeciesJournalTitleText>>,
+        Query<&mut Text, With<SpeciesJournalSubtitleText>>,
+        Query<(&mut Text, &mut TextColor), With<SpeciesJournalTrendText>>,
+        Query<&mut Text, With<SpeciesJournalBodyText>>,
+        Query<&mut Text, With<SpeciesJournalAreaText>>,
+        Query<(&SpeciesJournalMetricValue, &mut Text, &mut TextColor)>,
+    )>,
+    mut fills: Query<(&SpeciesJournalMetricFill, &mut Node), Without<SpeciesJournalPanel>>,
+) {
+    let selected_snapshot = (state.open && state.journal_open)
+        .then_some(())
+        .and_then(|_| {
+            state
+                .selected_species
+                .and_then(|species| species_snapshot_by_id(&stats, species))
+        });
+    let show = selected_snapshot.is_some();
+    let reveal_follow = 1.0 - (-13.0 * time.delta_secs()).exp();
+    for (mut visibility, mut node, mut reveal) in &mut panels {
+        if show {
+            *visibility = Visibility::Visible;
+            node.display = Display::Flex;
+        }
+        let target = if show { 1.0 } else { 0.0 };
+        reveal.progress += (target - reveal.progress) * reveal_follow;
+        node.left = px(SPECIES_JOURNAL_PANEL_LEFT - reveal.hidden_offset * (1.0 - reveal.progress));
+        if !show && reveal.progress < 0.002 {
+            *visibility = Visibility::Hidden;
+            node.display = Display::None;
+        }
+    }
+
+    let Some(snapshot) = selected_snapshot else {
+        return;
+    };
+
+    let name = species_name_for(&names, snapshot.species);
+    let genus = species_genus_name_for(&names, snapshot.species);
+    let shape = species_shape_label_from_id(snapshot.species);
+    let genus_key = species_genus_key(snapshot.species);
+    let genus_alive = stats
+        .snapshots
+        .iter()
+        .filter(|candidate| species_genus_key(candidate.species) == genus_key)
+        .map(|candidate| candidate.alive)
+        .sum::<usize>();
+    let related_count = stats
+        .snapshots
+        .iter()
+        .filter(|candidate| species_snapshots_related(snapshot, candidate))
+        .count();
+    let max_alive = stats
+        .snapshots
+        .iter()
+        .map(|candidate| candidate.alive)
+        .max()
+        .unwrap_or(snapshot.alive);
+    let structure = if snapshot.display_section_count >= 2 {
+        format!(
+            "{} секц. · сегментных {:.0}%",
+            snapshot.display_section_count,
+            snapshot.segmented_ratio * 100.0
+        )
+    } else {
+        "односекционная".to_string()
+    };
+    let grass_multiplier = grass_energy_multiplier(snapshot.average_aggressiveness);
+    let meat_multiplier = meat_energy_multiplier(snapshot.average_aggressiveness);
+    let diet = trophic_type_name(snapshot.average_aggressiveness);
+
+    if let Ok(mut title) = text_queries.p0().single_mut() {
+        **title = name;
+    }
+    if let Ok(mut subtitle) = text_queries.p1().single_mut() {
+        **subtitle =
+            format!("{shape} · род {genus} · в роде {genus_alive} · родственных {related_count}");
+    }
+    if let Ok((mut trend, mut color)) = text_queries.p2().single_mut() {
+        **trend = if snapshot.alive_delta == 0 {
+            format!("{} живых", snapshot.alive)
+        } else {
+            format!("{} {:+}", snapshot.alive, snapshot.alive_delta)
+        };
+        *color = TextColor(if snapshot.alive_delta > 0 {
+            Color::srgb(0.48, 1.0, 0.56)
+        } else if snapshot.alive_delta < 0 {
+            Color::srgb(1.0, 0.36, 0.32)
+        } else {
+            Color::srgb(0.76, 0.94, 0.92)
+        });
+    }
+    if let Ok(mut body) = text_queries.p3().single_mut() {
+        **body = format!(
+            "{diet} · трава x{grass_multiplier:.2} · мясо x{meat_multiplier:.2}\n{structure} · ареал {:.0}:{:.0}",
+            snapshot.average_position.x, snapshot.average_position.y
+        );
+        **body = format!(
+            "{diet} · трава x{grass_multiplier:.2} · мясо x{meat_multiplier:.2}\n{structure}"
+        );
+    }
+    if let Ok(mut area) = text_queries.p4().single_mut() {
+        let half = species_area_half_size(snapshot);
+        **area = format!(
+            "центр {:.0}:{:.0} · {:.0} x {:.0}",
+            snapshot.average_position.x,
+            snapshot.average_position.y,
+            half.x * 2.0,
+            half.y * 2.0
+        );
+    }
+
+    if let Ok(mut diet_icon) = image_queries.p1().single_mut() {
+        diet_icon.image = asset_server.load(trophic_type_icon(snapshot.average_aggressiveness));
+        diet_icon.color = trophic_icon_tint(snapshot.average_aggressiveness);
+    }
+
+    if let Ok(mut portrait) = image_queries.p0().single_mut() {
+        let signature = species_miniature_signature(snapshot);
+        let refresh = cache
+            .journal_signatures
+            .get(&snapshot.species)
+            .copied()
+            .is_none_or(|cached| cached != signature)
+            || !cache.journal_handles.contains_key(&snapshot.species);
+        if refresh {
+            let handle = images.add(render_species_journal_portrait(snapshot));
+            cache.journal_handles.insert(snapshot.species, handle);
+            cache.journal_signatures.insert(snapshot.species, signature);
+        }
+        if let Some(handle) = cache.journal_handles.get(&snapshot.species) {
+            portrait.image = handle.clone();
+            portrait.color = Color::WHITE;
+        }
+    }
+    if cache.journal_handles.len() > 32 {
+        let selected = snapshot.species;
+        cache
+            .journal_handles
+            .retain(|species, _| *species == selected);
+        cache
+            .journal_signatures
+            .retain(|species, _| *species == selected);
+    }
+
+    let follow = 1.0 - (-12.0 * time.delta_secs()).exp();
+    for (fill, mut node) in &mut fills {
+        let (normalized, _, _) = species_journal_metric_sample(snapshot, max_alive, fill.metric);
+        let target = normalized.clamp(0.0, 1.0) * 100.0;
+        let current = match node.width {
+            Val::Percent(value) => value,
+            _ => 0.0,
+        };
+        node.width = percent(current + (target - current) * follow);
+    }
+    for (value, mut text, mut color) in &mut text_queries.p5() {
+        let (_, display, value_color) =
+            species_journal_metric_sample(snapshot, max_alive, value.metric);
+        **text = display;
+        *color = TextColor(value_color);
+    }
+}
+
+fn species_journal_area_row_system(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    stats: Res<SpeciesLedgerStats>,
+    state: Res<SpeciesLedgerUiState>,
+    mut focus: ResMut<SpeciesCameraFocus>,
+    mut rows: Query<
+        (&Interaction, &mut BackgroundColor, &mut BorderColor),
+        (Changed<Interaction>, With<SpeciesJournalAreaRow>),
+    >,
+    highlights: Query<Entity, With<SpeciesAreaHighlightEntity>>,
+) {
+    let snapshot = state
+        .selected_species
+        .and_then(|species| species_snapshot_by_id(&stats, species));
+    let accent = snapshot
+        .map(|snapshot| trophic_spectrum_color(snapshot.average_aggressiveness, 1.0))
+        .unwrap_or(Color::srgb(0.32, 0.72, 0.68));
+
+    for (interaction, mut background, mut border) in &mut rows {
+        match *interaction {
+            Interaction::Pressed => {
+                background.0 = Color::srgb(0.05, 0.12, 0.12);
+                *border = BorderColor::all(accent);
+                if let Some(snapshot) = snapshot {
+                    for entity in &highlights {
+                        commands.entity(entity).despawn();
+                    }
+                    focus.active = true;
+                    focus.target = species_area_center(snapshot);
+                    focus.target_scale = species_area_focus_scale(snapshot);
+                    spawn_species_area_highlight(
+                        &mut commands,
+                        &mut meshes,
+                        &mut materials,
+                        snapshot,
+                    );
+                }
+            }
+            Interaction::Hovered => {
+                background.0 = Color::srgb(0.026, 0.064, 0.066);
+                *border = BorderColor::all(accent);
+            }
+            Interaction::None => {
+                background.0 = Color::srgb(0.012, 0.030, 0.034);
+                *border = BorderColor::all(Color::srgb(0.32, 0.72, 0.68));
+            }
+        }
+    }
+}
+
 #[allow(dead_code)]
 fn update_species_ledger_details(
     names: Res<SpeciesNameBook>,
@@ -4643,6 +6259,7 @@ fn species_ledger_row_system(
 
         if was_selected && !is_double {
             state.selected_species = None;
+            state.journal_open = false;
             state.scroll_target_species = None;
             continue;
         }
