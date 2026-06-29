@@ -114,6 +114,9 @@ const LYSIS_TARGET_RECHECK_MAX: f32 = 0.42;
 const LYSIS_ATTACK_DEFORM_DURATION: f32 = 0.38;
 const LYSIS_HIT_DEFORM_DURATION: f32 = 0.46;
 const LYSIS_PARTICLES_PER_HIT: usize = 8;
+const HIT_FLASH_DECAY: f32 = 4.8;
+const HIT_FLASH_VICTIM_GAIN: f32 = 1.0;
+const HIT_FLASH_SELF_GAIN: f32 = 0.34;
 const NO_CELL_TARGET: u64 = u64::MAX;
 const TAIL_LONGITUDINAL_STIFFNESS: f32 = 12.0;
 const TAIL_LATERAL_STIFFNESS: f32 = 5.2;
@@ -225,6 +228,8 @@ pub struct SimConfig {
     pub cell_shape_weights: [f32; CELL_SHAPE_COUNT],
     pub sound_volume: f32,
     pub ambient_volume: f32,
+    pub eco_log: bool,
+    pub eco_log_interval: f32,
 }
 
 pub const CELL_SHAPE_COUNT: usize = 13;
@@ -266,6 +271,8 @@ impl Default for SimConfig {
             cell_shape_weights: DEFAULT_CELL_SHAPE_WEIGHTS,
             sound_volume: 0.8,
             ambient_volume: 0.6,
+            eco_log: env_flag("ORGANOIDS_ECO_LOG"),
+            eco_log_interval: env_f32("ORGANOIDS_ECO_LOG_INTERVAL").unwrap_or(3.0),
         }
     }
 }
@@ -343,6 +350,12 @@ impl SimConfig {
                 "--no-segmented-cells" => {
                     config.segmented_cells = false;
                 }
+                "--eco-log" => {
+                    config.eco_log = true;
+                }
+                "--eco-log-interval" => {
+                    config.eco_log_interval = parse_next(&mut args, "--eco-log-interval")?;
+                }
                 "--help" | "-h" => {
                     return Err(usage());
                 }
@@ -367,8 +380,23 @@ fn parse_next<T: std::str::FromStr>(
         .map_err(|_| format!("Invalid value `{raw}` for `{flag}`.\n\n{}", usage()))
 }
 
+fn env_flag(name: &str) -> bool {
+    std::env::var(name)
+        .map(|value| {
+            let value = value.trim().to_ascii_lowercase();
+            matches!(value.as_str(), "1" | "true" | "yes" | "on")
+        })
+        .unwrap_or(false)
+}
+
+fn env_f32(name: &str) -> Option<f32> {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.trim().parse::<f32>().ok())
+}
+
 pub fn usage() -> String {
-    "Usage: organoids [--cells 10000] [--food 3000] [--width 18000] [--height 10000] [--shape rectangle|circle] [--obstacles 30] [--food-growers 6] [--collision-stiffness 500] [--collision-damping 15] [--seed 123] [--vsync] [--no-segmented-cells]".to_string()
+    "Usage: organoids [--cells 10000] [--food 3000] [--width 18000] [--height 10000] [--shape rectangle|circle] [--obstacles 30] [--food-growers 6] [--collision-stiffness 500] [--collision-damping 15] [--seed 123] [--vsync] [--no-segmented-cells] [--eco-log] [--eco-log-interval 3]".to_string()
 }
 
 fn floor_food_count(total_food: usize) -> usize {
@@ -872,6 +900,7 @@ impl WorldState {
                 self.cells.lysis_deform_time[i][section] =
                     (self.cells.lysis_deform_time[i][section] - dt).max(0.0);
             }
+            self.cells.hit_flash[i] = (self.cells.hit_flash[i] - HIT_FLASH_DECAY * dt).max(0.0);
             self.cells.hunt_pause[i] = (self.cells.hunt_pause[i] - dt).max(0.0);
             self.cells.hunt_recheck[i] = (self.cells.hunt_recheck[i] - dt).max(0.0);
             let x = self.cells.x[i];
@@ -1384,6 +1413,10 @@ impl WorldState {
         self.cells.jelly_intensity[attacker] =
             (self.cells.jelly_intensity[attacker] + 0.16).min(1.0);
         self.cells.jelly_intensity[victim] = (self.cells.jelly_intensity[victim] + 0.38).min(1.0);
+        self.cells.hit_flash[attacker] =
+            (self.cells.hit_flash[attacker] + HIT_FLASH_SELF_GAIN).min(1.0);
+        self.cells.hit_flash[victim] =
+            (self.cells.hit_flash[victim] + HIT_FLASH_VICTIM_GAIN).min(1.0);
         if self.cells.viability[victim] <= 0.0 {
             self.cells.target_cell[attacker] = -1;
             self.cells.target_cell_id[attacker] = NO_CELL_TARGET;
@@ -4562,6 +4595,7 @@ pub struct CellStore {
     pub jelly_dir_x: Vec<f32>,
     pub jelly_dir_y: Vec<f32>,
     pub wake_strength: Vec<f32>,
+    pub hit_flash: Vec<f32>,
 }
 
 impl CellStore {
@@ -4932,6 +4966,7 @@ impl CellStore {
             jelly_dir_x: Vec::with_capacity(count),
             jelly_dir_y: Vec::with_capacity(count),
             wake_strength: Vec::with_capacity(count),
+            hit_flash: Vec::with_capacity(count),
         };
 
         for _cell_index in 0..count {
@@ -5149,6 +5184,7 @@ impl CellStore {
             store.jelly_dir_x.push(c);
             store.jelly_dir_y.push(s);
             store.wake_strength.push(0.0);
+            store.hit_flash.push(0.0);
             store.id.push(store.next_id);
             store.next_id += 1;
         }
@@ -5832,6 +5868,7 @@ impl CellStore {
         self.jelly_dir_x.push(offset_c);
         self.jelly_dir_y.push(offset_s);
         self.wake_strength.push(0.0);
+        self.hit_flash.push(0.0);
         self.species[child_index] = self.taxonomy_species_id(child_index);
     }
 
@@ -5921,6 +5958,7 @@ impl CellStore {
         self.jelly_dir_x.swap_remove(index);
         self.jelly_dir_y.swap_remove(index);
         self.wake_strength.swap_remove(index);
+        self.hit_flash.swap_remove(index);
     }
 
     #[allow(dead_code)]
@@ -7962,6 +8000,12 @@ mod tests {
         assert!(50.0 - victim_after > 50.0 - attacker_after);
         assert!(world.cells.lysis_cooldown[0] > 0.0);
         assert_eq!(world.visual_particles.len(), LYSIS_PARTICLES_PER_HIT);
+        assert!(world.cells.hit_flash[1] > world.cells.hit_flash[0]);
+        let victim_flash = world.cells.hit_flash[1];
+        world.update(0.1);
+        assert!(world.cells.hit_flash[1] < victim_flash);
+        let attacker_after_decay = world.cells.viability[0];
+        let victim_after_decay = world.cells.viability[1];
         world.cells.lysis_deform_time[0][0] *= 0.55;
         world.cells.lysis_deform_time[1][0] *= 0.55;
         let attacker_radii = world.cells.lysis_visual_radii(0, 0);
@@ -7970,8 +8014,8 @@ mod tests {
         assert!(victim_radii[4] < world.cells.visual_radii[1][4]);
         assert!(victim_radii[4] >= world.cells.core_radius[1]);
         assert!(!world.try_lysis_attack(0, 1));
-        assert_eq!(world.cells.viability[0], attacker_after);
-        assert_eq!(world.cells.viability[1], victim_after);
+        assert_eq!(world.cells.viability[0], attacker_after_decay);
+        assert_eq!(world.cells.viability[1], victim_after_decay);
     }
 
     #[test]

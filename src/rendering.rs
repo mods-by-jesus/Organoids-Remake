@@ -365,6 +365,7 @@ pub fn sync_instance_data(
             world.cells.aggressiveness[i],
             world.cells.lysis[i],
         );
+        let cell_color = apply_hit_flash_color(cell_color, world.cells.hit_flash[i]);
 
         let velocity = Vec2::new(world.cells.vx[i], world.cells.vy[i]);
         let velocity_length = velocity.length();
@@ -1018,6 +1019,19 @@ pub fn sync_instance_data(
 
     sort_instances_back_to_front(&mut particles);
     stats.upload_time = started.elapsed();
+}
+
+fn apply_hit_flash_color(mut color: [f32; 4], flash: f32) -> [f32; 4] {
+    let amount = flash.clamp(0.0, 1.0).powf(0.65) * 0.62;
+    if amount <= 0.001 {
+        return color;
+    }
+    let hit = [1.0, 0.82, 0.68];
+    for channel in 0..3 {
+        color[channel] += (hit[channel] - color[channel]) * amount;
+    }
+    color[3] = (color[3] + 0.10 * amount).clamp(0.0, 1.0);
+    color
 }
 
 fn segmented_cell_instance(

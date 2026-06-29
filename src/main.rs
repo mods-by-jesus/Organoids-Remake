@@ -91,6 +91,17 @@ impl FpsAverageStats {
     }
 }
 
+#[derive(Resource, Default)]
+struct EcoLogState {
+    wall_elapsed: f32,
+    sim_elapsed: f32,
+    initialized: bool,
+    last_cells: usize,
+    last_food: usize,
+    last_viability: f32,
+    last_food_energy: f32,
+}
+
 #[derive(Clone, Copy)]
 enum PopulationCounterKind {
     Cells,
@@ -152,6 +163,12 @@ struct SpeciesCameraFocus {
     active: bool,
     target: Vec2,
     target_scale: f32,
+}
+
+#[derive(Resource, Default)]
+struct SpeciesAreaHighlightState {
+    species: Option<u32>,
+    rendered_revision: u64,
 }
 
 #[derive(Component)]
@@ -328,6 +345,232 @@ enum SpeciesJournalTooltipKind {
 #[derive(Component)]
 struct SpeciesJournalTooltipTarget {
     kind: SpeciesJournalTooltipKind,
+}
+
+#[derive(Resource)]
+struct ChronicleUiState {
+    open: bool,
+    event_filters: u8,
+    graph_mode: ChronicleGraphMode,
+}
+
+impl Default for ChronicleUiState {
+    fn default() -> Self {
+        Self {
+            open: false,
+            event_filters: CHRONICLE_ALL_EVENT_FILTERS,
+            graph_mode: ChronicleGraphMode::Overall,
+        }
+    }
+}
+
+impl ChronicleUiState {
+    fn event_enabled(&self, kind: ChronicleEventKind) -> bool {
+        self.event_filters & chronicle_filter_bit(kind) != 0
+    }
+
+    fn toggle_event_filter(&mut self, kind: ChronicleEventKind) {
+        self.event_filters ^= chronicle_filter_bit(kind);
+    }
+}
+
+#[derive(Resource)]
+struct SimulationChronicle {
+    elapsed: f32,
+    sample_accumulator: f32,
+    revision: u64,
+    snapshots: Vec<ChronicleSnapshot>,
+    events: Vec<ChronicleEvent>,
+    species_records: HashMap<u32, ChronicleSpeciesRecord>,
+    dominant_species: Option<u32>,
+    energy_state: ChronicleEnergyState,
+    first_lysis_reported: bool,
+    first_segmented_reported: bool,
+    last_population_check_time: f32,
+    last_population_check_cells: usize,
+}
+
+impl Default for SimulationChronicle {
+    fn default() -> Self {
+        Self {
+            elapsed: 0.0,
+            sample_accumulator: 0.0,
+            revision: 0,
+            snapshots: Vec::with_capacity(CHRONICLE_MAX_SNAPSHOTS),
+            events: Vec::with_capacity(CHRONICLE_MAX_EVENTS),
+            species_records: HashMap::new(),
+            dominant_species: None,
+            energy_state: ChronicleEnergyState::Balanced,
+            first_lysis_reported: false,
+            first_segmented_reported: false,
+            last_population_check_time: 0.0,
+            last_population_check_cells: 0,
+        }
+    }
+}
+
+#[derive(Resource, Default)]
+struct ChronicleGraphCache {
+    revision: u64,
+    mode: ChronicleGraphMode,
+    handle: Option<Handle<Image>>,
+}
+
+#[derive(Resource, Default)]
+struct ChronicleEventScrollState {
+    scrollbar_dragging: bool,
+    initialized: bool,
+    target_y: f32,
+}
+
+#[derive(Clone, Copy)]
+struct ChronicleSnapshot {
+    time: f32,
+    cells: usize,
+    food: usize,
+    wild_food: usize,
+    feeder_food: usize,
+    meat: usize,
+    avg_viability: f32,
+    energy_in: f32,
+    energy_out: f32,
+    energy_net: f32,
+    metabolism: f32,
+    mitosis: f32,
+    lysis: f32,
+    fps: f32,
+    sim_ms: f32,
+    render_ms: f32,
+    species: usize,
+    segmented: usize,
+    lysis_capable: usize,
+}
+
+struct ChronicleEvent {
+    time: f32,
+    kind: ChronicleEventKind,
+    title: String,
+    body: String,
+    species: Option<u32>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ChronicleEventKind {
+    World,
+    Species,
+    Extinction,
+    Population,
+    Energy,
+    Trait,
+}
+
+#[derive(Default)]
+struct ChronicleSpeciesRecord {
+    alive: usize,
+    peak_alive: usize,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ChronicleEnergyState {
+    Deficit,
+    Balanced,
+    Surplus,
+}
+
+impl Default for ChronicleEnergyState {
+    fn default() -> Self {
+        Self::Balanced
+    }
+}
+
+#[derive(Component)]
+struct ChronicleButton;
+
+#[derive(Component)]
+struct ChroniclePanel;
+
+#[derive(Component)]
+struct ChronicleOverviewText;
+
+#[derive(Clone, Copy)]
+enum ChronicleSummaryMetric {
+    Time,
+    Cells,
+    Species,
+    Food,
+    Viability,
+    Energy,
+    Costs,
+    Traits,
+    Performance,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ChronicleGraphMode {
+    Overall,
+    Cells,
+    Food,
+    Viability,
+    Energy,
+}
+
+impl Default for ChronicleGraphMode {
+    fn default() -> Self {
+        Self::Overall
+    }
+}
+
+#[derive(Component)]
+struct ChronicleSummaryValue {
+    metric: ChronicleSummaryMetric,
+}
+
+#[derive(Component)]
+struct ChronicleEventText;
+
+#[derive(Component)]
+struct ChronicleGraphImage;
+
+#[derive(Component)]
+struct ChronicleFilterButton {
+    kind: ChronicleEventKind,
+}
+
+#[derive(Component)]
+struct ChronicleGraphButton {
+    mode: ChronicleGraphMode,
+}
+
+#[derive(Component)]
+struct ChronicleEventScrollArea;
+
+#[derive(Component)]
+struct ChronicleEventScrollbarTrack;
+
+#[derive(Component)]
+struct ChronicleEventScrollbarThumb;
+
+#[derive(Clone, Copy)]
+enum ChronicleLegendLine {
+    Cells,
+    Food,
+    Viability,
+    EnergyPositive,
+    EnergyNegative,
+}
+
+#[derive(Clone, Copy)]
+enum ChronicleTooltipKind {
+    Summary(ChronicleSummaryMetric),
+    Filter(ChronicleEventKind),
+    Graph,
+    GraphMode(ChronicleGraphMode),
+    Legend(ChronicleLegendLine),
+}
+
+#[derive(Component)]
+struct ChronicleTooltipTarget {
+    kind: ChronicleTooltipKind,
 }
 
 #[derive(Resource)]
@@ -537,6 +780,33 @@ const SPECIES_LEDGER_WHEEL_PIXEL_SCROLL: f32 = 0.55;
 const SPECIES_LEDGER_SCROLL_FOLLOW: f32 = 15.0;
 const SPECIES_LEDGER_SCROLLBAR_FOLLOW: f32 = 11.0;
 const SPECIES_LEDGER_AUTO_SCROLL_FOLLOW: f32 = 6.5;
+const CHRONICLE_SAMPLE_INTERVAL: f32 = 1.0;
+const CHRONICLE_MAX_SNAPSHOTS: usize = 900;
+const CHRONICLE_MAX_EVENTS: usize = 240;
+const CHRONICLE_BUTTON_LEFT: f32 = 72.0;
+const CHRONICLE_PANEL_LEFT: f32 = 72.0;
+const CHRONICLE_PANEL_BOTTOM: f32 = 74.0;
+const CHRONICLE_PANEL_WIDTH: f32 = 860.0;
+const CHRONICLE_PANEL_HEIGHT_PERCENT: f32 = 58.0;
+const CHRONICLE_PANEL_REVEAL_OFFSET: f32 = 930.0;
+const CHRONICLE_GRAPH_WIDTH: u32 = 430;
+const CHRONICLE_GRAPH_HEIGHT: u32 = 220;
+const CHRONICLE_EVENT_WHEEL_LINE_SCROLL: f32 = 42.0;
+const CHRONICLE_EVENT_WHEEL_PIXEL_SCROLL: f32 = 0.75;
+const CHRONICLE_EVENT_SCROLL_FOLLOW: f32 = 13.0;
+const CHRONICLE_EVENT_SCROLLBAR_FOLLOW: f32 = 11.0;
+const CHRONICLE_FILTER_WORLD: u8 = 1 << 0;
+const CHRONICLE_FILTER_SPECIES: u8 = 1 << 1;
+const CHRONICLE_FILTER_EXTINCTION: u8 = 1 << 2;
+const CHRONICLE_FILTER_POPULATION: u8 = 1 << 3;
+const CHRONICLE_FILTER_ENERGY: u8 = 1 << 4;
+const CHRONICLE_FILTER_TRAIT: u8 = 1 << 5;
+const CHRONICLE_ALL_EVENT_FILTERS: u8 = CHRONICLE_FILTER_WORLD
+    | CHRONICLE_FILTER_SPECIES
+    | CHRONICLE_FILTER_EXTINCTION
+    | CHRONICLE_FILTER_POPULATION
+    | CHRONICLE_FILTER_ENERGY
+    | CHRONICLE_FILTER_TRAIT;
 const SPECIES_EPITHET_SLOTS: u32 = 10_000;
 const SPECIES_CLASS_STRIDE: u32 = 10_000_000;
 const UI_FONT: &str = "fonts/FiraSansExtraCondensed-Regular.ttf";
@@ -589,6 +859,47 @@ fn species_ledger_scrollbar_fraction(window: &Window, cursor: Vec2) -> Option<f3
     let track_bottom = panel_bottom - 20.0;
     if cursor.x < panel_right - 34.0
         || cursor.x > panel_right - 2.0
+        || cursor.y < track_top
+        || cursor.y > track_bottom
+    {
+        return None;
+    }
+    Some(((cursor.y - track_top) / (track_bottom - track_top).max(1.0)).clamp(0.0, 1.0))
+}
+
+fn chronicle_event_rect(window: &Window) -> (f32, f32, f32, f32) {
+    let panel_left = CHRONICLE_PANEL_LEFT;
+    let panel_bottom = window.height() - CHRONICLE_PANEL_BOTTOM;
+    let panel_top = panel_bottom - window.height() * (CHRONICLE_PANEL_HEIGHT_PERCENT / 100.0);
+    let inner_left = panel_left + 14.0;
+    let inner_width = CHRONICLE_PANEL_WIDTH - 28.0;
+    let body_width = inner_width - 12.0;
+    let event_left = inner_left;
+    let event_right = event_left + body_width * 0.46;
+    let event_top = panel_top + 14.0 + 34.0 + 10.0 + 76.0 + 10.0;
+    let event_bottom = panel_bottom - 14.0;
+    (event_left, event_right, event_top, event_bottom)
+}
+
+fn cursor_over_chronicle_events(window: &Window, cursor: Vec2) -> bool {
+    let (left, right, top, bottom) = chronicle_event_rect(window);
+    cursor.x >= left && cursor.x <= right && cursor.y >= top && cursor.y <= bottom
+}
+
+fn cursor_over_chronicle_panel(window: &Window, cursor: Vec2) -> bool {
+    let left = CHRONICLE_PANEL_LEFT;
+    let right = left + CHRONICLE_PANEL_WIDTH;
+    let bottom = window.height() - CHRONICLE_PANEL_BOTTOM;
+    let top = bottom - window.height() * (CHRONICLE_PANEL_HEIGHT_PERCENT / 100.0);
+    cursor.x >= left && cursor.x <= right && cursor.y >= top && cursor.y <= bottom
+}
+
+fn chronicle_event_scrollbar_fraction(window: &Window, cursor: Vec2) -> Option<f32> {
+    let (_, right, top, bottom) = chronicle_event_rect(window);
+    let track_top = top + 44.0;
+    let track_bottom = bottom - 10.0;
+    if cursor.x < right - 28.0
+        || cursor.x > right - 2.0
         || cursor.y < track_top
         || cursor.y > track_bottom
     {
@@ -659,10 +970,16 @@ fn main() {
         .init_resource::<SpeciesLedgerDragState>()
         .init_resource::<SpeciesMiniatureImageCache>()
         .init_resource::<SpeciesCameraFocus>()
+        .init_resource::<SpeciesAreaHighlightState>()
         .init_resource::<SpeciesLedgerStats>()
+        .init_resource::<ChronicleUiState>()
+        .init_resource::<SimulationChronicle>()
+        .init_resource::<ChronicleGraphCache>()
+        .init_resource::<ChronicleEventScrollState>()
         .init_resource::<GameUiState>()
         .init_resource::<FrameStats>()
         .init_resource::<FpsAverageStats>()
+        .init_resource::<EcoLogState>()
         .init_resource::<CellAudioState>()
         .add_plugins((
             DefaultPlugins
@@ -707,6 +1024,7 @@ fn main() {
                 setup_game_stats_ui,
                 setup_biolab_ui_v2,
                 setup_species_ledger_ui,
+                setup_chronicle_ui,
                 start_running_audio,
                 update_window_title,
             )
@@ -742,6 +1060,32 @@ fn main() {
         )
         .add_systems(
             Update,
+            eco_log_system
+                .after(update_stats_overlay)
+                .run_if(in_state(AppState::Running)),
+        )
+        .add_systems(
+            Update,
+            update_simulation_chronicle
+                .after(step_simulation)
+                .run_if(in_state(AppState::Running)),
+        )
+        .add_systems(
+            Update,
+            (
+                chronicle_button_system,
+                chronicle_filter_button_system,
+                chronicle_graph_button_system,
+                update_chronicle_filter_button_styles,
+                chronicle_event_scroll_system,
+                update_chronicle_ui,
+            )
+                .chain()
+                .after(update_simulation_chronicle)
+                .run_if(in_state(AppState::Running)),
+        )
+        .add_systems(
+            Update,
             update_speed_panel_visibility.run_if(in_state(AppState::Running)),
         )
         .add_systems(
@@ -755,6 +1099,7 @@ fn main() {
                 update_species_ledger_miniature_visuals,
                 update_species_journal_ui,
                 species_journal_area_row_system,
+                update_species_area_highlight_system,
                 species_ledger_row_system,
                 apply_species_camera_focus,
             )
@@ -1090,6 +1435,121 @@ mod species_ledger_tests {
     }
 }
 
+#[cfg(test)]
+mod chronicle_tests {
+    use super::*;
+
+    fn assert_no_mojibake(text: &str) {
+        for chars in [
+            ['\u{0412}', '\u{00b7}'],
+            ['\u{0420}', '\u{0454}'],
+            ['\u{0420}', '\u{00bb}'],
+            ['\u{0420}', '\u{00b5}'],
+            ['\u{0420}', '\u{00b0}'],
+            ['\u{0420}', '\u{0451}'],
+            ['\u{0420}', '\u{0455}'],
+            ['\u{0420}', '\u{0491}'],
+            ['\u{0421}', '\u{0403}'],
+            ['\u{0421}', '\u{040a}'],
+            ['\u{0421}', '\u{040f}'],
+            ['\u{0421}', '\u{040c}'],
+            ['\u{0421}', '\u{2026}'],
+        ] {
+            let bad = chars.iter().collect::<String>();
+            assert!(
+                !text.contains(&bad),
+                "chronicle text contains mojibake {bad:?}: {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn chronicle_labels_and_values_are_readable_utf8() {
+        for kind in [
+            ChronicleEventKind::World,
+            ChronicleEventKind::Species,
+            ChronicleEventKind::Extinction,
+            ChronicleEventKind::Population,
+            ChronicleEventKind::Energy,
+            ChronicleEventKind::Trait,
+        ] {
+            assert_no_mojibake(chronicle_filter_label(kind));
+        }
+
+        let snapshot = ChronicleSnapshot {
+            time: 2.0,
+            cells: 10_000,
+            food: 3_000,
+            wild_food: 2_500,
+            feeder_food: 500,
+            meat: 12,
+            avg_viability: 0.62,
+            energy_in: 1_500.0,
+            energy_out: 1_240.0,
+            energy_net: 260.0,
+            metabolism: 900.0,
+            mitosis: 200.0,
+            lysis: 30.0,
+            fps: 144.0,
+            sim_ms: 1.2,
+            render_ms: 0.8,
+            species: 42,
+            segmented: 18,
+            lysis_capable: 6,
+        };
+
+        for metric in [
+            ChronicleSummaryMetric::Time,
+            ChronicleSummaryMetric::Cells,
+            ChronicleSummaryMetric::Species,
+            ChronicleSummaryMetric::Food,
+            ChronicleSummaryMetric::Viability,
+            ChronicleSummaryMetric::Energy,
+            ChronicleSummaryMetric::Costs,
+            ChronicleSummaryMetric::Traits,
+            ChronicleSummaryMetric::Performance,
+        ] {
+            assert_no_mojibake(chronicle_summary_label(metric));
+            assert_no_mojibake(&chronicle_summary_value(metric, &snapshot).0);
+        }
+
+        let mut chronicle = SimulationChronicle::default();
+        chronicle.snapshots.push(snapshot);
+        chronicle_push_event(
+            &mut chronicle,
+            ChronicleEventKind::World,
+            "Запуск",
+            "Проверка",
+            None,
+        );
+        let state = ChronicleUiState::default();
+        for target in [
+            ChronicleTooltipKind::Summary(ChronicleSummaryMetric::Energy),
+            ChronicleTooltipKind::Filter(ChronicleEventKind::World),
+            ChronicleTooltipKind::Graph,
+            ChronicleTooltipKind::GraphMode(ChronicleGraphMode::Cells),
+            ChronicleTooltipKind::Legend(ChronicleLegendLine::EnergyNegative),
+        ] {
+            let (heading, body, _, _, _) = chronicle_tooltip_copy(target, &chronicle, &state);
+            assert_no_mojibake(&heading);
+            assert_no_mojibake(&body);
+        }
+
+        for mode in [
+            ChronicleGraphMode::Overall,
+            ChronicleGraphMode::Cells,
+            ChronicleGraphMode::Food,
+            ChronicleGraphMode::Viability,
+            ChronicleGraphMode::Energy,
+        ] {
+            let image = render_chronicle_graph(&chronicle.snapshots, mode);
+            assert_eq!(image.texture_descriptor.size.width, CHRONICLE_GRAPH_WIDTH);
+            assert_eq!(image.texture_descriptor.size.height, CHRONICLE_GRAPH_HEIGHT);
+            assert!(image.data.as_ref().is_some_and(|data| !data.is_empty()));
+        }
+    }
+}
+
 fn initialize_world_state(
     mut commands: Commands,
     config: Res<SimConfig>,
@@ -1097,13 +1557,25 @@ fn initialize_world_state(
     mut ui_state: ResMut<GameUiState>,
     mut species_ui: ResMut<SpeciesLedgerUiState>,
     mut species_focus: ResMut<SpeciesCameraFocus>,
+    mut species_area: ResMut<SpeciesAreaHighlightState>,
     mut species_stats: ResMut<SpeciesLedgerStats>,
+    mut eco_log: ResMut<EcoLogState>,
+    mut chronicle_ui: ResMut<ChronicleUiState>,
+    mut chronicle: ResMut<SimulationChronicle>,
+    mut chronicle_graph_cache: ResMut<ChronicleGraphCache>,
+    mut chronicle_event_scroll: ResMut<ChronicleEventScrollState>,
 ) {
     selected.cell_id = None;
     *ui_state = GameUiState::default();
     *species_ui = SpeciesLedgerUiState::default();
     *species_focus = SpeciesCameraFocus::default();
+    *species_area = SpeciesAreaHighlightState::default();
     *species_stats = SpeciesLedgerStats::default();
+    *eco_log = EcoLogState::default();
+    *chronicle_ui = ChronicleUiState::default();
+    *chronicle = SimulationChronicle::default();
+    *chronicle_graph_cache = ChronicleGraphCache::default();
+    *chronicle_event_scroll = ChronicleEventScrollState::default();
     commands.insert_resource(WorldState::new(&config));
 }
 
@@ -1291,6 +1763,481 @@ fn setup_species_ledger_ui(mut commands: Commands, asset_server: Res<AssetServer
         });
 
     spawn_species_journal_panel(&mut commands, font.clone());
+}
+
+fn setup_chronicle_ui(mut commands: Commands, asset_server: Res<AssetServer>) {
+    let font = asset_server.load(UI_FONT);
+    commands
+        .spawn((
+            Button,
+            Node {
+                position_type: PositionType::Absolute,
+                left: px(CHRONICLE_BUTTON_LEFT),
+                bottom: px(18),
+                width: px(46),
+                height: px(46),
+                border: UiRect::all(px(2)),
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                ..default()
+            },
+            BorderColor::all(Color::srgb(0.39, 0.64, 0.70)),
+            BackgroundColor(Color::srgb(0.035, 0.055, 0.064)),
+            ChronicleButton,
+            RunningUiEntity,
+        ))
+        .with_child((
+            Text::new("H"),
+            TextFont {
+                font: font.clone(),
+                font_size: 20.0,
+                ..default()
+            },
+            TextColor(Color::srgb(0.78, 0.96, 0.94)),
+        ));
+
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: px(CHRONICLE_PANEL_LEFT - CHRONICLE_PANEL_REVEAL_OFFSET),
+                bottom: px(CHRONICLE_PANEL_BOTTOM),
+                width: px(CHRONICLE_PANEL_WIDTH),
+                height: percent(CHRONICLE_PANEL_HEIGHT_PERCENT),
+                flex_direction: FlexDirection::Column,
+                row_gap: px(10),
+                padding: UiRect::all(px(14)),
+                border: UiRect::all(px(2)),
+                overflow: Overflow::clip(),
+                display: Display::None,
+                ..default()
+            },
+            BorderColor::all(Color::srgb(0.39, 0.64, 0.70)),
+            BackgroundColor(Color::srgba(0.012, 0.018, 0.022, 0.96)),
+            Visibility::Hidden,
+            PanelReveal::horizontal(CHRONICLE_PANEL_REVEAL_OFFSET),
+            ChroniclePanel,
+            RunningUiEntity,
+        ))
+        .with_children(|panel| {
+            panel
+                .spawn((Node {
+                    width: percent(100),
+                    height: px(34),
+                    align_items: AlignItems::Center,
+                    justify_content: JustifyContent::SpaceBetween,
+                    ..default()
+                },))
+                .with_children(|header| {
+                    header.spawn((
+                        Text::new("ХРОНИКА СИМУЛЯЦИИ"),
+                        TextFont {
+                            font: font.clone(),
+                            font_size: 20.0,
+                            ..default()
+                        },
+                        TextColor(Color::srgb(0.76, 0.94, 0.92)),
+                    ));
+                    header.spawn((
+                        Text::new("H"),
+                        TextFont {
+                            font: font.clone(),
+                            font_size: 14.0,
+                            ..default()
+                        },
+                        TextColor(Color::srgb(0.52, 0.78, 0.82)),
+                    ));
+                });
+
+            panel.spawn((
+                Text::new("ожидание данных"),
+                TextFont {
+                    font: font.clone(),
+                    font_size: 1.0,
+                    ..default()
+                },
+                TextColor(Color::srgba(0.62, 0.80, 0.82, 0.0)),
+                ChronicleOverviewText,
+            ));
+
+            panel
+                .spawn((Node {
+                    width: percent(100),
+                    min_height: px(76),
+                    flex_direction: FlexDirection::Row,
+                    flex_wrap: FlexWrap::Wrap,
+                    column_gap: px(6),
+                    row_gap: px(6),
+                    align_content: AlignContent::FlexStart,
+                    ..default()
+                },))
+                .with_children(|summary| {
+                    for metric in [
+                        ChronicleSummaryMetric::Time,
+                        ChronicleSummaryMetric::Cells,
+                        ChronicleSummaryMetric::Species,
+                        ChronicleSummaryMetric::Food,
+                        ChronicleSummaryMetric::Viability,
+                        ChronicleSummaryMetric::Energy,
+                        ChronicleSummaryMetric::Costs,
+                        ChronicleSummaryMetric::Traits,
+                        ChronicleSummaryMetric::Performance,
+                    ] {
+                        summary
+                            .spawn((
+                                Node {
+                                    width: px(chronicle_summary_width(metric)),
+                                    height: px(34),
+                                    padding: UiRect::new(px(7), px(7), px(3), px(3)),
+                                    border: UiRect::left(px(3)),
+                                    flex_direction: FlexDirection::Column,
+                                    justify_content: JustifyContent::Center,
+                                    ..default()
+                                },
+                                BorderColor::all(chronicle_summary_color(metric)),
+                                BackgroundColor(Color::srgb(0.020, 0.036, 0.042)),
+                                Interaction::default(),
+                                ChronicleTooltipTarget {
+                                    kind: ChronicleTooltipKind::Summary(metric),
+                                },
+                            ))
+                            .with_children(|card| {
+                                card.spawn((
+                                    Text::new(chronicle_summary_label(metric)),
+                                    TextFont {
+                                        font: font.clone(),
+                                        font_size: 10.5,
+                                        ..default()
+                                    },
+                                    TextColor(Color::srgb(0.50, 0.70, 0.72)),
+                                ));
+                                card.spawn((
+                                    Text::new("-"),
+                                    TextFont {
+                                        font: font.clone(),
+                                        font_size: 14.0,
+                                        ..default()
+                                    },
+                                    TextColor(Color::srgb(0.80, 0.96, 0.94)),
+                                    ChronicleSummaryValue { metric },
+                                ));
+                            });
+                    }
+                });
+
+            panel
+                .spawn((Node {
+                    width: percent(100),
+                    flex_grow: 1.0,
+                    min_height: px(0),
+                    flex_direction: FlexDirection::Row,
+                    column_gap: px(12),
+                    ..default()
+                },))
+                .with_children(|body| {
+                    body
+                        .spawn((
+                            Node {
+                                width: percent(46),
+                                height: percent(100),
+                                padding: UiRect::all(px(10)),
+                                border: UiRect::all(px(1)),
+                                flex_direction: FlexDirection::Column,
+                                row_gap: px(8),
+                                overflow: Overflow::clip(),
+                                ..default()
+                            },
+                            BorderColor::all(Color::srgb(0.17, 0.36, 0.41)),
+                            BackgroundColor(Color::srgb(0.014, 0.025, 0.030)),
+                        ))
+                        .with_children(|events| {
+                            events.spawn((
+                                Text::new("События"),
+                                TextFont {
+                                    font: font.clone(),
+                                    font_size: 15.0,
+                                    ..default()
+                                },
+                                TextColor(Color::srgb(0.76, 0.94, 0.92)),
+                            ));
+                            events
+                                .spawn((Node {
+                                    width: percent(100),
+                                    height: px(28),
+                                    flex_direction: FlexDirection::Row,
+                                    column_gap: px(5),
+                                    align_items: AlignItems::Center,
+                                    ..default()
+                                },))
+                                .with_children(|filters| {
+                                    for kind in [
+                                        ChronicleEventKind::World,
+                                        ChronicleEventKind::Species,
+                                        ChronicleEventKind::Extinction,
+                                        ChronicleEventKind::Population,
+                                        ChronicleEventKind::Energy,
+                                        ChronicleEventKind::Trait,
+                                    ] {
+                                        filters
+                                            .spawn((
+                                                Button,
+                                                Node {
+                                                    width: px(54),
+                                                    height: px(24),
+                                                    border: UiRect::all(px(1)),
+                                                    align_items: AlignItems::Center,
+                                                    justify_content: JustifyContent::Center,
+                                                    ..default()
+                                                },
+                                                BorderColor::all(chronicle_kind_color(kind)),
+                                                BackgroundColor(Color::srgb(0.030, 0.047, 0.055)),
+                                                ChronicleFilterButton { kind },
+                                                ChronicleTooltipTarget {
+                                                    kind: ChronicleTooltipKind::Filter(kind),
+                                                },
+                                            ))
+                                            .with_child((
+                                                Text::new(chronicle_filter_label(kind)),
+                                                TextFont {
+                                                    font: font.clone(),
+                                                    font_size: 11.0,
+                                                    ..default()
+                                                },
+                                                TextColor(Color::srgb(0.78, 0.92, 0.91)),
+                                            ));
+                                    }
+                                });
+                            events
+                                .spawn((Node {
+                                    width: percent(100),
+                                    flex_grow: 1.0,
+                                    min_height: px(0),
+                                    position_type: PositionType::Relative,
+                                    ..default()
+                                },))
+                                .with_children(|viewport| {
+                                    viewport
+                                        .spawn((
+                                            Node {
+                                                position_type: PositionType::Absolute,
+                                                left: px(0),
+                                                top: px(0),
+                                                width: percent(100),
+                                                height: percent(100),
+                                                padding: UiRect::right(px(18)),
+                                                overflow: Overflow::scroll_y(),
+                                                ..default()
+                                            },
+                                            ScrollPosition::default(),
+                                            RelativeCursorPosition::default(),
+                                            ChronicleEventScrollArea,
+                                        ))
+                                        .with_child((
+                                            Text::new(""),
+                                            TextFont {
+                                                font: font.clone(),
+                                                font_size: 13.0,
+                                                ..default()
+                                            },
+                                            TextColor(Color::srgb(0.72, 0.84, 0.84)),
+                                            Pickable::IGNORE,
+                                            ChronicleEventText,
+                                        ));
+                                    viewport
+                                        .spawn((
+                                            Node {
+                                                position_type: PositionType::Absolute,
+                                                right: px(2),
+                                                top: px(3),
+                                                width: px(14),
+                                                height: percent(96),
+                                                ..default()
+                                            },
+                                            BackgroundColor(Color::srgba(0.15, 0.36, 0.42, 0.30)),
+                                            Visibility::Hidden,
+                                            ChronicleEventScrollbarTrack,
+                                        ))
+                                        .with_child((
+                                            Node {
+                                                position_type: PositionType::Absolute,
+                                                top: percent(0),
+                                                left: px(3),
+                                                width: px(8),
+                                                height: percent(18),
+                                                ..default()
+                                            },
+                                            BackgroundColor(Color::srgb(0.46, 0.86, 0.92)),
+                                            ChronicleEventScrollbarThumb,
+                                        ));
+                                });
+                        });
+
+                    body
+                        .spawn((
+                            Node {
+                                width: percent(54),
+                                height: percent(100),
+                                padding: UiRect::all(px(10)),
+                                border: UiRect::all(px(1)),
+                                flex_direction: FlexDirection::Column,
+                                row_gap: px(8),
+                                overflow: Overflow::clip(),
+                                ..default()
+                            },
+                            BorderColor::all(Color::srgb(0.17, 0.36, 0.41)),
+                            BackgroundColor(Color::srgb(0.014, 0.025, 0.030)),
+                        ))
+                        .with_children(|graphs| {
+                            graphs.spawn((
+                                Text::new("Графики последних срезов"),
+                                TextFont {
+                                    font: font.clone(),
+                                    font_size: 15.0,
+                                    ..default()
+                                },
+                                TextColor(Color::srgb(0.76, 0.94, 0.92)),
+                            ));
+                            graphs
+                                .spawn((Node {
+                                    width: percent(100),
+                                    height: px(28),
+                                    flex_direction: FlexDirection::Row,
+                                    column_gap: px(6),
+                                    align_items: AlignItems::Center,
+                                    ..default()
+                                },))
+                                .with_children(|modes| {
+                                    for mode in [
+                                        ChronicleGraphMode::Overall,
+                                        ChronicleGraphMode::Cells,
+                                        ChronicleGraphMode::Food,
+                                        ChronicleGraphMode::Viability,
+                                        ChronicleGraphMode::Energy,
+                                    ] {
+                                        modes
+                                            .spawn((
+                                                Button,
+                                                Node {
+                                                    width: px(70),
+                                                    height: px(24),
+                                                    border: UiRect::all(px(1)),
+                                                    align_items: AlignItems::Center,
+                                                    justify_content: JustifyContent::Center,
+                                                    ..default()
+                                                },
+                                                BorderColor::all(chronicle_graph_mode_color(mode)),
+                                                BackgroundColor(Color::srgb(0.030, 0.047, 0.055)),
+                                                ChronicleGraphButton { mode },
+                                                ChronicleTooltipTarget {
+                                                    kind: ChronicleTooltipKind::GraphMode(mode),
+                                                },
+                                            ))
+                                            .with_child((
+                                                Text::new(chronicle_graph_mode_label(mode)),
+                                                TextFont {
+                                                    font: font.clone(),
+                                                    font_size: 11.0,
+                                                    ..default()
+                                                },
+                                                TextColor(Color::srgb(0.78, 0.92, 0.91)),
+                                            ));
+                                    }
+                                });
+                            graphs.spawn((
+                                ImageNode::default(),
+                                Node {
+                                    width: percent(100),
+                                    height: px(CHRONICLE_GRAPH_HEIGHT as f32),
+                                    border: UiRect::all(px(1)),
+                                    ..default()
+                                },
+                                BorderColor::all(Color::srgb(0.16, 0.34, 0.39)),
+                                Interaction::default(),
+                                ChronicleTooltipTarget {
+                                    kind: ChronicleTooltipKind::Graph,
+                                },
+                                ChronicleGraphImage,
+                            ));
+                            graphs
+                                .spawn((Node {
+                                    width: percent(100),
+                                    min_height: px(28),
+                                    flex_direction: FlexDirection::Row,
+                                    flex_wrap: FlexWrap::Wrap,
+                                    column_gap: px(8),
+                                    row_gap: px(6),
+                                    align_items: AlignItems::Center,
+                                    ..default()
+                                },))
+                                .with_children(|legend| {
+                                    for (label, color) in [
+                                        ("клетки", Color::srgb(0.34, 1.0, 0.52)),
+                                        ("еда", Color::srgb(1.0, 0.86, 0.30)),
+                                        ("жизнь", Color::srgb(0.90, 1.0, 0.94)),
+                                        ("баланс +", Color::srgb(0.40, 1.0, 0.66)),
+                                        ("баланс -", Color::srgb(1.0, 0.36, 0.31)),
+                                    ] {
+                                        let line = match label {
+                                            "клетки" => ChronicleLegendLine::Cells,
+                                            "еда" => ChronicleLegendLine::Food,
+                                            "жизнь" => ChronicleLegendLine::Viability,
+                                            "баланс +" => ChronicleLegendLine::EnergyPositive,
+                                            _ => ChronicleLegendLine::EnergyNegative,
+                                        };
+                                        legend
+                                            .spawn((
+                                                Node {
+                                                    width: px(76),
+                                                    height: px(23),
+                                                    padding: UiRect::horizontal(px(6)),
+                                                    flex_direction: FlexDirection::Row,
+                                                    column_gap: px(5),
+                                                    align_items: AlignItems::Center,
+                                                    border: UiRect::all(px(1)),
+                                                    ..default()
+                                                },
+                                                BorderColor::all(color),
+                                                BackgroundColor(Color::srgb(0.020, 0.036, 0.042)),
+                                                Interaction::default(),
+                                                ChronicleTooltipTarget {
+                                                    kind: ChronicleTooltipKind::Legend(line),
+                                                },
+                                            ))
+                                            .with_children(|item| {
+                                                item.spawn((
+                                                    Node {
+                                                        width: px(12),
+                                                        height: px(3),
+                                                        ..default()
+                                                    },
+                                                    BackgroundColor(color),
+                                                ));
+                                                item.spawn((
+                                                    Text::new(label),
+                                                    TextFont {
+                                                        font: font.clone(),
+                                                        font_size: 11.0,
+                                                        ..default()
+                                                    },
+                                                    TextColor(Color::srgb(0.72, 0.86, 0.86)),
+                                                ));
+                                            });
+                                    }
+                                });
+                            graphs.spawn((
+                                Text::new(
+                                    "зелёный: клетки · жёлтый: еда · белый: жизнеспособность · красный/зелёный: баланс энергии",
+                                ),
+                                TextFont {
+                                    font: font.clone(),
+                                    font_size: 1.0,
+                                    ..default()
+                                },
+                                TextColor(Color::srgba(0.58, 0.72, 0.74, 0.0)),
+                            ));
+                        });
+                });
+        });
 }
 
 fn spawn_species_journal_panel(commands: &mut Commands, font: Handle<Font>) {
@@ -3193,6 +4140,7 @@ fn select_cell_system(
     world: Res<WorldState>,
     mut selected: ResMut<SelectedCell>,
     mut species_ui: ResMut<SpeciesLedgerUiState>,
+    chronicle_ui: Res<ChronicleUiState>,
     mut ui_state: ResMut<GameUiState>,
 ) {
     if !mouse_buttons.just_pressed(MouseButton::Left) {
@@ -3214,6 +4162,9 @@ fn select_cell_system(
         && (cursor_over_species_ledger(window, cursor)
             || (species_ui.journal_open && cursor_over_species_journal(window, cursor)))
     {
+        return;
+    }
+    if chronicle_ui.open && cursor_over_chronicle_panel(window, cursor) {
         return;
     }
 
@@ -3290,6 +4241,7 @@ fn camera_controls(
     mut mouse_wheel: MessageReader<MouseWheel>,
     windows: Query<(Entity, &Window), With<PrimaryWindow>>,
     species_ui: Res<SpeciesLedgerUiState>,
+    chronicle_ui: Res<ChronicleUiState>,
     mut camera: Query<(&mut Transform, &mut Projection), With<MainCamera>>,
     mut last_cursor: Local<Option<Vec2>>,
 ) {
@@ -3355,16 +4307,17 @@ fn camera_controls(
         };
     }
 
-    let cursor_over_ledger = window
+    let cursor_over_ui_scroll = window
         .cursor_position()
         .map(|cursor| {
-            species_ui.open
+            (species_ui.open
                 && (cursor_over_species_ledger(window, cursor)
-                    || (species_ui.journal_open && cursor_over_species_journal(window, cursor)))
+                    || (species_ui.journal_open && cursor_over_species_journal(window, cursor))))
+                || (chronicle_ui.open && cursor_over_chronicle_panel(window, cursor))
         })
         .unwrap_or(false);
 
-    if scroll != 0.0 && !cursor_over_ledger {
+    if scroll != 0.0 && !cursor_over_ui_scroll {
         let cursor_world_before = window
             .cursor_position()
             .map(|cursor| cursor_to_world(cursor, transform.translation, projection, window));
@@ -3474,6 +4427,7 @@ fn game_ui_input_system(
     selected: Res<SelectedCell>,
     mut ui_state: ResMut<GameUiState>,
     mut species_ui: ResMut<SpeciesLedgerUiState>,
+    mut chronicle_ui: ResMut<ChronicleUiState>,
 ) {
     if keys.just_pressed(KeyCode::Space) {
         ui_state.paused = !ui_state.paused;
@@ -3510,6 +4464,10 @@ fn game_ui_input_system(
 
     if keys.just_pressed(KeyCode::KeyC) {
         ui_state.speed_panel_open = !ui_state.speed_panel_open;
+    }
+
+    if keys.just_pressed(KeyCode::KeyH) {
+        chronicle_ui.open = !chronicle_ui.open;
     }
 
     if keys.just_pressed(KeyCode::Escape) {
@@ -3660,6 +4618,148 @@ fn update_stats_overlay(
         **balance = format!("\nИТОГО {net:+8.1} ед/с  {state}");
         color.0 = target_color;
     }
+}
+
+fn active_food_energy(world: &WorldState) -> f32 {
+    world
+        .food
+        .active
+        .iter()
+        .zip(&world.food.energy)
+        .zip(&world.food.growth)
+        .filter_map(|((active, energy), growth)| {
+            (*active).then_some((*energy * (*growth).clamp(0.0, 1.0)).max(0.0))
+        })
+        .sum()
+}
+
+fn viability_summary(world: &WorldState) -> (f32, f32, usize, usize) {
+    let mut total = 0.0;
+    let mut capacity = 0.0;
+    let mut low_25 = 0;
+    let mut low_50 = 0;
+
+    for (viability, max_viability) in world.cells.viability.iter().zip(&world.cells.max_viability) {
+        let max_viability = (*max_viability).max(1.0);
+        let viability = (*viability).max(0.0);
+        let ratio = viability / max_viability;
+        total += viability;
+        capacity += max_viability;
+        if ratio < 0.25 {
+            low_25 += 1;
+        }
+        if ratio < 0.50 {
+            low_50 += 1;
+        }
+    }
+
+    (total, capacity, low_25, low_50)
+}
+
+fn eco_log_system(
+    diagnostics: Res<DiagnosticsStore>,
+    time: Res<Time>,
+    config: Res<SimConfig>,
+    ui_state: Res<GameUiState>,
+    world: Res<WorldState>,
+    stats: Res<FrameStats>,
+    mut state: ResMut<EcoLogState>,
+) {
+    if !config.eco_log || ui_state.paused {
+        return;
+    }
+
+    let (viability, viability_capacity, low_25, low_50) = viability_summary(&world);
+    let food_energy = active_food_energy(&world);
+    let cells = world.cells.len();
+    let food = world.food.active_count();
+
+    if !state.initialized {
+        state.initialized = true;
+        state.last_cells = cells;
+        state.last_food = food;
+        state.last_viability = viability;
+        state.last_food_energy = food_energy;
+        println!(
+            "[eco] logging enabled: interval={:.1}s seed={} cells={} food={} arena={:.0}x{:.0}",
+            config.eco_log_interval.clamp(0.5, 120.0),
+            config.seed,
+            config.cells,
+            config.food,
+            config.width,
+            config.height,
+        );
+        return;
+    }
+
+    let frame_dt = time.delta_secs().clamp(0.0, 0.25);
+    state.wall_elapsed += frame_dt;
+    state.sim_elapsed += frame_dt * ui_state.speed_multiplier;
+    let interval = config.eco_log_interval.clamp(0.5, 120.0);
+    if state.wall_elapsed < interval {
+        return;
+    }
+
+    let fps = diagnostics
+        .get(&FrameTimeDiagnosticsPlugin::FPS)
+        .and_then(|fps| fps.smoothed())
+        .unwrap_or(0.0);
+    let frame_ms = diagnostics
+        .get(&FrameTimeDiagnosticsPlugin::FRAME_TIME)
+        .and_then(|frame| frame.smoothed())
+        .unwrap_or(0.0);
+
+    let delta_cells = cells as i64 - state.last_cells as i64;
+    let delta_food = food as i64 - state.last_food as i64;
+    let delta_viability = viability - state.last_viability;
+    let delta_food_energy = food_energy - state.last_food_energy;
+    let avg_viability = if viability_capacity > 0.0 {
+        viability / viability_capacity * 100.0
+    } else {
+        0.0
+    };
+    let flow = world.energy_flow;
+    let (wild_food, feeder_food, carrion) = world.active_food_counts();
+
+    println!(
+        "[eco {:>7.1}s] fps={:>5.1} frame={:>5.2}ms sim={:>5.2}ms render={:>5.2}ms | cells={}({:+}) food={}({:+}) wild={} feeder={} meat={} | viability={:.0}({:+.0}) avg={:.1}% low25={} low50={} | food_energy={:.0}({:+.0}) | in={:.1}/s out={:.1}/s net={:+.1}/s consumed={:.1}/s carrion={:.1}/s wild_in={:.1}/s feeder_in={:.1}/s meta={:.1}/s spoil={:.1}/s mitosis={:.1}/s lysis={:.1}/s",
+        state.sim_elapsed,
+        fps,
+        frame_ms,
+        stats.sim_time.as_secs_f64() * 1_000.0,
+        stats.upload_time.as_secs_f64() * 1_000.0,
+        cells,
+        delta_cells,
+        food,
+        delta_food,
+        wild_food,
+        feeder_food,
+        carrion,
+        viability,
+        delta_viability,
+        avg_viability,
+        low_25,
+        low_50,
+        food_energy,
+        delta_food_energy,
+        flow.external_input(),
+        flow.total_outflow(),
+        flow.net_external_balance(),
+        flow.food_consumed,
+        flow.carrion_transfer,
+        flow.wild_food_input,
+        flow.feeder_input,
+        flow.metabolism,
+        flow.spoilage,
+        flow.mitosis_cost,
+        flow.lysis_loss,
+    );
+
+    state.wall_elapsed = 0.0;
+    state.last_cells = cells;
+    state.last_food = food;
+    state.last_viability = viability;
+    state.last_food_energy = food_energy;
 }
 
 fn animate_panel_reveal(
@@ -4197,16 +5297,197 @@ fn species_journal_tooltip_copy(
     }
 }
 
+fn chronicle_legend_line_copy(line: ChronicleLegendLine) -> (&'static str, &'static str, Color) {
+    match line {
+        ChronicleLegendLine::Cells => (
+            "КЛЕТКИ",
+            "Зелёная линия показывает численность живых клеток в последних срезах хроники.",
+            Color::srgb(0.34, 1.0, 0.52),
+        ),
+        ChronicleLegendLine::Food => (
+            "ЕДА",
+            "Жёлтая линия показывает общее количество активной еды: дикая трава, кормушки и мясо.",
+            Color::srgb(1.0, 0.86, 0.30),
+        ),
+        ChronicleLegendLine::Viability => (
+            "ЖИЗНЕСПОСОБНОСТЬ",
+            "Белая линия показывает средний процент жизнеспособности популяции: общий запас энергии и здоровья.",
+            Color::srgb(0.90, 1.0, 0.94),
+        ),
+        ChronicleLegendLine::EnergyPositive => (
+            "БАЛАНС ЭНЕРГИИ: ПЛЮС",
+            "Зелёный участок баланса означает, что внешний приток еды и энергии выше расходов экосистемы.",
+            Color::srgb(0.40, 1.0, 0.66),
+        ),
+        ChronicleLegendLine::EnergyNegative => (
+            "БАЛАНС ЭНЕРГИИ: МИНУС",
+            "Красный участок баланса означает, что расходы экосистемы выше внешнего притока.",
+            Color::srgb(1.0, 0.36, 0.31),
+        ),
+    }
+}
+
+fn chronicle_tooltip_copy(
+    kind: ChronicleTooltipKind,
+    chronicle: &SimulationChronicle,
+    state: &ChronicleUiState,
+) -> (String, String, Color, f32, f32) {
+    match kind {
+        ChronicleTooltipKind::Summary(metric) => {
+            let label = chronicle_summary_label(metric).to_uppercase();
+            let accent = chronicle_summary_color(metric);
+            let current = chronicle.snapshots.last().map(|snapshot| {
+                let (value, _) = chronicle_summary_value(metric, snapshot);
+                format!("\nТекущее значение: {value}.")
+            });
+            let description = match metric {
+                ChronicleSummaryMetric::Time => {
+                    "Время симуляции с момента запуска текущей экосистемы."
+                }
+                ChronicleSummaryMetric::Cells => {
+                    "Количество живых клеток прямо сейчас. Рост и падение популяции попадают в события хроники."
+                }
+                ChronicleSummaryMetric::Species => {
+                    "Количество живых видов, распознанных по форме, сегментам, трофике и ключевым генам."
+                }
+                ChronicleSummaryMetric::Food => {
+                    "Общий запас еды и расклад внутри него: дикая трава, еда кормушек и мясо."
+                }
+                ChronicleSummaryMetric::Viability => {
+                    "Средняя жизнеспособность всех клеток: энергия и здоровье в одной шкале."
+                }
+                ChronicleSummaryMetric::Energy => {
+                    "Внешний баланс энергии: приток минус расход. Плюс означает избыток, минус означает истощение экосистемы."
+                }
+                ChronicleSummaryMetric::Costs => {
+                    "Крупные статьи расхода: метаболизм, деление и потери от лизиса."
+                }
+                ChronicleSummaryMetric::Traits => {
+                    "Быстрый срез важных признаков: сколько клеток многосегментные и сколько способны к лизису."
+                }
+                ChronicleSummaryMetric::Performance => {
+                    "Производительность последнего среза: FPS, время симуляции и время выгрузки рендера."
+                }
+            };
+            (
+                label,
+                format!("{description}{}", current.unwrap_or_default()),
+                accent,
+                440.0,
+                166.0,
+            )
+        }
+        ChronicleTooltipKind::Filter(kind) => {
+            let label = chronicle_filter_label(kind).to_uppercase();
+            let accent = chronicle_kind_color(kind);
+            let enabled = if state.event_enabled(kind) {
+                "включён"
+            } else {
+                "выключен"
+            };
+            let count = chronicle
+                .events
+                .iter()
+                .filter(|event| event.kind == kind)
+                .count();
+            let description = match kind {
+                ChronicleEventKind::World => {
+                    "События общего состояния мира: запуск экосистемы и глобальные изменения."
+                }
+                ChronicleEventKind::Species => {
+                    "Появление новых видов, когда форма и ключевые гены уже не укладываются в старый вид."
+                }
+                ChronicleEventKind::Extinction => {
+                    "Вымирания видов. Их можно выключить фильтром, не удаляя из истории."
+                }
+                ChronicleEventKind::Population => {
+                    "Доминанты, всплески и обвалы численности популяции."
+                }
+                ChronicleEventKind::Energy => {
+                    "Переходы энергетики между профицитом, дефицитом и балансом."
+                }
+                ChronicleEventKind::Trait => {
+                    "Появление заметных признаков вроде лизиса или многосегментности."
+                }
+            };
+            (
+                format!("ФИЛЬТР: {label}"),
+                format!(
+                    "{description}\nСейчас фильтр {enabled}; событий этого типа в памяти: {count}."
+                ),
+                accent,
+                430.0,
+                176.0,
+            )
+        }
+        ChronicleTooltipKind::Graph => {
+            let samples = chronicle.snapshots.len();
+            (
+                "ГРАФИК СРЕЗОВ".to_string(),
+                format!(
+                    "График показывает последние {samples} срезов мира. Линии нормализованы каждая по своему диапазону, поэтому форма линии важнее абсолютной высоты. Срезы нужны для быстрого чтения трендов: рост, спад, дефицит и восстановление."
+                ),
+                Color::srgb(0.42, 0.86, 0.92),
+                480.0,
+                188.0,
+            )
+        }
+        ChronicleTooltipKind::GraphMode(mode) => {
+            let accent = chronicle_graph_mode_color(mode);
+            let description = match mode {
+                ChronicleGraphMode::Overall => {
+                    "Общий режим рисует все основные линии вместе: клетки, еду, среднюю жизнеспособность и энергетический баланс."
+                }
+                ChronicleGraphMode::Cells => {
+                    "Отдельный график численности клеток. Удобен, когда общий график слишком шумный."
+                }
+                ChronicleGraphMode::Food => {
+                    "Отдельный график общего количества еды: трава, кормушки и мясо суммарно."
+                }
+                ChronicleGraphMode::Viability => {
+                    "Отдельный график средней жизнеспособности популяции."
+                }
+                ChronicleGraphMode::Energy => {
+                    "Отдельный график внешнего баланса энергии. Нулевая линия показывает границу между плюсом и минусом."
+                }
+            };
+            (
+                format!(
+                    "ГРАФИК: {}",
+                    chronicle_graph_mode_label(mode).to_uppercase()
+                ),
+                description.to_string(),
+                accent,
+                430.0,
+                158.0,
+            )
+        }
+        ChronicleTooltipKind::Legend(line) => {
+            let (heading, description, accent) = chronicle_legend_line_copy(line);
+            (
+                heading.to_string(),
+                description.to_string(),
+                accent,
+                430.0,
+                154.0,
+            )
+        }
+    }
+}
+
 fn update_gene_tooltip(
     time: Res<Time>,
     windows: Query<&Window, With<PrimaryWindow>>,
     selected: Res<SelectedCell>,
     world: Res<WorldState>,
+    chronicle_state: Res<ChronicleUiState>,
+    chronicle: Res<SimulationChronicle>,
     species_state: Res<SpeciesLedgerUiState>,
     species_stats: Res<SpeciesLedgerStats>,
     species_names: Res<SpeciesNameBook>,
     targets: Query<(&Interaction, &GeneTooltipTarget)>,
     journal_targets: Query<(&Interaction, &SpeciesJournalTooltipTarget)>,
+    chronicle_targets: Query<(&Interaction, &ChronicleTooltipTarget)>,
     division_markers: Query<&Interaction, With<DivisionThresholdMarker>>,
     mut tooltip: Query<(
         &mut Visibility,
@@ -4240,6 +5521,15 @@ fn update_gene_tooltip(
                 .map(|(_, target)| target.kind)
         })
         .flatten();
+    let chronicle_hovered =
+        (!marker_hovered && gene_hovered.is_none() && journal_hovered.is_none())
+            .then(|| {
+                chronicle_targets
+                    .iter()
+                    .find(|(interaction, _)| **interaction != Interaction::None)
+                    .map(|(_, target)| target.kind)
+            })
+            .flatten();
     let selected_index = selected
         .cell_id
         .and_then(|cell_id| world.cell_index_by_id(cell_id));
@@ -4269,7 +5559,12 @@ fn update_gene_tooltip(
             (heading, description, accent, 460.0, 196.0)
         })
     });
-    let payload = gene_payload.or(journal_payload);
+    let chronicle_payload = (chronicle_state.open)
+        .then(|| {
+            chronicle_hovered.map(|kind| chronicle_tooltip_copy(kind, &chronicle, &chronicle_state))
+        })
+        .flatten();
+    let payload = gene_payload.or(journal_payload).or(chronicle_payload);
     let show = payload.is_some();
     let Ok((mut visibility, mut node, mut transform, mut reveal, mut border_color)) =
         tooltip.single_mut()
@@ -4328,6 +5623,680 @@ fn species_ledger_button_system(
                 state.scroll_target_species = None;
                 state.last_click_species = None;
             }
+        }
+    }
+}
+
+fn chronicle_button_system(
+    interactions: Query<&Interaction, (Changed<Interaction>, With<ChronicleButton>)>,
+    mut state: ResMut<ChronicleUiState>,
+) {
+    for interaction in &interactions {
+        if *interaction == Interaction::Pressed {
+            state.open = !state.open;
+        }
+    }
+}
+
+fn chronicle_filter_button_system(
+    interactions: Query<(&Interaction, &ChronicleFilterButton), Changed<Interaction>>,
+    mut state: ResMut<ChronicleUiState>,
+) {
+    for (interaction, button) in &interactions {
+        if *interaction == Interaction::Pressed {
+            state.toggle_event_filter(button.kind);
+        }
+    }
+}
+
+fn chronicle_graph_button_system(
+    interactions: Query<(&Interaction, &ChronicleGraphButton), Changed<Interaction>>,
+    mut state: ResMut<ChronicleUiState>,
+) {
+    for (interaction, button) in &interactions {
+        if *interaction == Interaction::Pressed {
+            state.graph_mode = button.mode;
+        }
+    }
+}
+
+fn update_chronicle_filter_button_styles(
+    state: Res<ChronicleUiState>,
+    mut filter_buttons: Query<(
+        &ChronicleFilterButton,
+        &Interaction,
+        &mut BackgroundColor,
+        &mut BorderColor,
+    )>,
+    mut graph_buttons: Query<
+        (
+            &ChronicleGraphButton,
+            &Interaction,
+            &mut BackgroundColor,
+            &mut BorderColor,
+        ),
+        Without<ChronicleFilterButton>,
+    >,
+) {
+    if !state.open {
+        return;
+    }
+
+    for (button, interaction, mut background, mut border) in &mut filter_buttons {
+        let enabled = state.event_enabled(button.kind);
+        let accent = chronicle_kind_color(button.kind);
+        *border = BorderColor::all(if enabled {
+            accent
+        } else {
+            Color::srgb(0.15, 0.24, 0.27)
+        });
+        background.0 = if enabled {
+            match *interaction {
+                Interaction::Pressed => Color::srgb(0.13, 0.23, 0.25),
+                Interaction::Hovered => Color::srgb(0.08, 0.15, 0.17),
+                Interaction::None => Color::srgb(0.030, 0.060, 0.068),
+            }
+        } else {
+            match *interaction {
+                Interaction::Pressed | Interaction::Hovered => Color::srgb(0.045, 0.052, 0.056),
+                Interaction::None => Color::srgb(0.020, 0.026, 0.030),
+            }
+        };
+    }
+
+    for (button, interaction, mut background, mut border) in &mut graph_buttons {
+        let selected = state.graph_mode == button.mode;
+        let accent = chronicle_graph_mode_color(button.mode);
+        *border = BorderColor::all(if selected {
+            accent
+        } else {
+            Color::srgb(0.16, 0.33, 0.37)
+        });
+        background.0 = if selected {
+            match *interaction {
+                Interaction::Pressed => Color::srgb(0.13, 0.23, 0.25),
+                Interaction::Hovered => Color::srgb(0.10, 0.18, 0.20),
+                Interaction::None => Color::srgb(0.050, 0.092, 0.102),
+            }
+        } else {
+            match *interaction {
+                Interaction::Pressed => Color::srgb(0.08, 0.13, 0.15),
+                Interaction::Hovered => Color::srgb(0.055, 0.086, 0.096),
+                Interaction::None => Color::srgb(0.025, 0.040, 0.047),
+            }
+        };
+    }
+}
+
+fn chronicle_event_scroll_system(
+    time: Res<Time>,
+    mut mouse_wheel: MessageReader<MouseWheel>,
+    mouse: Res<ButtonInput<MouseButton>>,
+    state: Res<ChronicleUiState>,
+    mut scroll_state: ResMut<ChronicleEventScrollState>,
+    windows: Query<&Window, With<PrimaryWindow>>,
+    mut scroll_area: Query<(&ComputedNode, &mut ScrollPosition), With<ChronicleEventScrollArea>>,
+    mut scrollbar_tracks: Query<&mut Visibility, With<ChronicleEventScrollbarTrack>>,
+    mut scrollbar_thumbs: Query<&mut Node, With<ChronicleEventScrollbarThumb>>,
+) {
+    if !state.open {
+        scroll_state.scrollbar_dragging = false;
+        scroll_state.initialized = false;
+        scroll_state.target_y = 0.0;
+        for mut visibility in &mut scrollbar_tracks {
+            *visibility = Visibility::Hidden;
+        }
+        return;
+    }
+
+    let window = windows.single().ok();
+    let cursor = window.and_then(Window::cursor_position);
+    let cursor_over_events = window
+        .zip(cursor)
+        .map(|(window, cursor)| cursor_over_chronicle_events(window, cursor))
+        .unwrap_or(false);
+    if mouse.just_pressed(MouseButton::Left) {
+        scroll_state.scrollbar_dragging = window
+            .zip(cursor)
+            .and_then(|(window, cursor)| chronicle_event_scrollbar_fraction(window, cursor))
+            .is_some();
+    }
+    if !mouse.pressed(MouseButton::Left) {
+        scroll_state.scrollbar_dragging = false;
+    }
+
+    let mut delta = 0.0;
+    for event in mouse_wheel.read() {
+        if !cursor_over_events {
+            continue;
+        }
+        let scale = match event.unit {
+            MouseScrollUnit::Line => CHRONICLE_EVENT_WHEEL_LINE_SCROLL,
+            MouseScrollUnit::Pixel => CHRONICLE_EVENT_WHEEL_PIXEL_SCROLL,
+        };
+        delta -= event.y * scale;
+    }
+
+    for (computed, mut scroll_position) in &mut scroll_area {
+        let content_height = (computed.content_size().y * computed.inverse_scale_factor()).max(1.0);
+        let view_height = (computed.size().y * computed.inverse_scale_factor()).max(1.0);
+        let max_offset = (content_height - view_height).max(0.0);
+        if !scroll_state.initialized {
+            scroll_state.target_y = scroll_position.y.clamp(0.0, max_offset);
+            scroll_state.initialized = true;
+        }
+        scroll_state.target_y = scroll_state.target_y.clamp(0.0, max_offset);
+
+        let dragged_fraction = if scroll_state.scrollbar_dragging {
+            window
+                .zip(cursor)
+                .and_then(|(window, cursor)| chronicle_event_scrollbar_fraction(window, cursor))
+        } else {
+            None
+        };
+        let mut follow_rate = CHRONICLE_EVENT_SCROLL_FOLLOW;
+        if let Some(fraction) = dragged_fraction {
+            scroll_state.target_y = (fraction * max_offset).clamp(0.0, max_offset);
+            follow_rate = CHRONICLE_EVENT_SCROLLBAR_FOLLOW;
+        } else if delta != 0.0 {
+            scroll_state.target_y = (scroll_state.target_y + delta).clamp(0.0, max_offset);
+        }
+
+        let follow = 1.0 - (-follow_rate * time.delta_secs()).exp();
+        scroll_position.y += (scroll_state.target_y - scroll_position.y) * follow;
+        if (scroll_position.y - scroll_state.target_y).abs() < 0.35 {
+            scroll_position.y = scroll_state.target_y;
+        }
+        scroll_position.y = scroll_position.y.clamp(0.0, max_offset);
+
+        let visible_ratio = (view_height / content_height).clamp(0.0, 1.0);
+        let thumb_height = (visible_ratio * 100.0).clamp(8.0, 100.0);
+        let thumb_top = if max_offset > 1.0 {
+            (scroll_position.y / max_offset).clamp(0.0, 1.0) * (100.0 - thumb_height)
+        } else {
+            0.0
+        };
+        for mut visibility in &mut scrollbar_tracks {
+            *visibility = if max_offset > 1.0 {
+                Visibility::Visible
+            } else {
+                Visibility::Hidden
+            };
+        }
+        for mut thumb in &mut scrollbar_thumbs {
+            thumb.top = percent(thumb_top);
+            thumb.height = percent(thumb_height);
+        }
+    }
+}
+
+fn chronicle_push_event(
+    chronicle: &mut SimulationChronicle,
+    kind: ChronicleEventKind,
+    title: impl Into<String>,
+    body: impl Into<String>,
+    species: Option<u32>,
+) {
+    if chronicle.events.len() >= CHRONICLE_MAX_EVENTS {
+        chronicle.events.remove(0);
+    }
+    chronicle.events.push(ChronicleEvent {
+        time: chronicle.elapsed,
+        kind,
+        title: title.into(),
+        body: body.into(),
+        species,
+    });
+    chronicle.revision = chronicle.revision.wrapping_add(1);
+}
+
+fn chronicle_filter_bit(kind: ChronicleEventKind) -> u8 {
+    match kind {
+        ChronicleEventKind::World => CHRONICLE_FILTER_WORLD,
+        ChronicleEventKind::Species => CHRONICLE_FILTER_SPECIES,
+        ChronicleEventKind::Extinction => CHRONICLE_FILTER_EXTINCTION,
+        ChronicleEventKind::Population => CHRONICLE_FILTER_POPULATION,
+        ChronicleEventKind::Energy => CHRONICLE_FILTER_ENERGY,
+        ChronicleEventKind::Trait => CHRONICLE_FILTER_TRAIT,
+    }
+}
+
+fn chronicle_filter_label(kind: ChronicleEventKind) -> &'static str {
+    match kind {
+        ChronicleEventKind::World => "мир",
+        ChronicleEventKind::Species => "виды",
+        ChronicleEventKind::Extinction => "смерть",
+        ChronicleEventKind::Population => "поп.",
+        ChronicleEventKind::Energy => "энерг.",
+        ChronicleEventKind::Trait => "гены",
+    }
+}
+
+fn chronicle_kind_color(kind: ChronicleEventKind) -> Color {
+    match kind {
+        ChronicleEventKind::World => Color::srgb(0.72, 0.90, 0.92),
+        ChronicleEventKind::Species => Color::srgb(0.44, 1.0, 0.62),
+        ChronicleEventKind::Extinction => Color::srgb(1.0, 0.34, 0.32),
+        ChronicleEventKind::Population => Color::srgb(0.48, 0.78, 1.0),
+        ChronicleEventKind::Energy => Color::srgb(1.0, 0.84, 0.32),
+        ChronicleEventKind::Trait => Color::srgb(0.82, 0.56, 1.0),
+    }
+}
+
+fn chronicle_graph_mode_label(mode: ChronicleGraphMode) -> &'static str {
+    match mode {
+        ChronicleGraphMode::Overall => "общий",
+        ChronicleGraphMode::Cells => "клетки",
+        ChronicleGraphMode::Food => "еда",
+        ChronicleGraphMode::Viability => "жизнь",
+        ChronicleGraphMode::Energy => "энергия",
+    }
+}
+
+fn chronicle_graph_mode_color(mode: ChronicleGraphMode) -> Color {
+    match mode {
+        ChronicleGraphMode::Overall => Color::srgb(0.42, 0.86, 0.92),
+        ChronicleGraphMode::Cells => Color::srgb(0.34, 1.0, 0.52),
+        ChronicleGraphMode::Food => Color::srgb(1.0, 0.86, 0.30),
+        ChronicleGraphMode::Viability => Color::srgb(0.90, 1.0, 0.94),
+        ChronicleGraphMode::Energy => Color::srgb(0.40, 1.0, 0.66),
+    }
+}
+
+fn chronicle_summary_label(metric: ChronicleSummaryMetric) -> &'static str {
+    match metric {
+        ChronicleSummaryMetric::Time => "время",
+        ChronicleSummaryMetric::Cells => "клетки",
+        ChronicleSummaryMetric::Species => "виды",
+        ChronicleSummaryMetric::Food => "еда",
+        ChronicleSummaryMetric::Viability => "жизнь",
+        ChronicleSummaryMetric::Energy => "энергия",
+        ChronicleSummaryMetric::Costs => "расходы",
+        ChronicleSummaryMetric::Traits => "признаки",
+        ChronicleSummaryMetric::Performance => "кадр",
+    }
+}
+
+fn chronicle_summary_width(metric: ChronicleSummaryMetric) -> f32 {
+    match metric {
+        ChronicleSummaryMetric::Time => 66.0,
+        ChronicleSummaryMetric::Cells => 76.0,
+        ChronicleSummaryMetric::Species => 68.0,
+        ChronicleSummaryMetric::Food => 132.0,
+        ChronicleSummaryMetric::Viability => 72.0,
+        ChronicleSummaryMetric::Energy => 108.0,
+        ChronicleSummaryMetric::Costs => 132.0,
+        ChronicleSummaryMetric::Traits => 110.0,
+        ChronicleSummaryMetric::Performance => 116.0,
+    }
+}
+
+fn chronicle_summary_color(metric: ChronicleSummaryMetric) -> Color {
+    match metric {
+        ChronicleSummaryMetric::Time => Color::srgb(0.55, 0.86, 0.92),
+        ChronicleSummaryMetric::Cells => Color::srgb(0.34, 1.0, 0.52),
+        ChronicleSummaryMetric::Species => Color::srgb(0.52, 0.86, 1.0),
+        ChronicleSummaryMetric::Food => Color::srgb(1.0, 0.86, 0.30),
+        ChronicleSummaryMetric::Viability => Color::srgb(0.90, 1.0, 0.94),
+        ChronicleSummaryMetric::Energy => Color::srgb(0.74, 1.0, 0.70),
+        ChronicleSummaryMetric::Costs => Color::srgb(1.0, 0.62, 0.40),
+        ChronicleSummaryMetric::Traits => Color::srgb(0.82, 0.56, 1.0),
+        ChronicleSummaryMetric::Performance => Color::srgb(0.62, 0.82, 1.0),
+    }
+}
+
+fn chronicle_summary_value(
+    metric: ChronicleSummaryMetric,
+    snapshot: &ChronicleSnapshot,
+) -> (String, Color) {
+    match metric {
+        ChronicleSummaryMetric::Time => (
+            chronicle_time_label(snapshot.time),
+            Color::srgb(0.78, 0.96, 0.94),
+        ),
+        ChronicleSummaryMetric::Cells => (snapshot.cells.to_string(), Color::srgb(0.50, 1.0, 0.62)),
+        ChronicleSummaryMetric::Species => {
+            (snapshot.species.to_string(), Color::srgb(0.58, 0.88, 1.0))
+        }
+        ChronicleSummaryMetric::Food => (
+            format!(
+                "{} · {}/{}/{}",
+                snapshot.food, snapshot.wild_food, snapshot.feeder_food, snapshot.meat
+            ),
+            Color::srgb(1.0, 0.88, 0.42),
+        ),
+        ChronicleSummaryMetric::Viability => (
+            format!("{:.0}%", snapshot.avg_viability * 100.0),
+            Color::srgb(0.90, 1.0, 0.94),
+        ),
+        ChronicleSummaryMetric::Energy => {
+            let color = if snapshot.energy_net > 1.0 {
+                Color::srgb(0.42, 1.0, 0.58)
+            } else if snapshot.energy_net < -1.0 {
+                Color::srgb(1.0, 0.38, 0.34)
+            } else {
+                Color::srgb(0.96, 0.80, 0.34)
+            };
+            (
+                format!(
+                    "{:+.0} ({:.0}/{:.0})",
+                    snapshot.energy_net, snapshot.energy_in, snapshot.energy_out
+                ),
+                color,
+            )
+        }
+        ChronicleSummaryMetric::Costs => (
+            format!(
+                "м{:.0} · д{:.0} · л{:.0}",
+                snapshot.metabolism, snapshot.mitosis, snapshot.lysis
+            ),
+            Color::srgb(1.0, 0.68, 0.42),
+        ),
+        ChronicleSummaryMetric::Traits => (
+            format!(
+                "сег {} · хищ {}",
+                snapshot.segmented, snapshot.lysis_capable
+            ),
+            Color::srgb(0.84, 0.62, 1.0),
+        ),
+        ChronicleSummaryMetric::Performance => (
+            format!(
+                "{:.0} FPS · {:.1}/{:.1}",
+                snapshot.fps, snapshot.sim_ms, snapshot.render_ms
+            ),
+            Color::srgb(0.66, 0.86, 1.0),
+        ),
+    }
+}
+
+fn chronicle_event_marker(kind: ChronicleEventKind) -> &'static str {
+    match kind {
+        ChronicleEventKind::World => "•",
+        ChronicleEventKind::Species => "+",
+        ChronicleEventKind::Extinction => "×",
+        ChronicleEventKind::Population => "~",
+        ChronicleEventKind::Energy => "=",
+        ChronicleEventKind::Trait => "*",
+    }
+}
+
+fn chronicle_time_label(seconds: f32) -> String {
+    let total = seconds.max(0.0).round() as u32;
+    let minutes = total / 60;
+    let seconds = total % 60;
+    format!("{minutes:02}:{seconds:02}")
+}
+
+fn update_simulation_chronicle(
+    time: Res<Time>,
+    diagnostics: Res<DiagnosticsStore>,
+    ui_state: Res<GameUiState>,
+    world: Res<WorldState>,
+    names: Res<SpeciesNameBook>,
+    stats: Res<FrameStats>,
+    mut chronicle: ResMut<SimulationChronicle>,
+) {
+    if ui_state.paused {
+        return;
+    }
+
+    let dt = time.delta_secs().clamp(0.0, 0.25) * ui_state.speed_multiplier;
+    chronicle.elapsed += dt;
+    chronicle.sample_accumulator += dt;
+    if chronicle.sample_accumulator < CHRONICLE_SAMPLE_INTERVAL && !chronicle.snapshots.is_empty() {
+        return;
+    }
+    chronicle.sample_accumulator = 0.0;
+
+    let first_sample = chronicle.snapshots.is_empty();
+    let flow = world.energy_flow;
+    let (wild_food, feeder_food, meat) = world.active_food_counts();
+    let (viability, viability_capacity, _, _) = viability_summary(&world);
+    let avg_viability = if viability_capacity > 0.0 {
+        viability / viability_capacity
+    } else {
+        0.0
+    };
+    let fps = diagnostics
+        .get(&FrameTimeDiagnosticsPlugin::FPS)
+        .and_then(|fps| fps.smoothed())
+        .unwrap_or(0.0) as f32;
+
+    let mut species_counts = HashMap::<u32, (usize, usize, f32)>::new();
+    let mut segmented = 0usize;
+    let mut lysis_capable = 0usize;
+    for index in 0..world.cells.len() {
+        let species = world.cells.species[index];
+        let entry = species_counts.entry(species).or_insert((0, index, 0.0));
+        entry.0 += 1;
+        entry.2 += world.cells.aggressiveness[index];
+        if world.cells.section_count[index] >= 2 {
+            segmented += 1;
+        }
+        if world.cells.lysis[index] >= 8.0 {
+            lysis_capable += 1;
+        }
+    }
+
+    if chronicle.snapshots.len() >= CHRONICLE_MAX_SNAPSHOTS {
+        chronicle.snapshots.remove(0);
+    }
+    let snapshot_time = chronicle.elapsed;
+    chronicle.snapshots.push(ChronicleSnapshot {
+        time: snapshot_time,
+        cells: world.cells.len(),
+        food: world.food.active_count(),
+        wild_food,
+        feeder_food,
+        meat,
+        avg_viability,
+        energy_in: flow.external_input(),
+        energy_out: flow.total_outflow(),
+        energy_net: flow.net_external_balance(),
+        metabolism: flow.metabolism,
+        mitosis: flow.mitosis_cost,
+        lysis: flow.lysis_loss,
+        fps,
+        sim_ms: stats.sim_time.as_secs_f32() * 1_000.0,
+        render_ms: stats.upload_time.as_secs_f32() * 1_000.0,
+        species: species_counts.len(),
+        segmented,
+        lysis_capable,
+    });
+    chronicle.revision = chronicle.revision.wrapping_add(1);
+
+    if first_sample {
+        chronicle.last_population_check_time = chronicle.elapsed;
+        chronicle.last_population_check_cells = world.cells.len();
+        for (species, (alive, _, _)) in &species_counts {
+            chronicle.species_records.insert(
+                *species,
+                ChronicleSpeciesRecord {
+                    alive: *alive,
+                    peak_alive: *alive,
+                },
+            );
+        }
+        chronicle_push_event(
+            &mut chronicle,
+            ChronicleEventKind::World,
+            "Запуск экосистемы",
+            format!(
+                "{} клеток, {} еды, {} стартовых видов.",
+                world.cells.len(),
+                world.food.active_count(),
+                species_counts.len()
+            ),
+            None,
+        );
+    } else {
+        let mut pending_events = Vec::<(ChronicleEventKind, String, String, Option<u32>)>::new();
+
+        for (species, (alive, first_index, aggression_sum)) in &species_counts {
+            if !chronicle.species_records.contains_key(species) {
+                let name = species_name_for(&names, *species);
+                let shape = world.cells.shape_name(*first_index);
+                let avg_aggression = aggression_sum / (*alive as f32).max(1.0);
+                pending_events.push((
+                    ChronicleEventKind::Species,
+                    "Новый вид".to_string(),
+                    format!(
+                        "{name}: {shape}, {}, {} живых.",
+                        trophic_type_name(avg_aggression),
+                        alive
+                    ),
+                    Some(*species),
+                ));
+                chronicle.species_records.insert(
+                    *species,
+                    ChronicleSpeciesRecord {
+                        alive: *alive,
+                        peak_alive: *alive,
+                    },
+                );
+                continue;
+            }
+
+            if let Some(record) = chronicle.species_records.get_mut(species) {
+                if record.peak_alive >= 8
+                    && *alive >= record.peak_alive.saturating_add(10)
+                    && *alive as f32 >= record.peak_alive as f32 * 1.6
+                {
+                    let name = species_name_for(&names, *species);
+                    pending_events.push((
+                        ChronicleEventKind::Population,
+                        "Пик вида".to_string(),
+                        format!("{name} вырос с {} до {} живых.", record.peak_alive, alive),
+                        Some(*species),
+                    ));
+                }
+                record.alive = *alive;
+                record.peak_alive = record.peak_alive.max(*alive);
+            }
+        }
+
+        let extinct_species = chronicle
+            .species_records
+            .iter()
+            .filter_map(|(species, record)| {
+                (record.alive > 0 && !species_counts.contains_key(species)).then_some(*species)
+            })
+            .collect::<Vec<_>>();
+        for species in extinct_species {
+            if let Some(record) = chronicle.species_records.get_mut(&species) {
+                record.alive = 0;
+            }
+            let name = species_name_for(&names, species);
+            pending_events.push((
+                ChronicleEventKind::Extinction,
+                "Вид вымер".to_string(),
+                format!("{name}: последний живой представитель исчез."),
+                Some(species),
+            ));
+        }
+
+        if let Some((dominant_species, (alive, _, _))) = species_counts
+            .iter()
+            .max_by_key(|(_, (alive, _, _))| *alive)
+        {
+            let share = *alive as f32 / world.cells.len().max(1) as f32;
+            if share >= 0.12 && chronicle.dominant_species != Some(*dominant_species) {
+                chronicle.dominant_species = Some(*dominant_species);
+                let name = species_name_for(&names, *dominant_species);
+                pending_events.push((
+                    ChronicleEventKind::Population,
+                    "Новый доминант".to_string(),
+                    format!("{name}: {:.0}% популяции мира.", share * 100.0),
+                    Some(*dominant_species),
+                ));
+            }
+        }
+
+        let energy_state = if flow.net_external_balance() < -250.0 {
+            ChronicleEnergyState::Deficit
+        } else if flow.net_external_balance() > 250.0 {
+            ChronicleEnergyState::Surplus
+        } else {
+            ChronicleEnergyState::Balanced
+        };
+        if energy_state != chronicle.energy_state {
+            chronicle.energy_state = energy_state;
+            let (title, body) = match energy_state {
+                ChronicleEnergyState::Deficit => (
+                    "Энергетический дефицит",
+                    format!(
+                        "Отток сильнее притока: {:+.0} ед/с.",
+                        flow.net_external_balance()
+                    ),
+                ),
+                ChronicleEnergyState::Surplus => (
+                    "Энергетический профицит",
+                    format!(
+                        "Приток выше расходов: {:+.0} ед/с.",
+                        flow.net_external_balance()
+                    ),
+                ),
+                ChronicleEnergyState::Balanced => (
+                    "Энергия стабилизировалась",
+                    format!(
+                        "Баланс около нуля: {:+.0} ед/с.",
+                        flow.net_external_balance()
+                    ),
+                ),
+            };
+            pending_events.push((ChronicleEventKind::Energy, title.to_string(), body, None));
+        }
+
+        if chronicle.elapsed - chronicle.last_population_check_time >= 15.0 {
+            let previous = chronicle.last_population_check_cells.max(1) as f32;
+            let current = world.cells.len() as f32;
+            let ratio = current / previous;
+            if ratio >= 1.18 {
+                pending_events.push((
+                    ChronicleEventKind::Population,
+                    "Всплеск популяции".to_string(),
+                    format!(
+                        "Клеток стало на {:.0}% больше за последние 15 секунд.",
+                        (ratio - 1.0) * 100.0
+                    ),
+                    None,
+                ));
+            } else if ratio <= 0.82 {
+                pending_events.push((
+                    ChronicleEventKind::Population,
+                    "Обвал популяции".to_string(),
+                    format!(
+                        "Клеток стало на {:.0}% меньше за последние 15 секунд.",
+                        (1.0 - ratio) * 100.0
+                    ),
+                    None,
+                ));
+            }
+            chronicle.last_population_check_time = chronicle.elapsed;
+            chronicle.last_population_check_cells = world.cells.len();
+        }
+
+        if lysis_capable > 0 && !chronicle.first_lysis_reported {
+            chronicle.first_lysis_reported = true;
+            pending_events.push((
+                ChronicleEventKind::Trait,
+                "Появился лизис".to_string(),
+                format!("{lysis_capable} клеток способны к ближней атаке."),
+                None,
+            ));
+        }
+        if segmented > 0 && !chronicle.first_segmented_reported {
+            chronicle.first_segmented_reported = true;
+            pending_events.push((
+                ChronicleEventKind::Trait,
+                "Появилась многосегментность".to_string(),
+                format!("{segmented} клеток имеют несколько секций тела."),
+                None,
+            ));
+        }
+
+        for (kind, title, body, species) in pending_events {
+            chronicle_push_event(&mut chronicle, kind, title, body, species);
         }
     }
 }
@@ -4960,6 +6929,398 @@ fn update_species_ledger_ui(
     state.rendered_revision = stats.revision;
     state.rendered_range_start = range_start;
     state.rendered_range_end = range_end;
+}
+
+fn update_chronicle_ui(
+    time: Res<Time>,
+    state: Res<ChronicleUiState>,
+    chronicle: Res<SimulationChronicle>,
+    mut images: ResMut<Assets<Image>>,
+    mut cache: ResMut<ChronicleGraphCache>,
+    mut panels: Query<(&mut Visibility, &mut Node, &mut PanelReveal), With<ChroniclePanel>>,
+    mut overview_text: Query<
+        &mut Text,
+        (
+            With<ChronicleOverviewText>,
+            Without<ChronicleEventText>,
+            Without<ChronicleSummaryValue>,
+        ),
+    >,
+    mut summary_values: Query<
+        (&ChronicleSummaryValue, &mut Text, &mut TextColor),
+        (Without<ChronicleOverviewText>, Without<ChronicleEventText>),
+    >,
+    mut event_text: Query<
+        &mut Text,
+        (
+            With<ChronicleEventText>,
+            Without<ChronicleOverviewText>,
+            Without<ChronicleSummaryValue>,
+        ),
+    >,
+    mut graph_images: Query<&mut ImageNode, With<ChronicleGraphImage>>,
+) {
+    let reveal_follow = 1.0 - (-13.0 * time.delta_secs()).exp();
+    for (mut visibility, mut node, mut reveal) in &mut panels {
+        if state.open {
+            *visibility = Visibility::Visible;
+            node.display = Display::Flex;
+        }
+        let target = if state.open { 1.0 } else { 0.0 };
+        reveal.progress += (target - reveal.progress) * reveal_follow;
+        node.left = px(CHRONICLE_PANEL_LEFT - reveal.hidden_offset * (1.0 - reveal.progress));
+        if !state.open && reveal.progress < 0.002 {
+            *visibility = Visibility::Hidden;
+            node.display = Display::None;
+        }
+    }
+
+    if !state.open {
+        return;
+    }
+
+    if let Ok(mut text) = overview_text.single_mut() {
+        if let Some(snapshot) = chronicle.snapshots.last() {
+            **text = format!(
+                "{} · клеток {} · видов {} · еда {} (трава {} / корм. {} / мясо {}) · жизнь {:.0}% · энергия {:+.0} ед/с ({:.0}/{:.0}) · метаб. {:.0} · митоз {:.0} · лизис {:.0} · сегм. {} · хищн. {} · FPS {:.0} · {:.1}/{:.1} мс",
+                chronicle_time_label(snapshot.time),
+                snapshot.cells,
+                snapshot.species,
+                snapshot.food,
+                snapshot.wild_food,
+                snapshot.feeder_food,
+                snapshot.meat,
+                snapshot.avg_viability * 100.0,
+                snapshot.energy_net,
+                snapshot.energy_in,
+                snapshot.energy_out,
+                snapshot.metabolism,
+                snapshot.mitosis,
+                snapshot.lysis,
+                snapshot.segmented,
+                snapshot.lysis_capable,
+                snapshot.fps,
+                snapshot.sim_ms,
+                snapshot.render_ms,
+            );
+        } else {
+            **text = "ожидание первого среза мира".to_string();
+        }
+    }
+
+    if let Some(snapshot) = chronicle.snapshots.last() {
+        for (summary, mut text, mut color) in &mut summary_values {
+            let (value, target_color) = chronicle_summary_value(summary.metric, snapshot);
+            **text = value;
+            *color = TextColor(target_color);
+        }
+    } else {
+        for (_, mut text, mut color) in &mut summary_values {
+            **text = "-".to_string();
+            *color = TextColor(Color::srgb(0.58, 0.72, 0.74));
+        }
+    }
+
+    if let Ok(mut text) = event_text.single_mut() {
+        if chronicle.events.is_empty() {
+            **text = "события появятся после первых изменений экосистемы".to_string();
+        } else {
+            let events = chronicle
+                .events
+                .iter()
+                .rev()
+                .filter(|event| state.event_enabled(event.kind))
+                .map(|event| {
+                    let species = event
+                        .species
+                        .map(|id| format!(" · вид #{id}"))
+                        .unwrap_or_default();
+                    format!(
+                        "{} {} · {}{}\n{}\n",
+                        chronicle_event_marker(event.kind),
+                        chronicle_time_label(event.time),
+                        event.title,
+                        species,
+                        event.body
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            **text = if events.is_empty() {
+                "нет событий с включенными фильтрами".to_string()
+            } else {
+                events
+            };
+        }
+    }
+
+    if cache.revision != chronicle.revision || cache.mode != state.graph_mode {
+        let image = render_chronicle_graph(&chronicle.snapshots, state.graph_mode);
+        let handle = if let Some(handle) = cache.handle.clone() {
+            if let Some(existing) = images.get_mut(&handle) {
+                *existing = image;
+                handle
+            } else {
+                images.add(image)
+            }
+        } else {
+            images.add(image)
+        };
+        cache.handle = Some(handle);
+        cache.revision = chronicle.revision;
+        cache.mode = state.graph_mode;
+    }
+
+    if let Some(handle) = cache.handle.clone() {
+        for mut image in &mut graph_images {
+            image.image = handle.clone();
+        }
+    }
+}
+
+fn render_chronicle_graph(snapshots: &[ChronicleSnapshot], mode: ChronicleGraphMode) -> Image {
+    let width = CHRONICLE_GRAPH_WIDTH;
+    let height = CHRONICLE_GRAPH_HEIGHT;
+    let mut data = vec![0u8; (width * height * 4) as usize];
+    for y in 0..height {
+        for x in 0..width {
+            let shade = if (y / 22) % 2 == 0 { 12 } else { 9 };
+            graph_write_pixel(
+                &mut data,
+                width,
+                height,
+                x as i32,
+                y as i32,
+                [shade, 24, 28, 230],
+            );
+        }
+    }
+    for step in 0..=4 {
+        let y = 16 + step * ((height as i32 - 32) / 4);
+        graph_draw_line(
+            &mut data,
+            width,
+            height,
+            IVec2::new(14, y),
+            IVec2::new(width as i32 - 14, y),
+            [34, 76, 84, 120],
+            1,
+        );
+    }
+
+    if snapshots.len() >= 2 {
+        let cells = snapshots
+            .iter()
+            .map(|snapshot| snapshot.cells as f32)
+            .collect::<Vec<_>>();
+        let food = snapshots
+            .iter()
+            .map(|snapshot| snapshot.food as f32)
+            .collect::<Vec<_>>();
+        let viability = snapshots
+            .iter()
+            .map(|snapshot| snapshot.avg_viability * 100.0)
+            .collect::<Vec<_>>();
+        let net = snapshots
+            .iter()
+            .map(|snapshot| snapshot.energy_net)
+            .collect::<Vec<_>>();
+
+        match mode {
+            ChronicleGraphMode::Overall => {
+                graph_draw_normalized_series(
+                    &mut data,
+                    width,
+                    height,
+                    &cells,
+                    [86, 255, 132, 245],
+                    2,
+                    false,
+                );
+                graph_draw_normalized_series(
+                    &mut data,
+                    width,
+                    height,
+                    &food,
+                    [255, 220, 80, 235],
+                    2,
+                    false,
+                );
+                graph_draw_normalized_series(
+                    &mut data,
+                    width,
+                    height,
+                    &viability,
+                    [225, 255, 238, 245],
+                    2,
+                    false,
+                );
+                graph_draw_normalized_series(
+                    &mut data,
+                    width,
+                    height,
+                    &net,
+                    [88, 240, 170, 245],
+                    2,
+                    true,
+                );
+            }
+            ChronicleGraphMode::Cells => graph_draw_normalized_series(
+                &mut data,
+                width,
+                height,
+                &cells,
+                [86, 255, 132, 250],
+                3,
+                false,
+            ),
+            ChronicleGraphMode::Food => graph_draw_normalized_series(
+                &mut data,
+                width,
+                height,
+                &food,
+                [255, 220, 80, 250],
+                3,
+                false,
+            ),
+            ChronicleGraphMode::Viability => graph_draw_normalized_series(
+                &mut data,
+                width,
+                height,
+                &viability,
+                [225, 255, 238, 250],
+                3,
+                false,
+            ),
+            ChronicleGraphMode::Energy => graph_draw_normalized_series(
+                &mut data,
+                width,
+                height,
+                &net,
+                [88, 240, 170, 250],
+                3,
+                true,
+            ),
+        }
+    }
+
+    let mut image = Image::new_fill(
+        Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        &[0, 0, 0, 0],
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
+    );
+    image.data = Some(data);
+    image
+}
+
+fn graph_draw_normalized_series(
+    data: &mut [u8],
+    width: u32,
+    height: u32,
+    values: &[f32],
+    color: [u8; 4],
+    thickness: i32,
+    centered: bool,
+) {
+    if values.len() < 2 {
+        return;
+    }
+    let left = 16.0;
+    let right = width as f32 - 16.0;
+    let top = 14.0;
+    let bottom = height as f32 - 16.0;
+    let (min, max) = if centered {
+        let max_abs = values
+            .iter()
+            .map(|value| value.abs())
+            .fold(1.0_f32, f32::max);
+        (-max_abs, max_abs)
+    } else {
+        let min = values.iter().copied().fold(f32::MAX, f32::min);
+        let max = values.iter().copied().fold(f32::MIN, f32::max);
+        if (max - min).abs() < 0.001 {
+            (0.0, max.max(1.0))
+        } else {
+            (min, max)
+        }
+    };
+    if centered {
+        let zero_y = graph_series_y(0.0, min, max, top, bottom);
+        graph_draw_line(
+            data,
+            width,
+            height,
+            IVec2::new(left as i32, zero_y.round() as i32),
+            IVec2::new(right as i32, zero_y.round() as i32),
+            [66, 124, 130, 120],
+            1,
+        );
+    }
+
+    let mut previous = None;
+    let last = values.len().saturating_sub(1).max(1) as f32;
+    for (index, value) in values.iter().enumerate() {
+        let x = left + (right - left) * index as f32 / last;
+        let y = graph_series_y(*value, min, max, top, bottom);
+        let point = IVec2::new(x.round() as i32, y.round() as i32);
+        if let Some(previous) = previous {
+            let mut line_color = color;
+            if centered && *value < 0.0 {
+                line_color = [255, 92, 78, color[3]];
+            }
+            graph_draw_line(data, width, height, previous, point, line_color, thickness);
+        }
+        previous = Some(point);
+    }
+}
+
+fn graph_series_y(value: f32, min: f32, max: f32, top: f32, bottom: f32) -> f32 {
+    let t = ((value - min) / (max - min).max(0.001)).clamp(0.0, 1.0);
+    bottom - (bottom - top) * t
+}
+
+fn graph_draw_line(
+    data: &mut [u8],
+    width: u32,
+    height: u32,
+    from: IVec2,
+    to: IVec2,
+    color: [u8; 4],
+    thickness: i32,
+) {
+    let delta = to - from;
+    let steps = delta.x.abs().max(delta.y.abs()).max(1);
+    for step in 0..=steps {
+        let t = step as f32 / steps as f32;
+        let x = (from.x as f32 + delta.x as f32 * t).round() as i32;
+        let y = (from.y as f32 + delta.y as f32 * t).round() as i32;
+        for oy in -thickness..=thickness {
+            for ox in -thickness..=thickness {
+                if ox * ox + oy * oy <= thickness * thickness {
+                    graph_write_pixel(data, width, height, x + ox, y + oy, color);
+                }
+            }
+        }
+    }
+}
+
+fn graph_write_pixel(data: &mut [u8], width: u32, height: u32, x: i32, y: i32, color: [u8; 4]) {
+    if x < 0 || y < 0 || x >= width as i32 || y >= height as i32 {
+        return;
+    }
+    let index = ((y as u32 * width + x as u32) * 4) as usize;
+    let alpha = color[3] as f32 / 255.0;
+    let inv = 1.0 - alpha;
+    data[index] = (data[index] as f32 * inv + color[0] as f32 * alpha) as u8;
+    data[index + 1] = (data[index + 1] as f32 * inv + color[1] as f32 * alpha) as u8;
+    data[index + 2] = (data[index + 2] as f32 * inv + color[2] as f32 * alpha) as u8;
+    data[index + 3] = 255;
 }
 
 fn update_species_ledger_row_visuals(
@@ -5943,10 +8304,6 @@ fn update_species_journal_ui(
     }
     if let Ok(mut body) = text_queries.p3().single_mut() {
         **body = format!(
-            "{diet} · трава x{grass_multiplier:.2} · мясо x{meat_multiplier:.2}\n{structure} · ареал {:.0}:{:.0}",
-            snapshot.average_position.x, snapshot.average_position.y
-        );
-        **body = format!(
             "{diet} · трава x{grass_multiplier:.2} · мясо x{meat_multiplier:.2}\n{structure}"
         );
     }
@@ -6013,17 +8370,14 @@ fn update_species_journal_ui(
 }
 
 fn species_journal_area_row_system(
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
     stats: Res<SpeciesLedgerStats>,
     state: Res<SpeciesLedgerUiState>,
     mut focus: ResMut<SpeciesCameraFocus>,
+    mut highlight_state: ResMut<SpeciesAreaHighlightState>,
     mut rows: Query<
         (&Interaction, &mut BackgroundColor, &mut BorderColor),
         (Changed<Interaction>, With<SpeciesJournalAreaRow>),
     >,
-    highlights: Query<Entity, With<SpeciesAreaHighlightEntity>>,
 ) {
     let snapshot = state
         .selected_species
@@ -6038,18 +8392,11 @@ fn species_journal_area_row_system(
                 background.0 = Color::srgb(0.05, 0.12, 0.12);
                 *border = BorderColor::all(accent);
                 if let Some(snapshot) = snapshot {
-                    for entity in &highlights {
-                        commands.entity(entity).despawn();
-                    }
+                    highlight_state.species = Some(snapshot.species);
+                    highlight_state.rendered_revision = 0;
                     focus.active = true;
                     focus.target = species_area_center(snapshot);
                     focus.target_scale = species_area_focus_scale(snapshot);
-                    spawn_species_area_highlight(
-                        &mut commands,
-                        &mut meshes,
-                        &mut materials,
-                        snapshot,
-                    );
                 }
             }
             Interaction::Hovered => {
@@ -6062,6 +8409,48 @@ fn species_journal_area_row_system(
             }
         }
     }
+}
+
+fn update_species_area_highlight_system(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    stats: Res<SpeciesLedgerStats>,
+    state: Res<SpeciesLedgerUiState>,
+    mut highlight_state: ResMut<SpeciesAreaHighlightState>,
+    highlights: Query<Entity, With<SpeciesAreaHighlightEntity>>,
+) {
+    let desired_species = if state.open && state.journal_open {
+        highlight_state
+            .species
+            .filter(|species| state.selected_species == Some(*species))
+    } else {
+        None
+    };
+    let Some(species) = desired_species else {
+        if highlight_state.species.is_some() || !highlights.is_empty() {
+            for entity in &highlights {
+                commands.entity(entity).despawn();
+            }
+            *highlight_state = SpeciesAreaHighlightState::default();
+        }
+        return;
+    };
+    let Some(snapshot) = species_snapshot_by_id(&stats, species) else {
+        for entity in &highlights {
+            commands.entity(entity).despawn();
+        }
+        *highlight_state = SpeciesAreaHighlightState::default();
+        return;
+    };
+    if highlight_state.rendered_revision == stats.revision && !highlights.is_empty() {
+        return;
+    }
+    for entity in &highlights {
+        commands.entity(entity).despawn();
+    }
+    spawn_species_area_highlight(&mut commands, &mut meshes, &mut materials, snapshot);
+    highlight_state.rendered_revision = stats.revision;
 }
 
 #[allow(dead_code)]
