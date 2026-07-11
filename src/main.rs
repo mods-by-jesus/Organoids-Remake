@@ -27,7 +27,12 @@ use simulation::{
     SPEED_GENE_MIN, SimConfig, TURN_GENE_MAX, TURN_GENE_MIN, WorldState, cell_display_color,
     grass_energy_multiplier, lysis_combat_profile, meat_energy_multiplier,
 };
-use std::{collections::HashMap, fs, path::PathBuf, time::Instant};
+use std::{
+    collections::{HashMap, HashSet},
+    fs,
+    path::PathBuf,
+    time::Instant,
+};
 
 #[derive(States, Debug, Clone, Copy, Eq, PartialEq, Hash, Default)]
 pub enum AppState {
@@ -165,6 +170,157 @@ struct SpeciesCameraFocus {
     target_scale: f32,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum GenealogyNodeKind {
+    Genus(u32),
+    Species(u32),
+}
+
+#[derive(Resource, Default)]
+struct GenealogyUiState {
+    open: bool,
+    expanded_genus: Option<u32>,
+    selected_genus: Option<u32>,
+    selected_species: Option<u32>,
+    last_click: Option<GenealogyNodeKind>,
+    last_click_time: f64,
+    rendered_header_revision: u64,
+    rendered_genus_revision: u64,
+    rendered_branch_revision: u64,
+    rendered_expanded_genus: Option<u32>,
+    rendered_selected_genus: Option<u32>,
+    rendered_selected_species: Option<u32>,
+}
+
+#[derive(Resource)]
+struct GenealogyMapView {
+    pan: Vec2,
+    zoom: f32,
+    dragging: bool,
+    last_cursor: Option<Vec2>,
+}
+
+impl Default for GenealogyMapView {
+    fn default() -> Self {
+        Self {
+            pan: Vec2::ZERO,
+            zoom: 1.0,
+            dragging: false,
+            last_cursor: None,
+        }
+    }
+}
+
+#[derive(Clone)]
+struct GenealogyGenusSnapshot {
+    genus: u32,
+    representative_species: u32,
+    representative_alive: usize,
+    alive: usize,
+    alive_delta: isize,
+    species_count: usize,
+    average_aggressiveness: f32,
+    dominant_shape: &'static str,
+}
+
+#[derive(Component)]
+struct GenealogyButton;
+
+#[derive(Component)]
+struct GenealogyPanel;
+
+#[derive(Component)]
+struct GenealogyMapRoot;
+
+#[derive(Component)]
+struct GenealogyMapViewport;
+
+#[derive(Component)]
+struct GenealogyMapContent;
+
+#[derive(Component)]
+struct GenealogyHeaderDynamicEntity;
+
+#[derive(Component)]
+struct GenealogyGenusDynamicEntity;
+
+#[derive(Component)]
+struct GenealogyBranchDynamicEntity;
+
+#[derive(Component)]
+struct GenealogyDetailsText;
+
+#[derive(Component)]
+struct GenealogyNode {
+    kind: GenealogyNodeKind,
+}
+
+#[derive(Component)]
+struct GenealogyMapNodePosition {
+    center: Vec2,
+}
+
+#[derive(Component)]
+struct GenealogyMapEdgePosition {
+    from: Vec2,
+    to: Vec2,
+}
+
+#[derive(Clone, Copy)]
+struct GenealogyEdgeRef {
+    from: Vec2,
+    to: Vec2,
+    species: u32,
+}
+
+#[derive(Component)]
+struct GenealogyEdgeLayer {
+    edges: Vec<GenealogyEdgeRef>,
+    rendered_signature: u64,
+    rendered_width: u32,
+    rendered_height: u32,
+    rendered_zoom: f32,
+}
+
+#[derive(Component)]
+struct GenealogyNodeFrame {
+    kind: GenealogyNodeKind,
+    normal_border: Color,
+    active_border: Color,
+    normal_width: f32,
+    active_width: f32,
+}
+
+#[derive(Component)]
+struct GenealogyNodeAnimation {
+    age: f32,
+    delay: f32,
+    base: Vec2,
+    from: Vec2,
+}
+
+#[derive(Component)]
+struct GenealogyMiniature {
+    species: u32,
+}
+
+#[derive(Component)]
+struct GenealogyMiniImage {
+    species: u32,
+}
+
+#[derive(Clone, Copy)]
+enum GenealogyTooltipKind {
+    Button,
+    Genus(u32),
+    Species(u32),
+}
+
+#[derive(Component)]
+struct GenealogyTooltipTarget {
+    kind: GenealogyTooltipKind,
+}
+
 #[derive(Resource, Default)]
 struct SpeciesAreaHighlightState {
     species: Option<u32>,
@@ -173,6 +329,87 @@ struct SpeciesAreaHighlightState {
 
 #[derive(Component)]
 struct SpeciesAreaHighlightEntity;
+
+#[derive(Clone, Copy)]
+struct SpeciesAreaTile {
+    species: u32,
+    contender_species: Option<u32>,
+    grid_index: usize,
+    col: usize,
+    row: usize,
+    center: Vec2,
+    half_size: Vec2,
+    strength: f32,
+    conflict: f32,
+}
+
+#[derive(Clone, Copy)]
+struct SpeciesAreaRenderTile {
+    tile: SpeciesAreaTile,
+    color: [f32; 4],
+    contender_color: Option<[f32; 4]>,
+    selected: bool,
+}
+
+#[derive(Clone, Copy)]
+struct SpeciesAreaSample {
+    species: u32,
+    position: Vec2,
+    weight: f32,
+}
+
+#[derive(Clone, Default)]
+struct SpeciesAreaTileAccumulator {
+    weights: HashMap<u32, f32>,
+}
+
+#[derive(Clone, Default)]
+struct SpeciesAreaLegendItem {
+    species: u32,
+    share: f32,
+    tile_count: usize,
+}
+
+#[derive(Resource, Default)]
+struct SpeciesAreaMapState {
+    open: bool,
+    initialized: bool,
+    rendered_revision: u64,
+    rendered_selected_species: Option<u32>,
+    tiles: Vec<SpeciesAreaTile>,
+    previous_tiles: Vec<SpeciesAreaTile>,
+    transition_elapsed: f32,
+    legend_items: Vec<SpeciesAreaLegendItem>,
+    displayed_species_count: usize,
+    total_species_count: usize,
+}
+
+#[derive(Component)]
+struct SpeciesAreaMapEntity;
+
+#[derive(Component)]
+struct SpeciesAreaMapButton;
+
+#[derive(Component)]
+struct SpeciesAreaMapLegendPanel;
+
+#[derive(Component)]
+struct SpeciesAreaMapLegendSummaryText;
+
+#[derive(Component)]
+struct SpeciesAreaMapLegendEntry {
+    slot: usize,
+}
+
+#[derive(Component)]
+struct SpeciesAreaMapLegendSwatch {
+    slot: usize,
+}
+
+#[derive(Component)]
+struct SpeciesAreaMapLegendText {
+    slot: usize,
+}
 
 #[derive(Resource, Default)]
 struct SpeciesNameBook {
@@ -222,6 +459,7 @@ struct SpeciesLedgerStats {
     accumulator: f32,
     sort_accumulator: f32,
     revision: u64,
+    area_revision: u64,
 }
 
 #[derive(Component)]
@@ -386,6 +624,7 @@ struct SimulationChronicle {
     energy_state: ChronicleEnergyState,
     first_lysis_reported: bool,
     first_segmented_reported: bool,
+    reported_trait_thresholds: u64,
     last_population_check_time: f32,
     last_population_check_cells: usize,
 }
@@ -403,6 +642,7 @@ impl Default for SimulationChronicle {
             energy_state: ChronicleEnergyState::Balanced,
             first_lysis_reported: false,
             first_segmented_reported: false,
+            reported_trait_thresholds: 0,
             last_population_check_time: 0.0,
             last_population_check_cells: 0,
         }
@@ -452,6 +692,7 @@ struct ChronicleEvent {
     title: String,
     body: String,
     species: Option<u32>,
+    persistent: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -780,6 +1021,20 @@ const SPECIES_LEDGER_WHEEL_PIXEL_SCROLL: f32 = 0.55;
 const SPECIES_LEDGER_SCROLL_FOLLOW: f32 = 15.0;
 const SPECIES_LEDGER_SCROLLBAR_FOLLOW: f32 = 11.0;
 const SPECIES_LEDGER_AUTO_SCROLL_FOLLOW: f32 = 6.5;
+const GENEALOGY_BUTTON_LEFT: f32 = 180.0;
+const GENEALOGY_PANEL_MARGIN: f32 = 32.0;
+const GENEALOGY_GENUS_NODE_MIN: f32 = 92.0;
+const GENEALOGY_GENUS_NODE_MAX: f32 = 154.0;
+const GENEALOGY_SPECIES_NODE_MIN: f32 = 64.0;
+const GENEALOGY_SPECIES_NODE_MAX: f32 = 98.0;
+const GENEALOGY_VISIBLE_GENERA_LIMIT: usize = 28;
+const GENEALOGY_EXPANDED_SPECIES_LIMIT: usize = 54;
+const GENEALOGY_SPECIES_EMERGE_SECONDS: f32 = 0.34;
+const GENEALOGY_MAP_LOGICAL_WIDTH: f32 = 1080.0;
+const GENEALOGY_MAP_LOGICAL_HEIGHT: f32 = 680.0;
+const GENEALOGY_MAP_MIN_ZOOM: f32 = 0.45;
+const GENEALOGY_MAP_MAX_ZOOM: f32 = 2.8;
+const GENEALOGY_MAP_PAN_LIMIT: f32 = 1_650.0;
 const CHRONICLE_SAMPLE_INTERVAL: f32 = 1.0;
 const CHRONICLE_MAX_SNAPSHOTS: usize = 900;
 const CHRONICLE_MAX_EVENTS: usize = 240;
@@ -795,12 +1050,34 @@ const CHRONICLE_EVENT_WHEEL_LINE_SCROLL: f32 = 42.0;
 const CHRONICLE_EVENT_WHEEL_PIXEL_SCROLL: f32 = 0.75;
 const CHRONICLE_EVENT_SCROLL_FOLLOW: f32 = 13.0;
 const CHRONICLE_EVENT_SCROLLBAR_FOLLOW: f32 = 11.0;
+const CHRONICLE_EVENT_CLICK_HEIGHT: f32 = 62.0;
+const SPECIES_AREA_MAP_BUTTON_LEFT: f32 = 126.0;
+const SPECIES_AREA_MAP_TARGET_TILES: f32 = 3_000.0;
+const SPECIES_AREA_MAP_MIN_TILE_SIZE: f32 = 120.0;
+const SPECIES_AREA_MAP_VISIBLE_FRACTION: f32 = 0.10;
+const SPECIES_AREA_MAP_LEGEND_LIMIT: usize = 10;
+const SPECIES_AREA_MAP_TRANSITION_SECONDS: f32 = 0.26;
+const SPECIES_AREA_MAP_TILE_SUBDIVISIONS: usize = 5;
+const SPECIES_AREA_MAP_EDGE_BLEND_FRACTION: f32 = 0.46;
+const SPECIES_AREA_MAP_EMPTY_BLEED_FRACTION: f32 = 0.34;
 const CHRONICLE_FILTER_WORLD: u8 = 1 << 0;
 const CHRONICLE_FILTER_SPECIES: u8 = 1 << 1;
 const CHRONICLE_FILTER_EXTINCTION: u8 = 1 << 2;
 const CHRONICLE_FILTER_POPULATION: u8 = 1 << 3;
 const CHRONICLE_FILTER_ENERGY: u8 = 1 << 4;
 const CHRONICLE_FILTER_TRAIT: u8 = 1 << 5;
+const CHRONICLE_TRAIT_FAST: u64 = 1 << 0;
+const CHRONICLE_TRAIT_SLOW: u64 = 1 << 1;
+const CHRONICLE_TRAIT_AGILE: u64 = 1 << 2;
+const CHRONICLE_TRAIT_RIGID: u64 = 1 << 3;
+const CHRONICLE_TRAIT_LONG_SIGHT: u64 = 1 << 4;
+const CHRONICLE_TRAIT_SHORT_SIGHT: u64 = 1 << 5;
+const CHRONICLE_TRAIT_PERSISTENT: u64 = 1 << 6;
+const CHRONICLE_TRAIT_AGGRESSIVE: u64 = 1 << 7;
+const CHRONICLE_TRAIT_MUTABLE: u64 = 1 << 8;
+const CHRONICLE_TRAIT_LYSIS_PEAK: u64 = 1 << 9;
+const CHRONICLE_TRAIT_GIANT: u64 = 1 << 10;
+const CHRONICLE_TRAIT_TINY: u64 = 1 << 11;
 const CHRONICLE_ALL_EVENT_FILTERS: u8 = CHRONICLE_FILTER_WORLD
     | CHRONICLE_FILTER_SPECIES
     | CHRONICLE_FILTER_EXTINCTION
@@ -970,7 +1247,10 @@ fn main() {
         .init_resource::<SpeciesLedgerDragState>()
         .init_resource::<SpeciesMiniatureImageCache>()
         .init_resource::<SpeciesCameraFocus>()
+        .init_resource::<GenealogyUiState>()
+        .init_resource::<GenealogyMapView>()
         .init_resource::<SpeciesAreaHighlightState>()
+        .init_resource::<SpeciesAreaMapState>()
         .init_resource::<SpeciesLedgerStats>()
         .init_resource::<ChronicleUiState>()
         .init_resource::<SimulationChronicle>()
@@ -1018,12 +1298,14 @@ fn main() {
             OnEnter(AppState::Running),
             (
                 initialize_world_state,
+                center_camera_on_arena,
                 load_species_name_book,
                 clear_cell_wake_trails,
                 spawn_simulation_layers,
                 setup_game_stats_ui,
                 setup_biolab_ui_v2,
                 setup_species_ledger_ui,
+                setup_genealogy_ui,
                 setup_chronicle_ui,
                 start_running_audio,
                 update_window_title,
@@ -1078,6 +1360,7 @@ fn main() {
                 chronicle_graph_button_system,
                 update_chronicle_filter_button_styles,
                 chronicle_event_scroll_system,
+                chronicle_event_click_system,
                 update_chronicle_ui,
             )
                 .chain()
@@ -1092,7 +1375,14 @@ fn main() {
             Update,
             (
                 species_ledger_button_system,
+                species_area_map_button_system,
+                update_species_area_map_button_style,
+                genealogy_button_system,
+                update_genealogy_button_style,
                 update_species_ledger_stats,
+                genealogy_node_system,
+                update_genealogy_ui,
+                update_genealogy_miniature_visuals,
                 species_ledger_scroll_system,
                 update_species_ledger_ui,
                 update_species_ledger_row_visuals,
@@ -1100,10 +1390,36 @@ fn main() {
                 update_species_journal_ui,
                 species_journal_area_row_system,
                 update_species_area_highlight_system,
+                update_species_area_map_system,
+                update_species_area_map_legend_ui,
                 species_ledger_row_system,
                 apply_species_camera_focus,
             )
                 .chain()
+                .run_if(in_state(AppState::Running)),
+        )
+        .add_systems(
+            Update,
+            update_genealogy_node_frame_visuals
+                .after(update_genealogy_miniature_visuals)
+                .run_if(in_state(AppState::Running)),
+        )
+        .add_systems(
+            Update,
+            genealogy_map_navigation_system
+                .after(update_genealogy_node_frame_visuals)
+                .run_if(in_state(AppState::Running)),
+        )
+        .add_systems(
+            Update,
+            update_genealogy_edge_layer
+                .after(genealogy_map_navigation_system)
+                .run_if(in_state(AppState::Running)),
+        )
+        .add_systems(
+            Update,
+            animate_genealogy_nodes
+                .after(update_genealogy_edge_layer)
                 .run_if(in_state(AppState::Running)),
         )
         .add_systems(
@@ -1433,6 +1749,124 @@ mod species_ledger_tests {
         assert!(target > row_top - 360.0);
         assert!(target < row_top);
     }
+
+    #[test]
+    fn species_area_map_shows_top_tenth_of_species() {
+        assert_eq!(species_area_map_visible_count(0), 0);
+        assert_eq!(species_area_map_visible_count(1), 1);
+        assert_eq!(species_area_map_visible_count(21), 3);
+
+        let mut stats = SpeciesLedgerStats::default();
+        stats.snapshots = (0..21)
+            .map(|index| SpeciesSnapshot {
+                species: index,
+                alive: index as usize,
+                ..default()
+            })
+            .collect();
+
+        let visible = species_area_map_visible_species(&stats);
+        assert_eq!(visible.len(), 3);
+        assert!(visible.contains(&20));
+        assert!(visible.contains(&19));
+        assert!(visible.contains(&18));
+    }
+
+    #[test]
+    fn species_area_map_tiles_crossfade_between_revisions() {
+        let old_tiles = build_species_area_tiles_from_samples(
+            600.0,
+            400.0,
+            &[SpeciesAreaSample {
+                species: 1,
+                position: Vec2::ZERO,
+                weight: 1.0,
+            }],
+        );
+        let new_tiles = build_species_area_tiles_from_samples(
+            600.0,
+            400.0,
+            &[SpeciesAreaSample {
+                species: 2,
+                position: Vec2::ZERO,
+                weight: 1.0,
+            }],
+        );
+
+        let appearing = species_area_render_tiles(&new_tiles, &[], None, 0.0);
+        assert!(appearing.iter().all(|tile| tile.color[3] <= 0.01));
+
+        let appeared = species_area_render_tiles(&new_tiles, &[], None, 1.0);
+        assert!(appeared.iter().any(|tile| tile.color[3] >= 0.15));
+
+        let disappearing = species_area_render_tiles(&[], &old_tiles, None, 1.0);
+        assert!(disappearing.iter().all(|tile| tile.color[3] <= 0.01));
+
+        let transitioning = species_area_render_tiles(&new_tiles, &old_tiles, None, 0.5);
+        assert!(!transitioning.is_empty());
+        assert!(transitioning.iter().all(|tile| tile.color[3] > 0.01));
+    }
+
+    #[test]
+    fn species_area_map_keeps_tile_centers_subtle_and_edges_visible() {
+        let tiles = build_species_area_tiles_from_samples(
+            600.0,
+            400.0,
+            &[SpeciesAreaSample {
+                species: 1,
+                position: Vec2::ZERO,
+                weight: 1.0,
+            }],
+        );
+        let render_tiles = species_area_render_tiles(&tiles, &[], None, 1.0);
+        let mut lookup = HashMap::<(usize, usize), usize>::new();
+        for (index, render_tile) in render_tiles.iter().enumerate() {
+            lookup.insert((render_tile.tile.col, render_tile.tile.row), index);
+        }
+
+        let tile = render_tiles[0];
+        let center = species_area_color_at(tile, &render_tiles, &lookup, 0.5, 0.5);
+        let edge = species_area_color_at(tile, &render_tiles, &lookup, 0.0, 0.5);
+
+        assert!(center[3] < 0.04);
+        assert!(edge[3] > center[3] * 2.0);
+    }
+
+    #[test]
+    fn species_area_map_grid_balances_detail_and_pickability() {
+        let (cols, rows, tile_w, tile_h) = species_area_map_dimensions(18_000.0, 10_000.0);
+        let tile_count = cols * rows;
+        assert!((2_400..=3_600).contains(&tile_count));
+        assert!((210.0..=290.0).contains(&tile_w));
+        assert!((210.0..=290.0).contains(&tile_h));
+
+        let samples = [
+            SpeciesAreaSample {
+                species: 11,
+                position: Vec2::new(-420.0, 0.0),
+                weight: 1.0,
+            },
+            SpeciesAreaSample {
+                species: 11,
+                position: Vec2::new(-390.0, 20.0),
+                weight: 1.0,
+            },
+            SpeciesAreaSample {
+                species: 22,
+                position: Vec2::new(360.0, 0.0),
+                weight: 1.0,
+            },
+        ];
+        let tiles = build_species_area_tiles_from_samples(1_200.0, 800.0, &samples);
+        assert!(tiles.iter().any(|tile| tile.species == 11));
+        assert!(tiles.iter().any(|tile| tile.species == 22));
+
+        let species = species_area_map_pick(Vec2::new(-420.0, 0.0), &tiles);
+        assert_eq!(species, Some(11));
+
+        let mesh = species_area_map_mesh(&tiles, Some(11));
+        assert_eq!(mesh.primitive_topology(), PrimitiveTopology::TriangleList);
+    }
 }
 
 #[cfg(test)]
@@ -1548,6 +1982,44 @@ mod chronicle_tests {
             assert!(image.data.as_ref().is_some_and(|data| !data.is_empty()));
         }
     }
+
+    #[test]
+    fn chronicle_keeps_milestones_when_noisy_species_events_overflow() {
+        let mut chronicle = SimulationChronicle::default();
+        chronicle_push_event(
+            &mut chronicle,
+            ChronicleEventKind::World,
+            "world-start",
+            "important",
+            None,
+        );
+        for index in 0..(CHRONICLE_MAX_EVENTS + 32) {
+            chronicle.elapsed = index as f32;
+            chronicle_push_event(
+                &mut chronicle,
+                ChronicleEventKind::Extinction,
+                format!("extinction-{index}"),
+                "noise",
+                Some(index as u32),
+            );
+        }
+
+        assert!(
+            chronicle
+                .events
+                .iter()
+                .any(|event| event.title == "world-start")
+        );
+        assert!(chronicle.events.len() <= CHRONICLE_MAX_EVENTS);
+        assert!(
+            chronicle
+                .events
+                .iter()
+                .filter(|event| !event.persistent)
+                .count()
+                < CHRONICLE_MAX_EVENTS
+        );
+    }
 }
 
 fn initialize_world_state(
@@ -1557,7 +2029,9 @@ fn initialize_world_state(
     mut ui_state: ResMut<GameUiState>,
     mut species_ui: ResMut<SpeciesLedgerUiState>,
     mut species_focus: ResMut<SpeciesCameraFocus>,
+    mut genealogy_ui: ResMut<GenealogyUiState>,
     mut species_area: ResMut<SpeciesAreaHighlightState>,
+    mut species_area_map: ResMut<SpeciesAreaMapState>,
     mut species_stats: ResMut<SpeciesLedgerStats>,
     mut eco_log: ResMut<EcoLogState>,
     mut chronicle_ui: ResMut<ChronicleUiState>,
@@ -1569,7 +2043,9 @@ fn initialize_world_state(
     *ui_state = GameUiState::default();
     *species_ui = SpeciesLedgerUiState::default();
     *species_focus = SpeciesCameraFocus::default();
+    *genealogy_ui = GenealogyUiState::default();
     *species_area = SpeciesAreaHighlightState::default();
+    *species_area_map = SpeciesAreaMapState::default();
     *species_stats = SpeciesLedgerStats::default();
     *eco_log = EcoLogState::default();
     *chronicle_ui = ChronicleUiState::default();
@@ -1577,6 +2053,20 @@ fn initialize_world_state(
     *chronicle_graph_cache = ChronicleGraphCache::default();
     *chronicle_event_scroll = ChronicleEventScrollState::default();
     commands.insert_resource(WorldState::new(&config));
+}
+
+fn center_camera_on_arena(mut camera: Query<(&mut Transform, &mut Projection), With<MainCamera>>) {
+    let Ok((mut transform, mut projection)) = camera.single_mut() else {
+        return;
+    };
+
+    *transform = Transform::from_xyz(0.0, 0.0, 1_500.0).looking_at(Vec3::ZERO, Vec3::Y);
+    if let Projection::Orthographic(orthographic) = projection.as_mut() {
+        orthographic.scaling_mode = ScalingMode::FixedVertical {
+            viewport_height: START_VIEW_HEIGHT,
+        };
+        orthographic.scale = 1.0;
+    }
 }
 
 fn update_window_title(
@@ -1653,6 +2143,117 @@ fn setup_species_ledger_ui(mut commands: Commands, asset_server: Res<AssetServer
                 ..default()
             },
         ));
+
+    commands
+        .spawn((
+            Button,
+            Node {
+                position_type: PositionType::Absolute,
+                left: px(SPECIES_AREA_MAP_BUTTON_LEFT),
+                bottom: px(18),
+                width: px(46),
+                height: px(46),
+                border: UiRect::all(px(2)),
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                ..default()
+            },
+            BorderColor::all(Color::srgb(0.39, 0.64, 0.70)),
+            BackgroundColor(Color::srgb(0.035, 0.055, 0.064)),
+            SpeciesAreaMapButton,
+            RunningUiEntity,
+        ))
+        .with_child((
+            Text::new("M"),
+            TextFont {
+                font: font.clone(),
+                font_size: 22.0,
+                ..default()
+            },
+            TextColor(Color::srgb(0.72, 0.94, 0.90)),
+        ));
+
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                top: px(34),
+                left: percent(50),
+                width: px(860),
+                min_height: px(64),
+                margin: UiRect::left(px(-430)),
+                flex_direction: FlexDirection::Column,
+                row_gap: px(5),
+                padding: UiRect::axes(px(12), px(8)),
+                border: UiRect::all(px(2)),
+                display: Display::None,
+                ..default()
+            },
+            BorderColor::all(Color::srgb(0.40, 0.70, 0.76)),
+            BackgroundColor(Color::srgba(0.010, 0.018, 0.022, 0.90)),
+            Visibility::Hidden,
+            SpeciesAreaMapLegendPanel,
+            RunningUiEntity,
+        ))
+        .with_children(|panel| {
+            panel.spawn((
+                Text::new("ТЕРРИТОРИИ ВИДОВ"),
+                TextFont {
+                    font: font.clone(),
+                    font_size: 13.0,
+                    ..default()
+                },
+                TextColor(Color::srgb(0.70, 0.94, 0.92)),
+                SpeciesAreaMapLegendSummaryText,
+            ));
+            panel
+                .spawn((Node {
+                    width: percent(100),
+                    flex_direction: FlexDirection::Row,
+                    flex_wrap: FlexWrap::Wrap,
+                    column_gap: px(8),
+                    row_gap: px(4),
+                    ..default()
+                },))
+                .with_children(|row| {
+                    for slot in 0..SPECIES_AREA_MAP_LEGEND_LIMIT {
+                        row.spawn((
+                            Node {
+                                width: px(160),
+                                height: px(18),
+                                align_items: AlignItems::Center,
+                                column_gap: px(5),
+                                display: Display::None,
+                                ..default()
+                            },
+                            SpeciesAreaMapLegendEntry { slot },
+                        ))
+                        .with_children(|entry| {
+                            entry.spawn((
+                                Node {
+                                    width: px(11),
+                                    height: px(11),
+                                    border: UiRect::all(px(1)),
+                                    ..default()
+                                },
+                                BorderColor::all(Color::srgb(0.08, 0.14, 0.15)),
+                                BackgroundColor(Color::srgb(0.30, 0.70, 0.72)),
+                                SpeciesAreaMapLegendSwatch { slot },
+                            ));
+                            entry.spawn((
+                                Text::new(""),
+                                TextFont {
+                                    font: font.clone(),
+                                    font_size: 11.5,
+                                    ..default()
+                                },
+                                TextColor(Color::srgb(0.82, 0.96, 0.94)),
+                                SpeciesAreaMapLegendText { slot },
+                            ));
+                        });
+                    }
+                });
+        });
 
     commands
         .spawn((
@@ -1763,6 +2364,188 @@ fn setup_species_ledger_ui(mut commands: Commands, asset_server: Res<AssetServer
         });
 
     spawn_species_journal_panel(&mut commands, font.clone());
+}
+
+fn setup_genealogy_ui(mut commands: Commands, asset_server: Res<AssetServer>) {
+    let font = asset_server.load(UI_FONT);
+    commands
+        .spawn((
+            Button,
+            Node {
+                position_type: PositionType::Absolute,
+                left: px(GENEALOGY_BUTTON_LEFT),
+                bottom: px(18),
+                width: px(46),
+                height: px(46),
+                border: UiRect::all(px(2)),
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                ..default()
+            },
+            BorderColor::all(Color::srgb(0.39, 0.64, 0.70)),
+            BackgroundColor(Color::srgb(0.035, 0.055, 0.064)),
+            UiTransform::default(),
+            GenealogyButton,
+            GenealogyTooltipTarget {
+                kind: GenealogyTooltipKind::Button,
+            },
+            RunningUiEntity,
+        ))
+        .with_child((
+            Text::new("G"),
+            TextFont {
+                font: font.clone(),
+                font_size: 22.0,
+                ..default()
+            },
+            TextColor(Color::srgb(0.72, 0.94, 0.90)),
+        ));
+
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: px(GENEALOGY_PANEL_MARGIN),
+                right: px(GENEALOGY_PANEL_MARGIN),
+                top: px(GENEALOGY_PANEL_MARGIN),
+                bottom: px(GENEALOGY_PANEL_MARGIN),
+                flex_direction: FlexDirection::Column,
+                row_gap: px(12),
+                padding: UiRect::all(px(16)),
+                border: UiRect::all(px(2)),
+                overflow: Overflow::clip(),
+                display: Display::None,
+                ..default()
+            },
+            BorderColor::all(Color::srgb(0.45, 0.78, 0.84)),
+            BackgroundColor(Color::srgba(0.006, 0.012, 0.016, 0.965)),
+            Visibility::Hidden,
+            UiTransform::default(),
+            PanelReveal::default(),
+            GenealogyPanel,
+            RunningUiEntity,
+        ))
+        .with_children(|panel| {
+            panel
+                .spawn((Node {
+                    width: percent(100),
+                    height: px(42),
+                    align_items: AlignItems::Center,
+                    justify_content: JustifyContent::SpaceBetween,
+                    column_gap: px(12),
+                    ..default()
+                },))
+                .with_children(|header| {
+                    header.spawn((
+                        Text::new("РОДОСЛОВНАЯ РОДОВ"),
+                        TextFont {
+                            font: font.clone(),
+                            font_size: 24.0,
+                            ..default()
+                        },
+                        TextColor(Color::srgb(0.76, 0.98, 0.94)),
+                    ));
+                    header.spawn((
+                        Text::new("G"),
+                        TextFont {
+                            font: font.clone(),
+                            font_size: 17.0,
+                            ..default()
+                        },
+                        TextColor(Color::srgb(0.48, 0.84, 0.88)),
+                    ));
+                });
+
+            panel
+                .spawn((Node {
+                    width: percent(100),
+                    flex_grow: 1.0,
+                    min_height: px(0),
+                    flex_direction: FlexDirection::Row,
+                    column_gap: px(14),
+                    ..default()
+                },))
+                .with_children(|body| {
+                    body.spawn((
+                        Node {
+                            flex_grow: 1.0,
+                            min_width: px(0),
+                            height: percent(100),
+                            padding: UiRect::all(px(18)),
+                            border: UiRect::ZERO,
+                            overflow: Overflow::clip(),
+                            ..default()
+                        },
+                        BorderColor::all(Color::NONE),
+                        BackgroundColor(Color::srgba(0.005, 0.011, 0.014, 0.72)),
+                        ScrollPosition::default(),
+                        RelativeCursorPosition::default(),
+                        GenealogyMapViewport,
+                    ))
+                    .with_children(|viewport| {
+                        viewport
+                            .spawn((
+                                Node {
+                                    width: percent(100),
+                                    height: percent(100),
+                                    position_type: PositionType::Relative,
+                                    overflow: Overflow::clip(),
+                                    ..default()
+                                },
+                                UiTransform::default(),
+                                GenealogyMapRoot,
+                            ))
+                            .with_child((
+                                Node {
+                                    position_type: PositionType::Absolute,
+                                    left: px(0),
+                                    right: px(0),
+                                    top: px(30),
+                                    bottom: px(0),
+                                    overflow: Overflow::visible(),
+                                    ..default()
+                                },
+                                UiTransform::default(),
+                                GenealogyMapContent,
+                            ));
+                    });
+
+                    body.spawn((
+                        Node {
+                            width: px(360),
+                            height: percent(100),
+                            flex_direction: FlexDirection::Column,
+                            row_gap: px(10),
+                            padding: UiRect::all(px(14)),
+                            border: UiRect::all(px(1)),
+                            ..default()
+                        },
+                        BorderColor::all(Color::srgb(0.22, 0.46, 0.50)),
+                        BackgroundColor(Color::srgb(0.010, 0.018, 0.022)),
+                    ))
+                    .with_children(|details| {
+                        details.spawn((
+                            Text::new("ВЫБЕРИ РОД"),
+                            TextFont {
+                                font: font.clone(),
+                                font_size: 18.0,
+                                ..default()
+                            },
+                            TextColor(Color::srgb(0.72, 0.96, 0.92)),
+                        ));
+                        details.spawn((
+                            Text::new(""),
+                            TextFont {
+                                font,
+                                font_size: 14.0,
+                                ..default()
+                            },
+                            TextColor(Color::srgb(0.72, 0.86, 0.86)),
+                            GenealogyDetailsText,
+                        ));
+                    });
+                });
+        });
 }
 
 fn setup_chronicle_ui(mut commands: Commands, asset_server: Res<AssetServer>) {
@@ -4140,7 +4923,9 @@ fn select_cell_system(
     world: Res<WorldState>,
     mut selected: ResMut<SelectedCell>,
     mut species_ui: ResMut<SpeciesLedgerUiState>,
+    area_map: Res<SpeciesAreaMapState>,
     chronicle_ui: Res<ChronicleUiState>,
+    genealogy_ui: Res<GenealogyUiState>,
     mut ui_state: ResMut<GameUiState>,
 ) {
     if !mouse_buttons.just_pressed(MouseButton::Left) {
@@ -4155,6 +4940,9 @@ fn select_cell_system(
     };
 
     if ui_state.pause_menu_open {
+        return;
+    }
+    if genealogy_ui.open {
         return;
     }
 
@@ -4188,6 +4976,18 @@ fn select_cell_system(
     };
 
     let world_position = cursor_to_world(cursor, transform.translation, projection, window);
+    if area_map.open
+        && let Some(species) = species_area_map_pick(world_position, &area_map.tiles)
+    {
+        species_ui.open = true;
+        species_ui.selected_species = Some(species);
+        species_ui.journal_open = false;
+        species_ui.scroll_target_species = Some(species);
+        selected.cell_id = None;
+        ui_state.passport_open = false;
+        return;
+    }
+
     let view_size = visible_world_size(projection, window);
     let screen_pick_radius = (view_size.y / window.height().max(1.0) * 15.0).max(8.0);
     let mut best = None;
@@ -4242,6 +5042,7 @@ fn camera_controls(
     windows: Query<(Entity, &Window), With<PrimaryWindow>>,
     species_ui: Res<SpeciesLedgerUiState>,
     chronicle_ui: Res<ChronicleUiState>,
+    genealogy_ui: Res<GenealogyUiState>,
     mut camera: Query<(&mut Transform, &mut Projection), With<MainCamera>>,
     mut last_cursor: Local<Option<Vec2>>,
 ) {
@@ -4254,6 +5055,12 @@ fn camera_controls(
     let Projection::Orthographic(projection) = projection.as_mut() else {
         return;
     };
+
+    if genealogy_ui.open {
+        for _ in mouse_wheel.read() {}
+        *last_cursor = window.cursor_position();
+        return;
+    }
 
     let mut keyboard_direction = Vec2::ZERO;
     if keys.pressed(KeyCode::KeyW) {
@@ -4427,7 +5234,9 @@ fn game_ui_input_system(
     selected: Res<SelectedCell>,
     mut ui_state: ResMut<GameUiState>,
     mut species_ui: ResMut<SpeciesLedgerUiState>,
+    mut species_area_map: ResMut<SpeciesAreaMapState>,
     mut chronicle_ui: ResMut<ChronicleUiState>,
+    mut genealogy_ui: ResMut<GenealogyUiState>,
 ) {
     if keys.just_pressed(KeyCode::Space) {
         ui_state.paused = !ui_state.paused;
@@ -4470,8 +5279,24 @@ fn game_ui_input_system(
         chronicle_ui.open = !chronicle_ui.open;
     }
 
+    if keys.just_pressed(KeyCode::KeyM) {
+        species_area_map.open = !species_area_map.open;
+    }
+
+    if keys.just_pressed(KeyCode::KeyG) {
+        genealogy_ui.open = !genealogy_ui.open;
+        if !genealogy_ui.open {
+            genealogy_ui.expanded_genus = None;
+            genealogy_ui.selected_genus = None;
+            genealogy_ui.selected_species = None;
+            genealogy_ui.last_click = None;
+        }
+    }
+
     if keys.just_pressed(KeyCode::Escape) {
-        if ui_state.pause_menu_open {
+        if genealogy_ui.open {
+            genealogy_ui.open = false;
+        } else if ui_state.pause_menu_open {
             ui_state.pause_menu_open = false;
             ui_state.paused = false;
         } else {
@@ -5475,19 +6300,87 @@ fn chronicle_tooltip_copy(
     }
 }
 
+fn genealogy_tooltip_copy(
+    kind: GenealogyTooltipKind,
+    state: &GenealogyUiState,
+    stats: &SpeciesLedgerStats,
+    names: &SpeciesNameBook,
+) -> Option<(String, String, Color, f32, f32)> {
+    match kind {
+        GenealogyTooltipKind::Button => Some((
+            "РОДОСЛОВНАЯ".to_string(),
+            "Карта родов и видов текущей экосистемы: роды раскрываются в ветви видов, а цвет контура показывает рост или падение.".to_string(),
+            Color::srgb(0.74, 1.0, 0.86),
+            430.0,
+            154.0,
+        )),
+        GenealogyTooltipKind::Genus(genus_id) => {
+            let genera = genealogy_genus_snapshots(stats);
+            let genus = genera.iter().find(|genus| genus.genus == genus_id)?;
+            let name = species_genus_name_for(names, genus.representative_species);
+            let trend = if genus.alive_delta > 0 {
+                format!("+{}", genus.alive_delta)
+            } else {
+                genus.alive_delta.to_string()
+            };
+            Some((
+                format!("РОД {name}"),
+                format!(
+                    "живых {} ({trend})\nвидов {}\nдоминирующая форма: {}\nсредний троф: {}\nпредставитель: {}",
+                    genus.alive,
+                    genus.species_count,
+                    genus.dominant_shape,
+                    trophic_type_name(genus.average_aggressiveness),
+                    species_name_for(names, genus.representative_species),
+                ),
+                genealogy_trend_color(genus.alive_delta, genus.alive),
+                440.0,
+                190.0,
+            ))
+        }
+        GenealogyTooltipKind::Species(species) => {
+            let snapshot = species_snapshot_by_id(stats, species)?;
+            let trend = if snapshot.alive_delta > 0 {
+                format!("+{}", snapshot.alive_delta)
+            } else {
+                snapshot.alive_delta.to_string()
+            };
+            Some((
+                species_name_for(names, species).to_uppercase(),
+                format!(
+                    "{} · {}\nживых {} ({trend})\nскорость {:.0}, поворот {:.1}, восприятие {:.0}\nагрессия {:.0}%, лизис {:.0}%",
+                    species_shape_label_from_id(species),
+                    trophic_type_name(snapshot.average_aggressiveness),
+                    snapshot.alive,
+                    snapshot.average_speed,
+                    snapshot.average_turn,
+                    snapshot.average_perception,
+                    snapshot.average_aggressiveness,
+                    snapshot.average_lysis,
+                ),
+                genealogy_trend_color(snapshot.alive_delta, snapshot.alive),
+                440.0,
+                190.0,
+            ))
+        }
+    }
+    .filter(|_| state.open || matches!(kind, GenealogyTooltipKind::Button))
+}
+
 fn update_gene_tooltip(
     time: Res<Time>,
     windows: Query<&Window, With<PrimaryWindow>>,
     selected: Res<SelectedCell>,
-    world: Res<WorldState>,
     chronicle_state: Res<ChronicleUiState>,
     chronicle: Res<SimulationChronicle>,
+    genealogy_state: Res<GenealogyUiState>,
     species_state: Res<SpeciesLedgerUiState>,
     species_stats: Res<SpeciesLedgerStats>,
     species_names: Res<SpeciesNameBook>,
     targets: Query<(&Interaction, &GeneTooltipTarget)>,
     journal_targets: Query<(&Interaction, &SpeciesJournalTooltipTarget)>,
     chronicle_targets: Query<(&Interaction, &ChronicleTooltipTarget)>,
+    genealogy_targets: Query<(&Interaction, &GenealogyTooltipTarget)>,
     division_markers: Query<&Interaction, With<DivisionThresholdMarker>>,
     mut tooltip: Query<(
         &mut Visibility,
@@ -5530,9 +6423,18 @@ fn update_gene_tooltip(
                     .map(|(_, target)| target.kind)
             })
             .flatten();
-    let selected_index = selected
-        .cell_id
-        .and_then(|cell_id| world.cell_index_by_id(cell_id));
+    let genealogy_hovered = (!marker_hovered
+        && gene_hovered.is_none()
+        && journal_hovered.is_none()
+        && chronicle_hovered.is_none())
+    .then(|| {
+        genealogy_targets
+            .iter()
+            .find(|(interaction, _)| **interaction != Interaction::None)
+            .map(|(_, target)| target.kind)
+    })
+    .flatten();
+    let has_selected_cell = selected.cell_id.is_some();
     let selected_snapshot = (species_state.open && species_state.journal_open)
         .then_some(())
         .and_then(|_| {
@@ -5541,7 +6443,7 @@ fn update_gene_tooltip(
                 .and_then(|species| species_snapshot_by_id(&species_stats, species))
         });
     let gene_payload = gene_hovered.and_then(|kind| {
-        selected_index.map(|_| {
+        has_selected_cell.then(|| {
             let (heading, description) = gene_tooltip_copy(kind);
             (
                 heading.to_string(),
@@ -5564,7 +6466,13 @@ fn update_gene_tooltip(
             chronicle_hovered.map(|kind| chronicle_tooltip_copy(kind, &chronicle, &chronicle_state))
         })
         .flatten();
-    let payload = gene_payload.or(journal_payload).or(chronicle_payload);
+    let genealogy_payload = genealogy_hovered.and_then(|kind| {
+        genealogy_tooltip_copy(kind, &genealogy_state, &species_stats, &species_names)
+    });
+    let payload = gene_payload
+        .or(journal_payload)
+        .or(chronicle_payload)
+        .or(genealogy_payload);
     let show = payload.is_some();
     let Ok((mut visibility, mut node, mut transform, mut reveal, mut border_color)) =
         tooltip.single_mut()
@@ -5625,6 +6533,1123 @@ fn species_ledger_button_system(
             }
         }
     }
+}
+
+fn species_area_map_button_system(
+    interactions: Query<&Interaction, (Changed<Interaction>, With<SpeciesAreaMapButton>)>,
+    mut state: ResMut<SpeciesAreaMapState>,
+) {
+    for interaction in &interactions {
+        if *interaction == Interaction::Pressed {
+            state.open = !state.open;
+        }
+    }
+}
+
+fn update_species_area_map_button_style(
+    state: Res<SpeciesAreaMapState>,
+    mut buttons: Query<
+        (&Interaction, &mut BackgroundColor, &mut BorderColor),
+        With<SpeciesAreaMapButton>,
+    >,
+) {
+    for (interaction, mut background, mut border) in &mut buttons {
+        let accent = if state.open {
+            Color::srgb(0.58, 0.96, 0.84)
+        } else {
+            Color::srgb(0.39, 0.64, 0.70)
+        };
+        *border = BorderColor::all(accent);
+        background.0 = match (*interaction, state.open) {
+            (Interaction::Pressed, _) => Color::srgb(0.13, 0.24, 0.25),
+            (Interaction::Hovered, true) => Color::srgb(0.075, 0.150, 0.142),
+            (Interaction::Hovered, false) => Color::srgb(0.055, 0.086, 0.096),
+            (Interaction::None, true) => Color::srgb(0.045, 0.095, 0.090),
+            (Interaction::None, false) => Color::srgb(0.035, 0.055, 0.064),
+        };
+    }
+}
+
+fn genealogy_button_system(
+    interactions: Query<&Interaction, (Changed<Interaction>, With<GenealogyButton>)>,
+    mut state: ResMut<GenealogyUiState>,
+) {
+    for interaction in &interactions {
+        if *interaction == Interaction::Pressed {
+            state.open = !state.open;
+            if !state.open {
+                state.expanded_genus = None;
+                state.selected_genus = None;
+                state.selected_species = None;
+                state.last_click = None;
+            }
+        }
+    }
+}
+
+fn update_genealogy_button_style(
+    state: Res<GenealogyUiState>,
+    mut buttons: Query<
+        (&Interaction, &mut BackgroundColor, &mut BorderColor),
+        With<GenealogyButton>,
+    >,
+) {
+    for (interaction, mut background, mut border) in &mut buttons {
+        let accent = if state.open {
+            Color::srgb(0.74, 1.0, 0.86)
+        } else {
+            Color::srgb(0.39, 0.64, 0.70)
+        };
+        *border = BorderColor::all(accent);
+        background.0 = match (*interaction, state.open) {
+            (Interaction::Pressed, _) => Color::srgb(0.13, 0.24, 0.25),
+            (Interaction::Hovered, true) => Color::srgb(0.075, 0.150, 0.142),
+            (Interaction::Hovered, false) => Color::srgb(0.055, 0.086, 0.096),
+            (Interaction::None, true) => Color::srgb(0.045, 0.095, 0.090),
+            (Interaction::None, false) => Color::srgb(0.035, 0.055, 0.064),
+        };
+    }
+}
+
+fn genealogy_genus_snapshots(stats: &SpeciesLedgerStats) -> Vec<GenealogyGenusSnapshot> {
+    let mut by_genus = HashMap::<u32, GenealogyGenusSnapshot>::new();
+    for snapshot in &stats.snapshots {
+        let genus = species_genus_key(snapshot.species);
+        let entry = by_genus
+            .entry(genus)
+            .or_insert_with(|| GenealogyGenusSnapshot {
+                genus,
+                representative_species: snapshot.species,
+                representative_alive: snapshot.alive,
+                alive: 0,
+                alive_delta: 0,
+                species_count: 0,
+                average_aggressiveness: 0.0,
+                dominant_shape: species_shape_label_from_id(snapshot.species),
+            });
+        entry.species_count += 1;
+        entry.alive += snapshot.alive;
+        entry.alive_delta += snapshot.alive_delta;
+        entry.average_aggressiveness += snapshot.average_aggressiveness * snapshot.alive as f32;
+        if snapshot.alive > entry.representative_alive {
+            entry.representative_species = snapshot.species;
+            entry.representative_alive = snapshot.alive;
+            entry.dominant_shape = species_shape_label_from_id(snapshot.species);
+        }
+    }
+    let mut genera = by_genus.into_values().collect::<Vec<_>>();
+    for genus in &mut genera {
+        if genus.alive > 0 {
+            genus.average_aggressiveness /= genus.alive as f32;
+        }
+    }
+    genera.sort_by_key(|genus| genus.genus);
+    genera
+}
+
+fn genealogy_trend_color(delta: isize, alive: usize) -> Color {
+    if alive == 0 {
+        Color::srgb(0.36, 0.40, 0.42)
+    } else if delta > 0 {
+        Color::srgb(0.36, 1.0, 0.56)
+    } else if delta < 0 {
+        Color::srgb(1.0, 0.32, 0.28)
+    } else {
+        Color::srgb(0.36, 0.70, 0.76)
+    }
+}
+
+fn genealogy_node_size(alive: usize, max_alive: usize, min_size: f32, max_size: f32) -> f32 {
+    if max_alive == 0 {
+        return min_size;
+    }
+    let ratio = alive as f32 / max_alive as f32;
+    min_size + ratio.sqrt().clamp(0.0, 1.0) * (max_size - min_size)
+}
+
+fn genealogy_mix_hash(hash: &mut u64, value: u64) {
+    *hash ^= value.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    *hash = hash.rotate_left(27).wrapping_mul(0x94D0_49BB_1331_11EB);
+}
+
+fn genealogy_map_fallback_size() -> Vec2 {
+    Vec2::new(
+        GENEALOGY_MAP_LOGICAL_WIDTH,
+        GENEALOGY_MAP_LOGICAL_HEIGHT,
+    )
+}
+
+fn genealogy_map_size_from_computed(computed: &ComputedNode) -> Vec2 {
+    let size = computed.size() * computed.inverse_scale_factor();
+    if size.x < 16.0 || size.y < 16.0 {
+        genealogy_map_fallback_size()
+    } else {
+        Vec2::new(size.x, size.y)
+    }
+}
+
+fn genealogy_percent_to_logical(position: Vec2, map_size: Vec2) -> Vec2 {
+    Vec2::new(
+        position.x * map_size.x / 100.0,
+        position.y * map_size.y / 100.0,
+    )
+}
+
+fn genealogy_zoomed_position(position: Vec2, zoom: f32) -> Vec2 {
+    Vec2::splat(50.0) + (position - Vec2::splat(50.0)) * zoom
+}
+
+fn genealogy_animation_delta(parent: Vec2, child: Vec2, zoom: f32, map_size: Vec2) -> Vec2 {
+    genealogy_percent_to_logical(genealogy_zoomed_position(parent, zoom), map_size)
+        - genealogy_percent_to_logical(genealogy_zoomed_position(child, zoom), map_size)
+}
+
+fn genealogy_genus_position(index: usize, total: usize, map_size: Vec2) -> Vec2 {
+    if total <= 1 {
+        return Vec2::new(50.0, 50.0);
+    }
+    let ring_caps = [8usize, 12, 16, 22];
+    let mut ring = 0usize;
+    let mut ring_start = 0usize;
+    for capacity in ring_caps {
+        if index < ring_start + capacity {
+            let offset = index - ring_start;
+            let radius_px = if total <= capacity {
+                260.0
+            } else {
+                230.0 + ring as f32 * 205.0
+            };
+            let angle = offset as f32 / capacity as f32 * std::f32::consts::TAU
+                + ring as f32 * 0.34
+                - std::f32::consts::FRAC_PI_2;
+            return Vec2::new(
+                50.0 + angle.cos() * radius_px / map_size.x * 100.0,
+                50.0 + angle.sin() * radius_px / map_size.y * 100.0,
+            );
+        }
+        ring_start += capacity;
+        ring += 1;
+    }
+    let overflow = index - ring_start;
+    let capacity = 28usize;
+    let radius_px = 230.0 + ring as f32 * 205.0;
+    let angle = overflow as f32 / capacity as f32 * std::f32::consts::TAU + ring as f32 * 0.34;
+    Vec2::new(
+        50.0 + angle.cos() * radius_px / map_size.x * 100.0,
+        50.0 + angle.sin() * radius_px / map_size.y * 100.0,
+    )
+}
+
+fn genealogy_species_position(parent: Vec2, index: usize, total: usize, map_size: Vec2) -> Vec2 {
+    let total = total.max(1);
+    let ring_caps = [10usize, 16, 24, 32];
+    let mut ring = 0usize;
+    let mut ring_start = 0usize;
+    for capacity in ring_caps {
+        if index < ring_start + capacity {
+            let offset = index - ring_start;
+            let visible_capacity = if total <= capacity { total } else { capacity };
+            let radius_px = 178.0 + ring as f32 * 132.0;
+            let angle = offset as f32 / visible_capacity.max(1) as f32 * std::f32::consts::TAU
+                + ring as f32 * 0.18
+                - std::f32::consts::FRAC_PI_2;
+            return Vec2::new(
+                parent.x + angle.cos() * radius_px / map_size.x * 100.0,
+                parent.y + angle.sin() * radius_px / map_size.y * 100.0,
+            );
+        }
+        ring_start += capacity;
+        ring += 1;
+    }
+    let capacity = 36usize;
+    let radius_px = 178.0 + ring as f32 * 132.0;
+    let angle = (index - ring_start) as f32 / capacity as f32 * std::f32::consts::TAU
+        + ring as f32 * 0.18
+        - std::f32::consts::FRAC_PI_2;
+    Vec2::new(
+        parent.x + angle.cos() * radius_px / map_size.x * 100.0,
+        parent.y + angle.sin() * radius_px / map_size.y * 100.0,
+    )
+}
+
+fn genealogy_header_render_signature(
+    visible_genera_len: usize,
+    total_genera: usize,
+    total_species: usize,
+    expanded_genus: Option<u32>,
+    expanded_species_len: usize,
+    expanded_total_species: usize,
+) -> u64 {
+    let mut hash = 0xA11E_6EAD_E000_0001;
+    genealogy_mix_hash(&mut hash, visible_genera_len as u64);
+    genealogy_mix_hash(&mut hash, total_genera as u64);
+    genealogy_mix_hash(&mut hash, total_species as u64);
+    genealogy_mix_hash(&mut hash, expanded_genus.unwrap_or(u32::MAX) as u64);
+    genealogy_mix_hash(&mut hash, expanded_species_len as u64);
+    genealogy_mix_hash(&mut hash, expanded_total_species as u64);
+    hash
+}
+
+fn genealogy_genus_render_signature(visible_genera: &[&GenealogyGenusSnapshot]) -> u64 {
+    let mut hash = 0xB10A_109E_109E_A10D;
+    for genus in visible_genera {
+        genealogy_mix_hash(&mut hash, genus.genus as u64);
+        genealogy_mix_hash(&mut hash, genus.representative_species as u64);
+        genealogy_mix_hash(&mut hash, genus.species_count as u64);
+        genealogy_mix_hash(&mut hash, (genus.alive > 0) as u64);
+    }
+    hash
+}
+
+fn genealogy_branch_render_signature(
+    expanded_genus: Option<u32>,
+    visible_species: &[&SpeciesSnapshot],
+) -> u64 {
+    let mut hash = 0xB10A_109E_109E_A10D;
+    genealogy_mix_hash(&mut hash, expanded_genus.unwrap_or(u32::MAX) as u64);
+    genealogy_mix_hash(&mut hash, visible_species.len() as u64);
+    for snapshot in visible_species {
+        genealogy_mix_hash(&mut hash, snapshot.species as u64);
+        genealogy_mix_hash(&mut hash, (snapshot.alive > 0) as u64);
+    }
+    hash
+}
+
+fn species_ledger_visible_signature(
+    stats: &SpeciesLedgerStats,
+    range_start: usize,
+    range_end: usize,
+) -> u64 {
+    let mut hash = 0x5EED_1EAF_51ED_1234;
+    genealogy_mix_hash(&mut hash, stats.snapshots.len() as u64);
+    genealogy_mix_hash(&mut hash, range_start as u64);
+    genealogy_mix_hash(&mut hash, range_end as u64);
+    for snapshot in stats
+        .snapshots
+        .iter()
+        .skip(range_start)
+        .take(range_end.saturating_sub(range_start))
+    {
+        genealogy_mix_hash(&mut hash, snapshot.species as u64);
+        genealogy_mix_hash(&mut hash, (snapshot.alive > 0) as u64);
+    }
+    hash
+}
+
+fn spawn_genealogy_header(parent: &mut ChildSpawnerCommands, font: Handle<Font>, label: String) {
+    parent.spawn((
+        Text::new(label),
+        TextFont {
+            font,
+            font_size: 17.0,
+            ..default()
+        },
+        TextColor(Color::srgb(0.62, 0.92, 0.90)),
+        Node {
+            position_type: PositionType::Absolute,
+            left: px(0),
+            top: px(0),
+            width: percent(100),
+            height: px(24),
+            margin: UiRect::top(px(2)),
+            ..default()
+        },
+        GenealogyHeaderDynamicEntity,
+    ));
+}
+
+#[allow(dead_code)]
+fn spawn_genealogy_genus_node_v2(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    asset_server: &AssetServer,
+    names: &SpeciesNameBook,
+    genus: &GenealogyGenusSnapshot,
+    max_alive: usize,
+    selected: bool,
+    expanded: bool,
+) {
+    let size = genealogy_node_size(
+        genus.alive,
+        max_alive,
+        GENEALOGY_GENUS_NODE_MIN,
+        GENEALOGY_GENUS_NODE_MAX,
+    );
+    let mini_size = (size * 0.58).clamp(48.0, 86.0);
+    let background = if genus.alive == 0 {
+        Color::srgb(0.055, 0.060, 0.064)
+    } else {
+        species_area_map_color_ui(genus.representative_species, 0.36)
+    };
+    let border = if selected || expanded {
+        Color::srgb(0.86, 1.0, 0.98)
+    } else {
+        genealogy_trend_color(genus.alive_delta, genus.alive)
+    };
+    let genus_name = species_genus_name_for(names, genus.representative_species);
+
+    parent
+        .spawn((
+            Button,
+            Node {
+                width: px(size * 1.24),
+                height: px(size + 34.0),
+                flex_direction: FlexDirection::Column,
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::FlexStart,
+                row_gap: px(7),
+                padding: UiRect::ZERO,
+                border: UiRect::ZERO,
+                ..default()
+            },
+            BorderColor::all(Color::NONE),
+            BackgroundColor(Color::NONE),
+            UiTransform::default(),
+            Interaction::default(),
+            GenealogyNode {
+                kind: GenealogyNodeKind::Genus(genus.genus),
+            },
+            GenealogyTooltipTarget {
+                kind: GenealogyTooltipKind::Genus(genus.genus),
+            },
+        ))
+        .with_children(|node| {
+            node.spawn((
+                Node {
+                    width: px(size),
+                    height: px(size),
+                    border: UiRect::all(px(if selected || expanded { 4 } else { 2 })),
+                    border_radius: BorderRadius::MAX,
+                    align_items: AlignItems::Center,
+                    justify_content: JustifyContent::Center,
+                    overflow: Overflow::clip(),
+                    ..default()
+                },
+                BorderColor::all(border),
+                BackgroundColor(background),
+            ))
+            .with_children(|circle| {
+                circle
+                    .spawn((
+                        Node {
+                            width: px(mini_size),
+                            height: px(mini_size),
+                            border: UiRect::all(px(1)),
+                            border_radius: BorderRadius::MAX,
+                            align_items: AlignItems::Center,
+                            justify_content: JustifyContent::Center,
+                            overflow: Overflow::clip(),
+                            ..default()
+                        },
+                        BorderColor::all(species_area_map_color_ui(
+                            genus.representative_species,
+                            0.82,
+                        )),
+                        BackgroundColor(species_area_map_color_ui(
+                            genus.representative_species,
+                            0.16,
+                        )),
+                        GenealogyMiniature {
+                            species: genus.representative_species,
+                        },
+                    ))
+                    .with_child((
+                        ImageNode::default(),
+                        Node {
+                            width: px(mini_size - 4.0),
+                            height: px(mini_size - 4.0),
+                            ..default()
+                        },
+                        GenealogyMiniImage {
+                            species: genus.representative_species,
+                        },
+                    ));
+                circle.spawn((
+                    ImageNode {
+                        image: asset_server.load(if genus.alive > 0 {
+                            "sprites/icon-species-alive.png"
+                        } else {
+                            "sprites/icon-species-dead.png"
+                        }),
+                        color: if genus.alive > 0 {
+                            Color::srgb(0.38, 1.0, 0.52)
+                        } else {
+                            Color::srgb(0.86, 0.30, 0.28)
+                        },
+                        ..default()
+                    },
+                    Node {
+                        position_type: PositionType::Absolute,
+                        right: px(9),
+                        top: px(9),
+                        width: px(18),
+                        height: px(18),
+                        ..default()
+                    },
+                ));
+                circle.spawn((
+                    ImageNode {
+                        image: asset_server.load(trophic_type_icon(genus.average_aggressiveness)),
+                        color: trophic_icon_tint(genus.average_aggressiveness),
+                        ..default()
+                    },
+                    Node {
+                        position_type: PositionType::Absolute,
+                        left: px(9),
+                        bottom: px(9),
+                        width: px(22),
+                        height: px(22),
+                        ..default()
+                    },
+                ));
+                circle.spawn((
+                    Text::new(genus.alive.to_string()),
+                    TextFont {
+                        font: font.clone(),
+                        font_size: 13.0,
+                        ..default()
+                    },
+                    TextColor(Color::srgb(0.88, 1.0, 0.94)),
+                    Node {
+                        position_type: PositionType::Absolute,
+                        right: px(13),
+                        bottom: px(9),
+                        ..default()
+                    },
+                ));
+            });
+            node.spawn((
+                Text::new(format!("{genus_name}\n{} видов", genus.species_count)),
+                TextFont {
+                    font,
+                    font_size: 11.0,
+                    ..default()
+                },
+                TextColor(Color::srgb(0.78, 0.96, 0.93)),
+                TextLayout::new_with_justify(Justify::Center),
+                Node {
+                    width: percent(100),
+                    height: px(28),
+                    align_items: AlignItems::Center,
+                    justify_content: JustifyContent::Center,
+                    ..default()
+                },
+            ));
+        });
+}
+
+#[allow(dead_code)]
+fn spawn_genealogy_species_node_v2(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    asset_server: &AssetServer,
+    names: &SpeciesNameBook,
+    snapshot: &SpeciesSnapshot,
+    max_alive: usize,
+    selected: bool,
+    emerge_index: usize,
+) {
+    let size = genealogy_node_size(
+        snapshot.alive,
+        max_alive,
+        GENEALOGY_SPECIES_NODE_MIN,
+        GENEALOGY_SPECIES_NODE_MAX,
+    );
+    let mini_size = (size * 0.62).clamp(38.0, 60.0);
+    let border = if selected {
+        Color::srgb(0.86, 1.0, 0.98)
+    } else {
+        genealogy_trend_color(snapshot.alive_delta, snapshot.alive)
+    };
+    let angle = emerge_index as f32 * 2.399_963_1;
+    let emerge_radius = 38.0 + (emerge_index % 5) as f32 * 4.0;
+
+    parent
+        .spawn((
+            Button,
+            Node {
+                width: px(size * 1.18),
+                height: px(size + 30.0),
+                flex_direction: FlexDirection::Column,
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::FlexStart,
+                row_gap: px(6),
+                padding: UiRect::ZERO,
+                border: UiRect::ZERO,
+                ..default()
+            },
+            BorderColor::all(Color::NONE),
+            BackgroundColor(Color::NONE),
+            UiTransform::default(),
+            Interaction::default(),
+            GenealogyNodeAnimation {
+                age: 0.0,
+                delay: emerge_index as f32 * 0.014,
+                base: Vec2::ZERO,
+                from: Vec2::new(angle.cos() * emerge_radius, angle.sin() * emerge_radius),
+            },
+            GenealogyNode {
+                kind: GenealogyNodeKind::Species(snapshot.species),
+            },
+            GenealogyTooltipTarget {
+                kind: GenealogyTooltipKind::Species(snapshot.species),
+            },
+        ))
+        .with_children(|node| {
+            node.spawn((
+                Node {
+                    width: px(size),
+                    height: px(size),
+                    border: UiRect::all(px(if selected { 3 } else { 2 })),
+                    border_radius: BorderRadius::MAX,
+                    align_items: AlignItems::Center,
+                    justify_content: JustifyContent::Center,
+                    overflow: Overflow::clip(),
+                    ..default()
+                },
+                BorderColor::all(border),
+                BackgroundColor(species_area_map_color_ui(snapshot.species, 0.34)),
+            ))
+            .with_children(|circle| {
+                circle
+                    .spawn((
+                        Node {
+                            width: px(mini_size),
+                            height: px(mini_size),
+                            border: UiRect::all(px(1)),
+                            border_radius: BorderRadius::MAX,
+                            align_items: AlignItems::Center,
+                            justify_content: JustifyContent::Center,
+                            overflow: Overflow::clip(),
+                            ..default()
+                        },
+                        BorderColor::all(species_area_map_color_ui(snapshot.species, 0.82)),
+                        BackgroundColor(species_area_map_color_ui(snapshot.species, 0.14)),
+                        GenealogyMiniature {
+                            species: snapshot.species,
+                        },
+                    ))
+                    .with_child((
+                        ImageNode::default(),
+                        Node {
+                            width: px(mini_size - 3.0),
+                            height: px(mini_size - 3.0),
+                            ..default()
+                        },
+                        GenealogyMiniImage {
+                            species: snapshot.species,
+                        },
+                    ));
+                circle.spawn((
+                    ImageNode {
+                        image: asset_server.load("sprites/icon-species-alive.png"),
+                        color: Color::srgb(0.38, 1.0, 0.52),
+                        ..default()
+                    },
+                    Node {
+                        position_type: PositionType::Absolute,
+                        right: px(7),
+                        top: px(7),
+                        width: px(15),
+                        height: px(15),
+                        ..default()
+                    },
+                ));
+                circle.spawn((
+                    ImageNode {
+                        image: asset_server
+                            .load(trophic_type_icon(snapshot.average_aggressiveness)),
+                        color: trophic_icon_tint(snapshot.average_aggressiveness),
+                        ..default()
+                    },
+                    Node {
+                        position_type: PositionType::Absolute,
+                        left: px(7),
+                        bottom: px(7),
+                        width: px(18),
+                        height: px(18),
+                        ..default()
+                    },
+                ));
+                circle.spawn((
+                    Text::new(snapshot.alive.to_string()),
+                    TextFont {
+                        font: font.clone(),
+                        font_size: 11.0,
+                        ..default()
+                    },
+                    TextColor(Color::srgb(0.88, 1.0, 0.94)),
+                    Node {
+                        position_type: PositionType::Absolute,
+                        right: px(10),
+                        bottom: px(7),
+                        ..default()
+                    },
+                ));
+            });
+            node.spawn((
+                Text::new(compact_species_label(
+                    &species_name_for(names, snapshot.species),
+                    18,
+                )),
+                TextFont {
+                    font,
+                    font_size: 10.0,
+                    ..default()
+                },
+                TextColor(Color::srgb(0.78, 0.96, 0.93)),
+                TextLayout::new_with_justify(Justify::Center),
+                Node {
+                    width: percent(100),
+                    height: px(24),
+                    align_items: AlignItems::Center,
+                    justify_content: JustifyContent::Center,
+                    ..default()
+                },
+            ));
+        });
+}
+
+fn spawn_genealogy_genus_node_free(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    asset_server: &AssetServer,
+    names: &SpeciesNameBook,
+    genus: &GenealogyGenusSnapshot,
+    max_alive: usize,
+    selected: bool,
+    expanded: bool,
+    center_percent: Vec2,
+) {
+    let size = genealogy_node_size(
+        genus.alive,
+        max_alive,
+        GENEALOGY_GENUS_NODE_MIN,
+        GENEALOGY_GENUS_NODE_MAX,
+    );
+    let mini_size = (size * 0.58).clamp(48.0, 86.0);
+    let container_width = size * 1.28;
+    let container_height = size + 34.0;
+    let base_translation = Vec2::new(-container_width * 0.5, -container_height * 0.5);
+    let background = if genus.alive == 0 {
+        Color::srgb(0.055, 0.060, 0.064)
+    } else {
+        species_area_map_color_ui(genus.representative_species, 0.36)
+    };
+    let border = if selected || expanded {
+        Color::srgb(0.86, 1.0, 0.98)
+    } else {
+        genealogy_trend_color(genus.alive_delta, genus.alive)
+    };
+    let genus_name = species_genus_name_for(names, genus.representative_species);
+
+    parent
+        .spawn((
+            Button,
+            Node {
+                position_type: PositionType::Absolute,
+                left: percent(center_percent.x),
+                top: percent(center_percent.y),
+                width: px(container_width),
+                height: px(container_height),
+                flex_direction: FlexDirection::Column,
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::FlexStart,
+                row_gap: px(7),
+                padding: UiRect::ZERO,
+                border: UiRect::ZERO,
+                ..default()
+            },
+            BorderColor::all(Color::NONE),
+            BackgroundColor(Color::NONE),
+            UiTransform {
+                translation: Val2::px(base_translation.x, base_translation.y),
+                ..default()
+            },
+            Interaction::default(),
+            GenealogyGenusDynamicEntity,
+            GenealogyMapNodePosition {
+                center: center_percent,
+            },
+            GenealogyNode {
+                kind: GenealogyNodeKind::Genus(genus.genus),
+            },
+            GenealogyTooltipTarget {
+                kind: GenealogyTooltipKind::Genus(genus.genus),
+            },
+        ))
+        .with_children(|node| {
+            node.spawn((
+                Node {
+                    width: px(size),
+                    height: px(size),
+                    border: UiRect::all(px(if selected || expanded { 4 } else { 2 })),
+                    border_radius: BorderRadius::MAX,
+                    align_items: AlignItems::Center,
+                    justify_content: JustifyContent::Center,
+                    overflow: Overflow::clip(),
+                    ..default()
+                },
+                BorderColor::all(border),
+                BackgroundColor(background),
+                GenealogyNodeFrame {
+                    kind: GenealogyNodeKind::Genus(genus.genus),
+                    normal_border: genealogy_trend_color(genus.alive_delta, genus.alive),
+                    active_border: Color::srgb(0.86, 1.0, 0.98),
+                    normal_width: 2.0,
+                    active_width: 4.0,
+                },
+            ))
+            .with_children(|circle| {
+                circle
+                    .spawn((
+                        Node {
+                            width: px(mini_size),
+                            height: px(mini_size),
+                            border: UiRect::all(px(1)),
+                            border_radius: BorderRadius::MAX,
+                            align_items: AlignItems::Center,
+                            justify_content: JustifyContent::Center,
+                            overflow: Overflow::clip(),
+                            ..default()
+                        },
+                        BorderColor::all(species_area_map_color_ui(
+                            genus.representative_species,
+                            0.82,
+                        )),
+                        BackgroundColor(species_area_map_color_ui(
+                            genus.representative_species,
+                            0.16,
+                        )),
+                        GenealogyMiniature {
+                            species: genus.representative_species,
+                        },
+                    ))
+                    .with_child((
+                        ImageNode::default(),
+                        Node {
+                            width: px(mini_size - 4.0),
+                            height: px(mini_size - 4.0),
+                            ..default()
+                        },
+                        GenealogyMiniImage {
+                            species: genus.representative_species,
+                        },
+                    ));
+                circle.spawn((
+                    ImageNode {
+                        image: asset_server.load(if genus.alive > 0 {
+                            "sprites/icon-species-alive.png"
+                        } else {
+                            "sprites/icon-species-dead.png"
+                        }),
+                        color: if genus.alive > 0 {
+                            Color::srgb(0.38, 1.0, 0.52)
+                        } else {
+                            Color::srgb(0.86, 0.30, 0.28)
+                        },
+                        ..default()
+                    },
+                    Node {
+                        position_type: PositionType::Absolute,
+                        right: px(9),
+                        top: px(9),
+                        width: px(18),
+                        height: px(18),
+                        ..default()
+                    },
+                ));
+                circle.spawn((
+                    ImageNode {
+                        image: asset_server.load(trophic_type_icon(genus.average_aggressiveness)),
+                        color: trophic_icon_tint(genus.average_aggressiveness),
+                        ..default()
+                    },
+                    Node {
+                        position_type: PositionType::Absolute,
+                        left: px(9),
+                        bottom: px(9),
+                        width: px(22),
+                        height: px(22),
+                        ..default()
+                    },
+                ));
+                circle.spawn((
+                    Text::new(genus.alive.to_string()),
+                    TextFont {
+                        font: font.clone(),
+                        font_size: 13.0,
+                        ..default()
+                    },
+                    TextColor(Color::srgb(0.88, 1.0, 0.94)),
+                    Node {
+                        position_type: PositionType::Absolute,
+                        right: px(13),
+                        bottom: px(9),
+                        ..default()
+                    },
+                ));
+            });
+            node.spawn((
+                Text::new(format!("{genus_name}\n{} видов", genus.species_count)),
+                TextFont {
+                    font,
+                    font_size: 11.0,
+                    ..default()
+                },
+                TextColor(Color::srgb(0.78, 0.96, 0.93)),
+                TextLayout::new_with_justify(Justify::Center),
+                Node {
+                    width: percent(100),
+                    height: px(28),
+                    align_items: AlignItems::Center,
+                    justify_content: JustifyContent::Center,
+                    ..default()
+                },
+            ));
+        });
+}
+
+fn genealogy_edge_geometry(from: Vec2, to: Vec2, zoom: f32, map_size: Vec2) -> (Vec2, f32, f32) {
+    let from_percent = genealogy_zoomed_position(from, zoom);
+    let to_percent = genealogy_zoomed_position(to, zoom);
+    let from_logical = genealogy_percent_to_logical(from_percent, map_size);
+    let to_logical = genealogy_percent_to_logical(to_percent, map_size);
+    let delta = to_logical - from_logical;
+    let length = delta.length().max(1.0);
+    let angle = -delta.y.atan2(delta.x);
+    ((from_percent + to_percent) * 0.5, length, angle)
+}
+
+fn spawn_genealogy_edge_layer(
+    parent: &mut ChildSpawnerCommands,
+    edges: Vec<GenealogyEdgeRef>,
+) {
+    parent.spawn((
+        Node {
+            position_type: PositionType::Absolute,
+            left: px(0),
+            right: px(0),
+            top: px(0),
+            bottom: px(0),
+            ..default()
+        },
+        ImageNode::default(),
+        ZIndex(-5),
+        GenealogyEdgeLayer {
+            edges,
+            rendered_signature: 0,
+            rendered_width: 0,
+            rendered_height: 0,
+            rendered_zoom: -1.0,
+        },
+        GenealogyBranchDynamicEntity,
+    ));
+}
+
+fn spawn_genealogy_species_node_free(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    asset_server: &AssetServer,
+    names: &SpeciesNameBook,
+    snapshot: &SpeciesSnapshot,
+    max_alive: usize,
+    selected: bool,
+    center_percent: Vec2,
+    parent_center_percent: Vec2,
+    emerge_index: usize,
+    animate_from_parent: bool,
+    map_zoom: f32,
+    map_size: Vec2,
+) {
+    let size = genealogy_node_size(
+        snapshot.alive,
+        max_alive,
+        GENEALOGY_SPECIES_NODE_MIN,
+        GENEALOGY_SPECIES_NODE_MAX,
+    );
+    let mini_size = (size * 0.62).clamp(38.0, 60.0);
+    let container_width = size * 1.20;
+    let container_height = size + 30.0;
+    let base_translation = Vec2::new(-container_width * 0.5, -container_height * 0.5);
+    let border = if selected {
+        Color::srgb(0.86, 1.0, 0.98)
+    } else {
+        genealogy_trend_color(snapshot.alive_delta, snapshot.alive)
+    };
+    let from = genealogy_animation_delta(parent_center_percent, center_percent, map_zoom, map_size);
+    let initial_translation = if animate_from_parent {
+        base_translation + from
+    } else {
+        base_translation
+    };
+
+    let mut entity = parent.spawn((
+        Button,
+        Node {
+            position_type: PositionType::Absolute,
+            left: percent(center_percent.x),
+            top: percent(center_percent.y),
+            width: px(container_width),
+            height: px(container_height),
+            flex_direction: FlexDirection::Column,
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::FlexStart,
+            row_gap: px(6),
+            padding: UiRect::ZERO,
+            border: UiRect::ZERO,
+            ..default()
+        },
+        BorderColor::all(Color::NONE),
+        BackgroundColor(Color::NONE),
+        UiTransform {
+            translation: Val2::px(initial_translation.x, initial_translation.y),
+            scale: if animate_from_parent {
+                Vec2::splat(0.24)
+            } else {
+                Vec2::ONE
+            },
+            ..default()
+        },
+        Interaction::default(),
+        GenealogyBranchDynamicEntity,
+        GenealogyMapNodePosition {
+            center: center_percent,
+        },
+        GenealogyNode {
+            kind: GenealogyNodeKind::Species(snapshot.species),
+        },
+        GenealogyTooltipTarget {
+            kind: GenealogyTooltipKind::Species(snapshot.species),
+        },
+    ));
+    if animate_from_parent {
+        entity.insert(GenealogyNodeAnimation {
+            age: 0.0,
+            delay: emerge_index as f32 * 0.014,
+            base: base_translation,
+            from,
+        });
+    }
+    entity.with_children(|node| {
+        node.spawn((
+            Node {
+                width: px(size),
+                height: px(size),
+                border: UiRect::all(px(if selected { 3 } else { 2 })),
+                border_radius: BorderRadius::MAX,
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                overflow: Overflow::clip(),
+                ..default()
+            },
+            BorderColor::all(border),
+            BackgroundColor(species_area_map_color_ui(snapshot.species, 0.34)),
+            GenealogyNodeFrame {
+                kind: GenealogyNodeKind::Species(snapshot.species),
+                normal_border: genealogy_trend_color(snapshot.alive_delta, snapshot.alive),
+                active_border: Color::srgb(0.86, 1.0, 0.98),
+                normal_width: 2.0,
+                active_width: 3.0,
+            },
+        ))
+        .with_children(|circle| {
+            circle
+                .spawn((
+                    Node {
+                        width: px(mini_size),
+                        height: px(mini_size),
+                        border: UiRect::all(px(1)),
+                        border_radius: BorderRadius::MAX,
+                        align_items: AlignItems::Center,
+                        justify_content: JustifyContent::Center,
+                        overflow: Overflow::clip(),
+                        ..default()
+                    },
+                    BorderColor::all(species_area_map_color_ui(snapshot.species, 0.82)),
+                    BackgroundColor(species_area_map_color_ui(snapshot.species, 0.14)),
+                    GenealogyMiniature {
+                        species: snapshot.species,
+                    },
+                ))
+                .with_child((
+                    ImageNode::default(),
+                    Node {
+                        width: px(mini_size - 3.0),
+                        height: px(mini_size - 3.0),
+                        ..default()
+                    },
+                    GenealogyMiniImage {
+                        species: snapshot.species,
+                    },
+                ));
+            circle.spawn((
+                ImageNode {
+                    image: asset_server.load("sprites/icon-species-alive.png"),
+                    color: Color::srgb(0.38, 1.0, 0.52),
+                    ..default()
+                },
+                Node {
+                    position_type: PositionType::Absolute,
+                    right: px(7),
+                    top: px(7),
+                    width: px(15),
+                    height: px(15),
+                    ..default()
+                },
+            ));
+            circle.spawn((
+                ImageNode {
+                    image: asset_server.load(trophic_type_icon(snapshot.average_aggressiveness)),
+                    color: trophic_icon_tint(snapshot.average_aggressiveness),
+                    ..default()
+                },
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: px(7),
+                    bottom: px(7),
+                    width: px(18),
+                    height: px(18),
+                    ..default()
+                },
+            ));
+            circle.spawn((
+                Text::new(snapshot.alive.to_string()),
+                TextFont {
+                    font: font.clone(),
+                    font_size: 11.0,
+                    ..default()
+                },
+                TextColor(Color::srgb(0.88, 1.0, 0.94)),
+                Node {
+                    position_type: PositionType::Absolute,
+                    right: px(10),
+                    bottom: px(7),
+                    ..default()
+                },
+            ));
+        });
+        node.spawn((
+            Text::new(compact_species_label(
+                &species_name_for(names, snapshot.species),
+                18,
+            )),
+            TextFont {
+                font,
+                font_size: 10.0,
+                ..default()
+            },
+            TextColor(Color::srgb(0.78, 0.96, 0.93)),
+            TextLayout::new_with_justify(Justify::Center),
+            Node {
+                width: percent(100),
+                height: px(24),
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                ..default()
+            },
+        ));
+    });
 }
 
 fn chronicle_button_system(
@@ -5830,6 +7855,57 @@ fn chronicle_event_scroll_system(
     }
 }
 
+fn chronicle_event_click_system(
+    mouse: Res<ButtonInput<MouseButton>>,
+    state: Res<ChronicleUiState>,
+    chronicle: Res<SimulationChronicle>,
+    windows: Query<&Window, With<PrimaryWindow>>,
+    scroll_area: Query<&ScrollPosition, With<ChronicleEventScrollArea>>,
+    mut species_ui: ResMut<SpeciesLedgerUiState>,
+) {
+    if !state.open || !mouse.just_pressed(MouseButton::Left) {
+        return;
+    }
+    let Ok(window) = windows.single() else {
+        return;
+    };
+    let Some(cursor) = window.cursor_position() else {
+        return;
+    };
+    if !cursor_over_chronicle_events(window, cursor) {
+        return;
+    }
+
+    let (left, right, top, bottom) = chronicle_event_rect(window);
+    if cursor.x > right - 30.0 || cursor.x < left || cursor.y < top || cursor.y > bottom {
+        return;
+    }
+    let scroll_y = scroll_area.single().map(|scroll| scroll.y).unwrap_or(0.0);
+    let list_top = top + 62.0;
+    let local_y = cursor.y - list_top + scroll_y;
+    if local_y < 0.0 {
+        return;
+    }
+    let event_index = (local_y / CHRONICLE_EVENT_CLICK_HEIGHT).floor() as usize;
+    let Some(event) = chronicle
+        .events
+        .iter()
+        .rev()
+        .filter(|event| state.event_enabled(event.kind))
+        .nth(event_index)
+    else {
+        return;
+    };
+    let Some(species) = event.species else {
+        return;
+    };
+
+    species_ui.open = true;
+    species_ui.journal_open = false;
+    species_ui.selected_species = Some(species);
+    species_ui.scroll_target_species = Some(species);
+}
+
 fn chronicle_push_event(
     chronicle: &mut SimulationChronicle,
     kind: ChronicleEventKind,
@@ -5837,17 +7913,249 @@ fn chronicle_push_event(
     body: impl Into<String>,
     species: Option<u32>,
 ) {
+    let title = title.into();
+    let body = body.into();
+    let persistent = chronicle_event_is_persistent(kind);
     if chronicle.events.len() >= CHRONICLE_MAX_EVENTS {
-        chronicle.events.remove(0);
+        if let Some(index) = chronicle.events.iter().position(|event| !event.persistent) {
+            chronicle.events.remove(index);
+        } else if persistent {
+            // Important milestones are allowed to outlive the noisy event cap.
+        } else {
+            return;
+        }
     }
     chronicle.events.push(ChronicleEvent {
         time: chronicle.elapsed,
         kind,
-        title: title.into(),
-        body: body.into(),
+        title,
+        body,
         species,
+        persistent,
     });
     chronicle.revision = chronicle.revision.wrapping_add(1);
+}
+
+fn chronicle_event_is_persistent(kind: ChronicleEventKind) -> bool {
+    matches!(
+        kind,
+        ChronicleEventKind::World
+            | ChronicleEventKind::Population
+            | ChronicleEventKind::Energy
+            | ChronicleEventKind::Trait
+    )
+}
+
+fn chronicle_first_living_cell_where(
+    world: &WorldState,
+    mut predicate: impl FnMut(usize) -> bool,
+) -> Option<usize> {
+    (0..world.cells.len()).find(|index| world.cells.viability[*index] > 0.0 && predicate(*index))
+}
+
+fn chronicle_gene_threshold(min: f32, max: f32, ratio: f32) -> f32 {
+    min + (max - min).max(0.0) * ratio.clamp(0.0, 1.0)
+}
+
+fn chronicle_report_trait_threshold(
+    chronicle: &mut SimulationChronicle,
+    names: &SpeciesNameBook,
+    world: &WorldState,
+    pending_events: &mut Vec<(ChronicleEventKind, String, String, Option<u32>)>,
+    flag: u64,
+    candidate: Option<usize>,
+    title: &'static str,
+    stat_label: &'static str,
+    value_text: impl Fn(usize) -> String,
+) {
+    if chronicle.reported_trait_thresholds & flag != 0 {
+        return;
+    }
+    let Some(index) = candidate else {
+        return;
+    };
+    chronicle.reported_trait_thresholds |= flag;
+    let species = world.cells.species[index];
+    let name = species_name_for(names, species);
+    pending_events.push((
+        ChronicleEventKind::Trait,
+        title.to_string(),
+        format!(
+            "{name}: клетка #{} впервые пересекла порог \"{stat_label}\" ({})",
+            world.cells.id[index],
+            value_text(index)
+        ),
+        Some(species),
+    ));
+}
+
+fn chronicle_collect_trait_threshold_events(
+    chronicle: &mut SimulationChronicle,
+    names: &SpeciesNameBook,
+    world: &WorldState,
+    pending_events: &mut Vec<(ChronicleEventKind, String, String, Option<u32>)>,
+) {
+    let speed_high = chronicle_gene_threshold(SPEED_GENE_MIN, SPEED_GENE_MAX, 0.92);
+    let speed_low = chronicle_gene_threshold(SPEED_GENE_MIN, SPEED_GENE_MAX, 0.08);
+    let turn_high = chronicle_gene_threshold(TURN_GENE_MIN, TURN_GENE_MAX, 0.88);
+    let turn_low = chronicle_gene_threshold(TURN_GENE_MIN, TURN_GENE_MAX, 0.08);
+    let perception_high = chronicle_gene_threshold(PERCEPTION_GENE_MIN, PERCEPTION_GENE_MAX, 0.88);
+    let perception_low = chronicle_gene_threshold(PERCEPTION_GENE_MIN, PERCEPTION_GENE_MAX, 0.08);
+    let persistence_high = CELL_PERSISTENCE_DISPLAY_MAX * 0.88;
+    let aggression_high = CELL_AGGRESSIVENESS_DISPLAY_MAX * 0.90;
+    let mutation_high = CELL_MUTATION_DISPLAY_MAX * 0.88;
+    let lysis_high = CELL_LYSIS_DISPLAY_MAX * 0.88;
+    let giant_radius = CELL_SIZE_GENE_MIN + (CELL_SIZE_GENE_MAX - CELL_SIZE_GENE_MIN) * 0.23;
+    let tiny_radius = CELL_SIZE_GENE_MIN + 0.35;
+
+    chronicle_report_trait_threshold(
+        chronicle,
+        names,
+        world,
+        pending_events,
+        CHRONICLE_TRAIT_FAST,
+        chronicle_first_living_cell_where(world, |index| world.cells.speed[index] >= speed_high),
+        "Скорость достигла верхнего порога",
+        "скорость",
+        |index| format!("{:.0}", world.cells.speed[index]),
+    );
+    chronicle_report_trait_threshold(
+        chronicle,
+        names,
+        world,
+        pending_events,
+        CHRONICLE_TRAIT_SLOW,
+        chronicle_first_living_cell_where(world, |index| world.cells.speed[index] <= speed_low),
+        "Скорость упала к нижнему порогу",
+        "скорость",
+        |index| format!("{:.0}", world.cells.speed[index]),
+    );
+    chronicle_report_trait_threshold(
+        chronicle,
+        names,
+        world,
+        pending_events,
+        CHRONICLE_TRAIT_AGILE,
+        chronicle_first_living_cell_where(world, |index| {
+            world.cells.turn_speed[index] >= turn_high
+        }),
+        "Поворотливость достигла верхнего порога",
+        "поворотливость",
+        |index| format!("{:.1}", world.cells.turn_speed[index]),
+    );
+    chronicle_report_trait_threshold(
+        chronicle,
+        names,
+        world,
+        pending_events,
+        CHRONICLE_TRAIT_RIGID,
+        chronicle_first_living_cell_where(world, |index| world.cells.turn_speed[index] <= turn_low),
+        "Поворотливость упала к нижнему порогу",
+        "поворотливость",
+        |index| format!("{:.1}", world.cells.turn_speed[index]),
+    );
+    chronicle_report_trait_threshold(
+        chronicle,
+        names,
+        world,
+        pending_events,
+        CHRONICLE_TRAIT_LONG_SIGHT,
+        chronicle_first_living_cell_where(world, |index| {
+            world.cells.perception[index] >= perception_high
+        }),
+        "Восприятие достигло дальнего порога",
+        "восприятие",
+        |index| format!("{:.0}", world.cells.perception[index]),
+    );
+    chronicle_report_trait_threshold(
+        chronicle,
+        names,
+        world,
+        pending_events,
+        CHRONICLE_TRAIT_SHORT_SIGHT,
+        chronicle_first_living_cell_where(world, |index| {
+            world.cells.perception[index] <= perception_low
+        }),
+        "Восприятие упало к ближнему порогу",
+        "восприятие",
+        |index| format!("{:.0}", world.cells.perception[index]),
+    );
+    chronicle_report_trait_threshold(
+        chronicle,
+        names,
+        world,
+        pending_events,
+        CHRONICLE_TRAIT_PERSISTENT,
+        chronicle_first_living_cell_where(world, |index| {
+            world.cells.persistence[index] >= persistence_high
+        }),
+        "Настойчивость достигла верхнего порога",
+        "настойчивость",
+        |index| format!("{:.0}%", world.cells.persistence[index]),
+    );
+    chronicle_report_trait_threshold(
+        chronicle,
+        names,
+        world,
+        pending_events,
+        CHRONICLE_TRAIT_AGGRESSIVE,
+        chronicle_first_living_cell_where(world, |index| {
+            world.cells.aggressiveness[index] >= aggression_high
+        }),
+        "Агрессивность достигла верхнего порога",
+        "агрессивность",
+        |index| format!("{:.0}%", world.cells.aggressiveness[index]),
+    );
+    chronicle_report_trait_threshold(
+        chronicle,
+        names,
+        world,
+        pending_events,
+        CHRONICLE_TRAIT_MUTABLE,
+        chronicle_first_living_cell_where(world, |index| {
+            world.cells.mutation_susceptibility[index] >= mutation_high
+        }),
+        "Мутации достигли верхнего порога",
+        "мутации",
+        |index| format!("{:.0}%", world.cells.mutation_susceptibility[index]),
+    );
+    chronicle_report_trait_threshold(
+        chronicle,
+        names,
+        world,
+        pending_events,
+        CHRONICLE_TRAIT_LYSIS_PEAK,
+        chronicle_first_living_cell_where(world, |index| world.cells.lysis[index] >= lysis_high),
+        "Лизис достиг верхнего порога",
+        "лизис",
+        |index| format!("{:.0}%", world.cells.lysis[index]),
+    );
+    chronicle_report_trait_threshold(
+        chronicle,
+        names,
+        world,
+        pending_events,
+        CHRONICLE_TRAIT_GIANT,
+        chronicle_first_living_cell_where(world, |index| {
+            world.cells.max_base_radius(index) >= giant_radius
+        }),
+        "Размер достиг гигантского порога",
+        "размер",
+        |index| format!("{:.1}", world.cells.max_base_radius(index)),
+    );
+    chronicle_report_trait_threshold(
+        chronicle,
+        names,
+        world,
+        pending_events,
+        CHRONICLE_TRAIT_TINY,
+        chronicle_first_living_cell_where(world, |index| {
+            world.cells.max_base_radius(index) <= tiny_radius
+        }),
+        "Размер упал к минимальному порогу",
+        "размер",
+        |index| format!("{:.1}", world.cells.max_base_radius(index)),
+    );
 }
 
 fn chronicle_filter_bit(kind: ChronicleEventKind) -> u8 {
@@ -6295,6 +8603,13 @@ fn update_simulation_chronicle(
             ));
         }
 
+        chronicle_collect_trait_threshold_events(
+            &mut chronicle,
+            &names,
+            &world,
+            &mut pending_events,
+        );
+
         for (kind, title, body, species) in pending_events {
             chronicle_push_event(&mut chronicle, kind, title, body, species);
         }
@@ -6330,10 +8645,12 @@ fn update_species_ledger_stats(
     time: Res<Time>,
     world: Res<WorldState>,
     state: Res<SpeciesLedgerUiState>,
+    area_map: Res<SpeciesAreaMapState>,
+    genealogy_ui: Res<GenealogyUiState>,
     mut stats: ResMut<SpeciesLedgerStats>,
 ) {
     let dt = time.delta_secs();
-    if !state.open {
+    if !state.open && !area_map.open && !genealogy_ui.open {
         stats.accumulator = 0.35;
         return;
     }
@@ -6514,6 +8831,7 @@ fn update_species_ledger_stats(
         stats.revision = stats.revision.wrapping_add(1);
     }
     stats.snapshots = snapshots;
+    stats.area_revision = stats.area_revision.wrapping_add(1);
 }
 
 fn trophic_icon_tint(aggressiveness: f32) -> Color {
@@ -6652,6 +8970,930 @@ fn spawn_species_area_highlight(
             SpeciesAreaHighlightEntity,
         ));
     }
+}
+
+fn species_hash_unit(species: u32, salt: u32) -> f32 {
+    let mut value = (species ^ salt) as u64;
+    value ^= value >> 16;
+    value = value.wrapping_mul(0x7FEB_352D);
+    value ^= value >> 15;
+    value = value.wrapping_mul(0x846C_A68B);
+    value ^= value >> 16;
+    (value as u32) as f32 / u32::MAX as f32
+}
+
+fn hsv_to_rgb(h: f32, s: f32, v: f32) -> (f32, f32, f32) {
+    let h = h.fract() * 6.0;
+    let i = h.floor();
+    let f = h - i;
+    let p = v * (1.0 - s);
+    let q = v * (1.0 - s * f);
+    let t = v * (1.0 - s * (1.0 - f));
+    match i as i32 {
+        0 => (v, t, p),
+        1 => (q, v, p),
+        2 => (p, v, t),
+        3 => (p, q, v),
+        4 => (t, p, v),
+        _ => (v, p, q),
+    }
+}
+
+fn species_area_map_rgba(species: u32, alpha: f32, selected: bool) -> [f32; 4] {
+    let hue = species_hash_unit(species, 0x9E37_79B9);
+    let saturation = if selected { 0.78 } else { 0.56 };
+    let value = if selected { 1.0 } else { 0.86 };
+    let (r, g, b) = hsv_to_rgb(hue, saturation, value);
+    [r, g, b, alpha]
+}
+
+fn species_area_map_dimensions(width: f32, height: f32) -> (usize, usize, f32, f32) {
+    let area = (width * height).max(SPECIES_AREA_MAP_MIN_TILE_SIZE.powi(2));
+    let tile_size = (area / SPECIES_AREA_MAP_TARGET_TILES)
+        .sqrt()
+        .max(SPECIES_AREA_MAP_MIN_TILE_SIZE);
+    let cols = (width / tile_size).ceil().max(1.0) as usize;
+    let rows = (height / tile_size).ceil().max(1.0) as usize;
+    (cols, rows, width / cols as f32, height / rows as f32)
+}
+
+fn species_area_map_visible_count(total_species: usize) -> usize {
+    if total_species == 0 {
+        0
+    } else {
+        ((total_species as f32 * SPECIES_AREA_MAP_VISIBLE_FRACTION).ceil() as usize)
+            .clamp(1, total_species)
+    }
+}
+
+fn species_area_map_visible_species(stats: &SpeciesLedgerStats) -> HashSet<u32> {
+    let count = species_area_map_visible_count(stats.snapshots.len());
+    let mut snapshots = stats.snapshots.iter().collect::<Vec<_>>();
+    snapshots.sort_by(|a, b| {
+        b.alive
+            .cmp(&a.alive)
+            .then_with(|| a.species.cmp(&b.species))
+    });
+    snapshots
+        .into_iter()
+        .take(count)
+        .map(|snapshot| snapshot.species)
+        .collect()
+}
+
+fn species_area_map_tile_index(
+    position: Vec2,
+    width: f32,
+    height: f32,
+    cols: usize,
+    rows: usize,
+    tile_w: f32,
+    tile_h: f32,
+) -> Option<(usize, usize)> {
+    let local_x = position.x + width * 0.5;
+    let local_y = position.y + height * 0.5;
+    if local_x < 0.0 || local_x > width || local_y < 0.0 || local_y > height {
+        return None;
+    }
+    let col = (local_x / tile_w).floor().clamp(0.0, cols as f32 - 1.0) as usize;
+    let row = (local_y / tile_h).floor().clamp(0.0, rows as f32 - 1.0) as usize;
+    Some((col, row))
+}
+
+fn build_species_area_tiles_from_samples(
+    width: f32,
+    height: f32,
+    samples: &[SpeciesAreaSample],
+) -> Vec<SpeciesAreaTile> {
+    let (cols, rows, tile_w, tile_h) = species_area_map_dimensions(width, height);
+    let mut accumulators = vec![SpeciesAreaTileAccumulator::default(); cols * rows];
+
+    for sample in samples {
+        let Some((col, row)) =
+            species_area_map_tile_index(sample.position, width, height, cols, rows, tile_w, tile_h)
+        else {
+            continue;
+        };
+
+        for dy in -1..=1 {
+            for dx in -1..=1 {
+                let nx = col as isize + dx;
+                let ny = row as isize + dy;
+                if nx < 0 || ny < 0 || nx >= cols as isize || ny >= rows as isize {
+                    continue;
+                }
+                let distance = dx.abs() + dy.abs();
+                let falloff = match distance {
+                    0 => 1.0,
+                    1 => 0.42,
+                    _ => 0.22,
+                };
+                let index = ny as usize * cols + nx as usize;
+                *accumulators[index]
+                    .weights
+                    .entry(sample.species)
+                    .or_default() += sample.weight * falloff;
+            }
+        }
+    }
+
+    let mut tiles = Vec::new();
+    for row in 0..rows {
+        for col in 0..cols {
+            let weights = &accumulators[row * cols + col].weights;
+            if weights.is_empty() {
+                continue;
+            }
+
+            let mut best_species = 0;
+            let mut best_weight = 0.0;
+            let mut second_species = 0;
+            let mut second_weight = 0.0;
+            for (species, weight) in weights {
+                if *weight > best_weight {
+                    second_species = best_species;
+                    second_weight = best_weight;
+                    best_weight = *weight;
+                    best_species = *species;
+                } else if *weight > second_weight {
+                    second_species = *species;
+                    second_weight = *weight;
+                }
+            }
+            if best_weight < 0.18 {
+                continue;
+            }
+
+            let dominance =
+                ((best_weight - second_weight) / best_weight.max(0.001)).clamp(0.0, 1.0);
+            let conflict = (second_weight / best_weight.max(0.001)).clamp(0.0, 1.0);
+            let density = (best_weight / 2.2).clamp(0.0, 1.0);
+            let strength = (0.25 + dominance * 0.35 + density * 0.40).clamp(0.0, 1.0);
+            tiles.push(SpeciesAreaTile {
+                species: best_species,
+                contender_species: (conflict >= 0.34 && second_species != best_species)
+                    .then_some(second_species),
+                grid_index: row * cols + col,
+                col,
+                row,
+                center: Vec2::new(
+                    -width * 0.5 + (col as f32 + 0.5) * tile_w,
+                    -height * 0.5 + (row as f32 + 0.5) * tile_h,
+                ),
+                half_size: Vec2::new(tile_w, tile_h) * 0.5,
+                strength,
+                conflict,
+            });
+        }
+    }
+
+    tiles
+}
+
+fn build_species_area_tiles(
+    world: &WorldState,
+    visible_species: &HashSet<u32>,
+) -> Vec<SpeciesAreaTile> {
+    let mut samples = Vec::with_capacity(world.cells.len());
+    for index in 0..world.cells.len() {
+        let species = world.cells.species[index];
+        if !visible_species.contains(&species) {
+            continue;
+        }
+        let vitality = (world.cells.viability[index] / world.cells.max_viability[index].max(1.0))
+            .clamp(0.25, 1.0);
+        let size_weight = (world.cells.radius[index] / 8.0).sqrt().clamp(0.70, 2.60);
+        samples.push(SpeciesAreaSample {
+            species,
+            position: Vec2::new(world.cells.x[index], world.cells.y[index]),
+            weight: vitality * size_weight,
+        });
+    }
+    build_species_area_tiles_from_samples(world.width, world.height, &samples)
+}
+
+fn species_area_legend_items(tiles: &[SpeciesAreaTile]) -> Vec<SpeciesAreaLegendItem> {
+    let mut counts = HashMap::<u32, usize>::new();
+    for tile in tiles {
+        *counts.entry(tile.species).or_default() += 1;
+    }
+    let total_tiles = tiles.len().max(1) as f32;
+    let mut items = counts
+        .into_iter()
+        .map(|(species, tile_count)| SpeciesAreaLegendItem {
+            species,
+            share: tile_count as f32 / total_tiles,
+            tile_count,
+        })
+        .collect::<Vec<_>>();
+    items.sort_by(|a, b| {
+        b.tile_count
+            .cmp(&a.tile_count)
+            .then_with(|| a.species.cmp(&b.species))
+    });
+    items.truncate(SPECIES_AREA_MAP_LEGEND_LIMIT);
+    items
+}
+
+fn species_area_map_color_ui(species: u32, brightness: f32) -> Color {
+    let [r, g, b, _] = species_area_map_rgba(species, 1.0, false);
+    Color::srgb(
+        (r * brightness).clamp(0.0, 1.0),
+        (g * brightness).clamp(0.0, 1.0),
+        (b * brightness).clamp(0.0, 1.0),
+    )
+}
+
+fn species_area_tile_color(tile: SpeciesAreaTile, selected_species: Option<u32>) -> [f32; 4] {
+    let selected = selected_species == Some(tile.species);
+    if selected {
+        return [0.96, 1.0, 1.0, 0.58];
+    }
+    let mut color = species_area_map_rgba(tile.species, 0.34, selected);
+    let shade = 0.74 + tile.strength * 0.26;
+    for channel in color.iter_mut().take(3) {
+        *channel *= shade;
+    }
+    color
+}
+
+fn species_area_smoothstep(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+fn species_area_lerp_rgba(a: [f32; 4], b: [f32; 4], t: f32) -> [f32; 4] {
+    let t = t.clamp(0.0, 1.0);
+    [
+        a[0] + (b[0] - a[0]) * t,
+        a[1] + (b[1] - a[1]) * t,
+        a[2] + (b[2] - a[2]) * t,
+        a[3] + (b[3] - a[3]) * t,
+    ]
+}
+
+fn species_area_with_alpha(mut color: [f32; 4], alpha_scale: f32) -> [f32; 4] {
+    color[3] *= alpha_scale.clamp(0.0, 1.0);
+    color
+}
+
+fn species_area_contender_color(tile: SpeciesAreaTile, alpha_scale: f32) -> Option<[f32; 4]> {
+    let contender = tile.contender_species?;
+    let mut stripe_color = species_area_map_rgba(contender, 1.0, false);
+    let boost = (0.42 + tile.conflict * 0.18).clamp(0.0, 1.0);
+    for channel in stripe_color.iter_mut().take(3) {
+        *channel = (*channel * boost + 0.08 * (1.0 - boost)).clamp(0.0, 1.0);
+    }
+    stripe_color[3] = 0.24 * alpha_scale.clamp(0.0, 1.0);
+    Some(stripe_color)
+}
+
+fn species_area_render_tiles(
+    current_tiles: &[SpeciesAreaTile],
+    previous_tiles: &[SpeciesAreaTile],
+    selected_species: Option<u32>,
+    transition_progress: f32,
+) -> Vec<SpeciesAreaRenderTile> {
+    let progress = species_area_smoothstep(transition_progress);
+    let mut previous_by_index = HashMap::<usize, SpeciesAreaTile>::new();
+    for tile in previous_tiles {
+        previous_by_index.insert(tile.grid_index, *tile);
+    }
+
+    let mut rendered = Vec::with_capacity(current_tiles.len() + previous_tiles.len());
+    let mut seen = HashSet::<usize>::new();
+    for tile in current_tiles {
+        seen.insert(tile.grid_index);
+        let current_color = species_area_tile_color(*tile, selected_species);
+        let color = if let Some(previous) = previous_by_index.get(&tile.grid_index) {
+            let previous_color = species_area_tile_color(*previous, selected_species);
+            species_area_lerp_rgba(previous_color, current_color, progress)
+        } else {
+            species_area_with_alpha(current_color, progress)
+        };
+        let contender_alpha = if previous_by_index.contains_key(&tile.grid_index) {
+            color[3]
+        } else {
+            progress
+        };
+        rendered.push(SpeciesAreaRenderTile {
+            tile: *tile,
+            color,
+            contender_color: species_area_contender_color(*tile, contender_alpha),
+            selected: selected_species == Some(tile.species),
+        });
+    }
+
+    for tile in previous_tiles {
+        if seen.contains(&tile.grid_index) {
+            continue;
+        }
+        let alpha = 1.0 - progress;
+        rendered.push(SpeciesAreaRenderTile {
+            tile: *tile,
+            color: species_area_with_alpha(species_area_tile_color(*tile, selected_species), alpha),
+            contender_color: species_area_contender_color(*tile, alpha),
+            selected: selected_species == Some(tile.species),
+        });
+    }
+
+    rendered.sort_by_key(|render_tile| render_tile.tile.grid_index);
+    rendered
+}
+
+fn add_colored_quad(
+    positions: &mut Vec<[f32; 3]>,
+    normals: &mut Vec<[f32; 3]>,
+    uvs: &mut Vec<[f32; 2]>,
+    colors: &mut Vec<[f32; 4]>,
+    indices: &mut Vec<u32>,
+    points: [Vec2; 4],
+    color: [f32; 4],
+    z: f32,
+) {
+    let base = positions.len() as u32;
+    for point in points {
+        positions.push([point.x, point.y, z]);
+        normals.push([0.0, 0.0, 1.0]);
+        uvs.push([0.0, 0.0]);
+        colors.push(color);
+    }
+    indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+}
+
+fn add_gradient_quad(
+    positions: &mut Vec<[f32; 3]>,
+    normals: &mut Vec<[f32; 3]>,
+    uvs: &mut Vec<[f32; 2]>,
+    colors: &mut Vec<[f32; 4]>,
+    indices: &mut Vec<u32>,
+    points: [Vec2; 4],
+    vertex_colors: [[f32; 4]; 4],
+    z: f32,
+) {
+    let base = positions.len() as u32;
+    for (point, color) in points.into_iter().zip(vertex_colors) {
+        positions.push([point.x, point.y, z]);
+        normals.push([0.0, 0.0, 1.0]);
+        uvs.push([0.0, 0.0]);
+        colors.push(color);
+    }
+    indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+}
+
+fn species_area_neighbor_index(
+    render_tile: SpeciesAreaRenderTile,
+    dx: isize,
+    dy: isize,
+    lookup: &HashMap<(usize, usize), usize>,
+) -> Option<usize> {
+    let col = render_tile.tile.col as isize + dx;
+    let row = render_tile.tile.row as isize + dy;
+    if col < 0 || row < 0 {
+        return None;
+    }
+    lookup.get(&(col as usize, row as usize)).copied()
+}
+
+fn species_area_same_neighbor(
+    render_tile: SpeciesAreaRenderTile,
+    dx: isize,
+    dy: isize,
+    lookup: &HashMap<(usize, usize), usize>,
+    render_tiles: &[SpeciesAreaRenderTile],
+) -> bool {
+    species_area_neighbor_index(render_tile, dx, dy, lookup)
+        .map(|index| render_tiles[index].tile.species == render_tile.tile.species)
+        .unwrap_or(false)
+}
+
+fn species_area_color_at(
+    render_tile: SpeciesAreaRenderTile,
+    render_tiles: &[SpeciesAreaRenderTile],
+    lookup: &HashMap<(usize, usize), usize>,
+    u: f32,
+    v: f32,
+) -> [f32; 4] {
+    let mut color = render_tile.color;
+    let blend = SPECIES_AREA_MAP_EDGE_BLEND_FRACTION.max(0.001);
+    let edge_samples = [
+        (-1, 0, ((blend - u) / blend).clamp(0.0, 1.0)),
+        (1, 0, ((u - (1.0 - blend)) / blend).clamp(0.0, 1.0)),
+        (0, -1, ((blend - v) / blend).clamp(0.0, 1.0)),
+        (0, 1, ((v - (1.0 - blend)) / blend).clamp(0.0, 1.0)),
+    ];
+    let mut alpha_factor: f32 = if render_tile.selected { 0.18 } else { 0.035 };
+
+    for (dx, dy, weight) in edge_samples {
+        if weight <= 0.0 {
+            continue;
+        };
+        let Some(neighbor_index) = species_area_neighbor_index(render_tile, dx, dy, lookup) else {
+            alpha_factor = alpha_factor.max(0.32 + species_area_smoothstep(weight) * 0.68);
+            continue;
+        };
+        let neighbor = render_tiles[neighbor_index];
+        if neighbor.tile.species == render_tile.tile.species {
+            continue;
+        }
+        alpha_factor = alpha_factor.max(0.42 + species_area_smoothstep(weight) * 0.58);
+        color =
+            species_area_lerp_rgba(color, neighbor.color, species_area_smoothstep(weight) * 0.5);
+    }
+
+    color[3] *= alpha_factor.clamp(0.0, 1.0);
+    color
+}
+
+fn clip_diag_sum_polygon(mut polygon: Vec<Vec2>, threshold: f32, keep_greater: bool) -> Vec<Vec2> {
+    if polygon.is_empty() {
+        return polygon;
+    }
+    let mut clipped = Vec::new();
+    let mut previous = *polygon.last().unwrap();
+    let mut previous_inside = if keep_greater {
+        previous.x + previous.y >= threshold
+    } else {
+        previous.x + previous.y <= threshold
+    };
+    for current in polygon.drain(..) {
+        let current_inside = if keep_greater {
+            current.x + current.y >= threshold
+        } else {
+            current.x + current.y <= threshold
+        };
+        if current_inside != previous_inside {
+            let denom = (current.x + current.y) - (previous.x + previous.y);
+            if denom.abs() > 0.0001 {
+                let t = ((threshold - (previous.x + previous.y)) / denom).clamp(0.0, 1.0);
+                clipped.push(previous.lerp(current, t));
+            }
+        }
+        if current_inside {
+            clipped.push(current);
+        }
+        previous = current;
+        previous_inside = current_inside;
+    }
+    clipped
+}
+
+fn add_species_area_soft_tile(
+    positions: &mut Vec<[f32; 3]>,
+    normals: &mut Vec<[f32; 3]>,
+    uvs: &mut Vec<[f32; 2]>,
+    colors: &mut Vec<[f32; 4]>,
+    indices: &mut Vec<u32>,
+    render_tile: SpeciesAreaRenderTile,
+    render_tiles: &[SpeciesAreaRenderTile],
+    lookup: &HashMap<(usize, usize), usize>,
+) {
+    let subdivisions = SPECIES_AREA_MAP_TILE_SUBDIVISIONS.max(1);
+    let hx = render_tile.tile.half_size.x;
+    let hy = render_tile.tile.half_size.y;
+    let base = positions.len() as u32;
+
+    for y in 0..=subdivisions {
+        let v = y as f32 / subdivisions as f32;
+        for x in 0..=subdivisions {
+            let u = x as f32 / subdivisions as f32;
+            let point =
+                render_tile.tile.center + Vec2::new((u - 0.5) * hx * 2.0, (v - 0.5) * hy * 2.0);
+            positions.push([point.x, point.y, 0.0]);
+            normals.push([0.0, 0.0, 1.0]);
+            uvs.push([u, v]);
+            colors.push(species_area_color_at(
+                render_tile,
+                render_tiles,
+                lookup,
+                u,
+                v,
+            ));
+        }
+    }
+
+    let stride = subdivisions as u32 + 1;
+    for y in 0..subdivisions as u32 {
+        for x in 0..subdivisions as u32 {
+            let i = base + y * stride + x;
+            indices.extend_from_slice(&[i, i + 1, i + stride + 1, i, i + stride + 1, i + stride]);
+        }
+    }
+}
+
+fn add_species_area_empty_edge_bleeds(
+    positions: &mut Vec<[f32; 3]>,
+    normals: &mut Vec<[f32; 3]>,
+    uvs: &mut Vec<[f32; 2]>,
+    colors: &mut Vec<[f32; 4]>,
+    indices: &mut Vec<u32>,
+    render_tile: SpeciesAreaRenderTile,
+    render_tiles: &[SpeciesAreaRenderTile],
+    lookup: &HashMap<(usize, usize), usize>,
+) {
+    let hx = render_tile.tile.half_size.x;
+    let hy = render_tile.tile.half_size.y;
+    let bleed = hx.min(hy) * SPECIES_AREA_MAP_EMPTY_BLEED_FRACTION;
+    if bleed <= 0.0 || render_tile.color[3] <= 0.001 {
+        return;
+    }
+
+    let mut inner = render_tile.color;
+    inner[3] *= 0.72;
+    let mut outer = inner;
+    outer[3] = 0.0;
+    let c = render_tile.tile.center;
+
+    let empty_left = species_area_neighbor_index(render_tile, -1, 0, lookup).is_none();
+    let empty_right = species_area_neighbor_index(render_tile, 1, 0, lookup).is_none();
+    let empty_bottom = species_area_neighbor_index(render_tile, 0, -1, lookup).is_none();
+    let empty_top = species_area_neighbor_index(render_tile, 0, 1, lookup).is_none();
+
+    if empty_left {
+        add_gradient_quad(
+            positions,
+            normals,
+            uvs,
+            colors,
+            indices,
+            [
+                c + Vec2::new(-hx - bleed, -hy),
+                c + Vec2::new(-hx, -hy),
+                c + Vec2::new(-hx, hy),
+                c + Vec2::new(-hx - bleed, hy),
+            ],
+            [outer, inner, inner, outer],
+            -0.006,
+        );
+    }
+    if empty_right {
+        add_gradient_quad(
+            positions,
+            normals,
+            uvs,
+            colors,
+            indices,
+            [
+                c + Vec2::new(hx, -hy),
+                c + Vec2::new(hx + bleed, -hy),
+                c + Vec2::new(hx + bleed, hy),
+                c + Vec2::new(hx, hy),
+            ],
+            [inner, outer, outer, inner],
+            -0.006,
+        );
+    }
+    if empty_bottom {
+        add_gradient_quad(
+            positions,
+            normals,
+            uvs,
+            colors,
+            indices,
+            [
+                c + Vec2::new(-hx, -hy - bleed),
+                c + Vec2::new(hx, -hy - bleed),
+                c + Vec2::new(hx, -hy),
+                c + Vec2::new(-hx, -hy),
+            ],
+            [outer, outer, inner, inner],
+            -0.006,
+        );
+    }
+    if empty_top {
+        add_gradient_quad(
+            positions,
+            normals,
+            uvs,
+            colors,
+            indices,
+            [
+                c + Vec2::new(-hx, hy),
+                c + Vec2::new(hx, hy),
+                c + Vec2::new(hx, hy + bleed),
+                c + Vec2::new(-hx, hy + bleed),
+            ],
+            [inner, inner, outer, outer],
+            -0.006,
+        );
+    }
+    if empty_left && empty_bottom {
+        add_gradient_quad(
+            positions,
+            normals,
+            uvs,
+            colors,
+            indices,
+            [
+                c + Vec2::new(-hx - bleed, -hy - bleed),
+                c + Vec2::new(-hx, -hy - bleed),
+                c + Vec2::new(-hx, -hy),
+                c + Vec2::new(-hx - bleed, -hy),
+            ],
+            [outer, outer, inner, outer],
+            -0.008,
+        );
+    }
+    if empty_right && empty_bottom {
+        add_gradient_quad(
+            positions,
+            normals,
+            uvs,
+            colors,
+            indices,
+            [
+                c + Vec2::new(hx, -hy - bleed),
+                c + Vec2::new(hx + bleed, -hy - bleed),
+                c + Vec2::new(hx + bleed, -hy),
+                c + Vec2::new(hx, -hy),
+            ],
+            [outer, outer, outer, inner],
+            -0.008,
+        );
+    }
+    if empty_right && empty_top {
+        add_gradient_quad(
+            positions,
+            normals,
+            uvs,
+            colors,
+            indices,
+            [
+                c + Vec2::new(hx, hy),
+                c + Vec2::new(hx + bleed, hy),
+                c + Vec2::new(hx + bleed, hy + bleed),
+                c + Vec2::new(hx, hy + bleed),
+            ],
+            [inner, outer, outer, outer],
+            -0.008,
+        );
+    }
+    if empty_left && empty_top {
+        add_gradient_quad(
+            positions,
+            normals,
+            uvs,
+            colors,
+            indices,
+            [
+                c + Vec2::new(-hx - bleed, hy),
+                c + Vec2::new(-hx, hy),
+                c + Vec2::new(-hx, hy + bleed),
+                c + Vec2::new(-hx - bleed, hy + bleed),
+            ],
+            [outer, inner, outer, outer],
+            -0.008,
+        );
+    }
+
+    for (sx, sy) in [(-1, -1), (1, -1), (1, 1), (-1, 1)] {
+        if species_area_neighbor_index(render_tile, sx, sy, lookup).is_some()
+            || !species_area_same_neighbor(render_tile, sx, 0, lookup, render_tiles)
+            || !species_area_same_neighbor(render_tile, 0, sy, lookup, render_tiles)
+        {
+            continue;
+        }
+        let corner = c + Vec2::new(hx * sx as f32, hy * sy as f32);
+        let side_x = corner + Vec2::new(bleed * sx as f32, 0.0);
+        let side_y = corner + Vec2::new(0.0, bleed * sy as f32);
+        let diagonal = corner + Vec2::new(bleed * sx as f32, bleed * sy as f32);
+        let mut bridge = render_tile.color;
+        bridge[3] *= 0.54;
+        let mut soft = bridge;
+        soft[3] *= 0.42;
+        add_gradient_quad(
+            positions,
+            normals,
+            uvs,
+            colors,
+            indices,
+            [corner, side_x, diagonal, side_y],
+            [bridge, soft, outer, soft],
+            -0.010,
+        );
+    }
+}
+
+fn add_species_area_stripe_polygon(
+    positions: &mut Vec<[f32; 3]>,
+    normals: &mut Vec<[f32; 3]>,
+    uvs: &mut Vec<[f32; 2]>,
+    colors: &mut Vec<[f32; 4]>,
+    indices: &mut Vec<u32>,
+    tile: SpeciesAreaTile,
+    start: f32,
+    width: f32,
+    color: [f32; 4],
+) {
+    let square = vec![
+        Vec2::new(0.0, 0.0),
+        Vec2::new(1.0, 0.0),
+        Vec2::new(1.0, 1.0),
+        Vec2::new(0.0, 1.0),
+    ];
+    let polygon = clip_diag_sum_polygon(square, start, true);
+    let polygon = clip_diag_sum_polygon(polygon, start + width, false);
+    if polygon.len() < 3 {
+        return;
+    }
+
+    let base = positions.len() as u32;
+    for point in polygon {
+        let world = tile.center
+            + Vec2::new(
+                (point.x - 0.5) * tile.half_size.x * 2.0,
+                (point.y - 0.5) * tile.half_size.y * 2.0,
+            );
+        positions.push([world.x, world.y, 0.012]);
+        normals.push([0.0, 0.0, 1.0]);
+        uvs.push([point.x, point.y]);
+        colors.push(color);
+    }
+    for index in 1..(positions.len() as u32 - base - 1) {
+        indices.extend_from_slice(&[base, base + index, base + index + 1]);
+    }
+}
+
+fn add_species_area_tile_outline(
+    positions: &mut Vec<[f32; 3]>,
+    normals: &mut Vec<[f32; 3]>,
+    uvs: &mut Vec<[f32; 2]>,
+    colors: &mut Vec<[f32; 4]>,
+    indices: &mut Vec<u32>,
+    render_tile: SpeciesAreaRenderTile,
+) {
+    if !render_tile.selected {
+        return;
+    }
+    let tile = render_tile.tile;
+    let thickness = tile.half_size.x.min(tile.half_size.y) * 0.030;
+    let hx = tile.half_size.x;
+    let hy = tile.half_size.y;
+    let color = [1.0, 1.0, 1.0, 0.78 * render_tile.color[3]];
+    let strips = [
+        [
+            tile.center + Vec2::new(-hx, -hy),
+            tile.center + Vec2::new(hx, -hy),
+            tile.center + Vec2::new(hx, -hy + thickness),
+            tile.center + Vec2::new(-hx, -hy + thickness),
+        ],
+        [
+            tile.center + Vec2::new(-hx, hy - thickness),
+            tile.center + Vec2::new(hx, hy - thickness),
+            tile.center + Vec2::new(hx, hy),
+            tile.center + Vec2::new(-hx, hy),
+        ],
+        [
+            tile.center + Vec2::new(-hx, -hy),
+            tile.center + Vec2::new(-hx + thickness, -hy),
+            tile.center + Vec2::new(-hx + thickness, hy),
+            tile.center + Vec2::new(-hx, hy),
+        ],
+        [
+            tile.center + Vec2::new(hx - thickness, -hy),
+            tile.center + Vec2::new(hx, -hy),
+            tile.center + Vec2::new(hx, hy),
+            tile.center + Vec2::new(hx - thickness, hy),
+        ],
+    ];
+    for strip in strips {
+        add_colored_quad(
+            positions, normals, uvs, colors, indices, strip, color, 0.024,
+        );
+    }
+}
+
+fn species_area_map_mesh_with_transition(
+    tiles: &[SpeciesAreaTile],
+    previous_tiles: &[SpeciesAreaTile],
+    selected_species: Option<u32>,
+    transition_progress: f32,
+) -> Mesh {
+    let render_tiles =
+        species_area_render_tiles(tiles, previous_tiles, selected_species, transition_progress);
+    let mut lookup = HashMap::<(usize, usize), usize>::new();
+    for (index, render_tile) in render_tiles.iter().enumerate() {
+        lookup.insert((render_tile.tile.col, render_tile.tile.row), index);
+    }
+
+    let mut positions = Vec::<[f32; 3]>::with_capacity(render_tiles.len() * 46);
+    let mut normals = Vec::<[f32; 3]>::with_capacity(render_tiles.len() * 46);
+    let mut uvs = Vec::<[f32; 2]>::with_capacity(render_tiles.len() * 46);
+    let mut colors = Vec::<[f32; 4]>::with_capacity(render_tiles.len() * 46);
+    let mut indices = Vec::<u32>::with_capacity(render_tiles.len() * 130);
+
+    for render_tile in &render_tiles {
+        add_species_area_empty_edge_bleeds(
+            &mut positions,
+            &mut normals,
+            &mut uvs,
+            &mut colors,
+            &mut indices,
+            *render_tile,
+            &render_tiles,
+            &lookup,
+        );
+    }
+
+    for render_tile in &render_tiles {
+        add_species_area_soft_tile(
+            &mut positions,
+            &mut normals,
+            &mut uvs,
+            &mut colors,
+            &mut indices,
+            *render_tile,
+            &render_tiles,
+            &lookup,
+        );
+
+        if let Some(stripe_color) = render_tile.contender_color {
+            let stripe_width = 0.06 + render_tile.tile.conflict * 0.035;
+            for start in [-0.18, 0.38, 0.94] {
+                add_species_area_stripe_polygon(
+                    &mut positions,
+                    &mut normals,
+                    &mut uvs,
+                    &mut colors,
+                    &mut indices,
+                    render_tile.tile,
+                    start,
+                    stripe_width,
+                    stripe_color,
+                );
+            }
+        }
+
+        add_species_area_tile_outline(
+            &mut positions,
+            &mut normals,
+            &mut uvs,
+            &mut colors,
+            &mut indices,
+            *render_tile,
+        );
+    }
+
+    let mut mesh = Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::RENDER_WORLD,
+    );
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
+    mesh.insert_indices(Indices::U32(indices));
+    mesh
+}
+
+#[cfg(test)]
+fn species_area_map_mesh(tiles: &[SpeciesAreaTile], selected_species: Option<u32>) -> Mesh {
+    species_area_map_mesh_with_transition(tiles, &[], selected_species, 1.0)
+}
+
+fn spawn_species_area_map_tiles(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<StandardMaterial>,
+    tiles: &[SpeciesAreaTile],
+    previous_tiles: &[SpeciesAreaTile],
+    selected_species: Option<u32>,
+    transition_progress: f32,
+) {
+    if tiles.is_empty() && previous_tiles.is_empty() {
+        return;
+    }
+    let mesh = meshes.add(species_area_map_mesh_with_transition(
+        tiles,
+        previous_tiles,
+        selected_species,
+        transition_progress,
+    ));
+    let material = materials.add(StandardMaterial {
+        base_color: Color::WHITE,
+        alpha_mode: AlphaMode::Blend,
+        unlit: true,
+        cull_mode: None,
+        ..default()
+    });
+    commands.spawn((
+        Name::new("species_area_map_grid"),
+        Mesh3d(mesh),
+        MeshMaterial3d(material),
+        Transform::from_xyz(0.0, 0.0, -0.16),
+        SimulationRenderEntity,
+        SpeciesAreaMapEntity,
+    ));
+}
+
+fn species_area_map_pick(point: Vec2, tiles: &[SpeciesAreaTile]) -> Option<u32> {
+    tiles
+        .iter()
+        .find(|tile| {
+            let delta = (point - tile.center).abs();
+            delta.x <= tile.half_size.x && delta.y <= tile.half_size.y
+        })
+        .map(|tile| tile.species)
 }
 
 #[allow(dead_code)]
@@ -6892,7 +10134,8 @@ fn update_species_ledger_ui(
     let total_height = species_ledger_content_height(stats.snapshots.len());
     let (range_start, range_end) =
         species_ledger_visible_index_range(stats.snapshots.len(), scroll_y, view_height);
-    let should_render = state.rendered_revision != stats.revision
+    let visible_signature = species_ledger_visible_signature(&stats, range_start, range_end);
+    let should_render = state.rendered_revision != visible_signature
         || state.rendered_range_start != range_start
         || state.rendered_range_end != range_end;
 
@@ -6926,9 +10169,522 @@ fn update_species_ledger_ui(
             spawn_species_ledger_row(grid, font.clone(), &asset_server, snapshot, name, index);
         }
     });
-    state.rendered_revision = stats.revision;
+    state.rendered_revision = visible_signature;
     state.rendered_range_start = range_start;
     state.rendered_range_end = range_end;
+}
+
+fn update_genealogy_ui(
+    mut commands: Commands,
+    time: Res<Time>,
+    asset_server: Res<AssetServer>,
+    names: Res<SpeciesNameBook>,
+    stats: Res<SpeciesLedgerStats>,
+    mut state: ResMut<GenealogyUiState>,
+    view: Res<GenealogyMapView>,
+    mut panels: Query<
+        (
+            &mut Visibility,
+            &mut Node,
+            &mut UiTransform,
+            &mut PanelReveal,
+        ),
+        With<GenealogyPanel>,
+    >,
+    roots: Query<Entity, With<GenealogyMapRoot>>,
+    contents: Query<(Entity, &ComputedNode), With<GenealogyMapContent>>,
+    header_entities: Query<Entity, With<GenealogyHeaderDynamicEntity>>,
+    genus_entities: Query<Entity, With<GenealogyGenusDynamicEntity>>,
+    branch_entities: Query<Entity, With<GenealogyBranchDynamicEntity>>,
+    mut details_text: Query<&mut Text, With<GenealogyDetailsText>>,
+) {
+    if let Ok((mut visibility, mut node, mut transform, mut reveal)) = panels.single_mut() {
+        if state.open {
+            *visibility = Visibility::Visible;
+            node.display = Display::Flex;
+        }
+        let target = if state.open { 1.0 } else { 0.0 };
+        let follow = 1.0 - (-14.0 * time.delta_secs()).exp();
+        reveal.progress += (target - reveal.progress) * follow;
+        transform.scale = Vec2::splat(0.965 + reveal.progress * 0.035);
+        if !state.open && reveal.progress < 0.01 {
+            *visibility = Visibility::Hidden;
+            node.display = Display::None;
+        }
+    }
+
+    if !state.open {
+        return;
+    }
+
+    let map_size = contents
+        .single()
+        .ok()
+        .map(|(_entity, computed)| genealogy_map_size_from_computed(computed))
+        .unwrap_or_else(genealogy_map_fallback_size);
+    let genera = genealogy_genus_snapshots(&stats);
+    let mut visible_genera = genera
+        .iter()
+        .take(GENEALOGY_VISIBLE_GENERA_LIMIT)
+        .collect::<Vec<_>>();
+    for pinned_genus in [state.expanded_genus, state.selected_genus]
+        .into_iter()
+        .flatten()
+    {
+        if !visible_genera
+            .iter()
+            .any(|genus| genus.genus == pinned_genus)
+            && let Some(genus) = genera.iter().find(|genus| genus.genus == pinned_genus)
+        {
+            visible_genera.push(genus);
+        }
+    }
+    let max_genus_alive = genera.iter().map(|genus| genus.alive).max().unwrap_or(1);
+    let mut expanded_species = Vec::<&SpeciesSnapshot>::new();
+    let mut expanded_total_species = 0usize;
+    if let Some(expanded_genus) = state.expanded_genus {
+        let mut species = stats
+            .snapshots
+            .iter()
+            .filter(|snapshot| species_genus_key(snapshot.species) == expanded_genus)
+            .collect::<Vec<_>>();
+        species.sort_by(|a, b| {
+            b.alive
+                .cmp(&a.alive)
+                .then_with(|| a.species.cmp(&b.species))
+        });
+        expanded_total_species = species.len();
+        expanded_species = species
+            .iter()
+            .copied()
+            .take(GENEALOGY_EXPANDED_SPECIES_LIMIT)
+            .collect::<Vec<_>>();
+        if let Some(selected_species) = state.selected_species
+            && species_genus_key(selected_species) == expanded_genus
+            && !expanded_species
+                .iter()
+                .any(|snapshot| snapshot.species == selected_species)
+            && let Some(snapshot) = species
+                .iter()
+                .copied()
+                .find(|snapshot| snapshot.species == selected_species)
+        {
+            expanded_species.push(snapshot);
+        }
+    }
+    let header_signature = genealogy_header_render_signature(
+        visible_genera.len(),
+        genera.len(),
+        stats.snapshots.len(),
+        state.expanded_genus,
+        expanded_species.len(),
+        expanded_total_species,
+    );
+    let genus_signature = genealogy_genus_render_signature(&visible_genera);
+    let branch_signature =
+        genealogy_branch_render_signature(state.expanded_genus, &expanded_species);
+    let genus_positions = visible_genera
+        .iter()
+        .enumerate()
+        .map(|(index, genus)| {
+            (
+                genus.genus,
+                genealogy_genus_position(index, visible_genera.len(), map_size),
+            )
+        })
+        .collect::<HashMap<_, _>>();
+    let header_needed = state.rendered_header_revision != header_signature;
+    let genus_needed = state.rendered_genus_revision != genus_signature;
+    let branch_needed = state.rendered_branch_revision != branch_signature || genus_needed;
+    let expansion_changed = state.rendered_expanded_genus != state.expanded_genus;
+
+    if header_needed {
+        for entity in &header_entities {
+            commands.entity(entity).despawn();
+        }
+        if let Ok(root_entity) = roots.single() {
+            let font = asset_server.load(UI_FONT);
+            commands.entity(root_entity).with_children(|root| {
+                let expanded_summary = state
+                    .expanded_genus
+                    .and_then(|genus| {
+                        visible_genera
+                            .iter()
+                            .find(|snapshot| snapshot.genus == genus)
+                            .map(|snapshot| {
+                                format!(
+                                    " В· РІРµС‚РІСЊ {}: {}/{} РІРёРґРѕРІ",
+                                    species_genus_name_for(&names, snapshot.representative_species),
+                                    expanded_species.len(),
+                                    expanded_total_species
+                                )
+                            })
+                    })
+                    .unwrap_or_default();
+                spawn_genealogy_header(
+                    root,
+                    font,
+                    format!(
+                        "Р РѕРґС‹: РїРѕРєР°Р·Р°РЅРѕ {} РёР· {} В· РІРёРґРѕРІ {}{}",
+                        visible_genera.len(),
+                        genera.len(),
+                        stats.snapshots.len(),
+                        expanded_summary
+                    ),
+                );
+            });
+        }
+        state.rendered_header_revision = header_signature;
+    }
+
+    if genus_needed {
+        for entity in &genus_entities {
+            commands.entity(entity).despawn();
+        }
+        if let Ok((content_entity, _computed)) = contents.single() {
+            let font = asset_server.load(UI_FONT);
+            commands.entity(content_entity).with_children(|map| {
+                for genus in &visible_genera {
+                    let center = genus_positions
+                        .get(&genus.genus)
+                        .copied()
+                        .unwrap_or(Vec2::new(50.0, 50.0));
+                    spawn_genealogy_genus_node_free(
+                        map,
+                        font.clone(),
+                        &asset_server,
+                        &names,
+                        genus,
+                        max_genus_alive,
+                        state.selected_genus == Some(genus.genus),
+                        state.expanded_genus == Some(genus.genus),
+                        center,
+                    );
+                }
+            });
+        }
+        state.rendered_genus_revision = genus_signature;
+    }
+
+    if branch_needed {
+        for entity in &branch_entities {
+            commands.entity(entity).despawn();
+        }
+        if let Ok((content_entity, computed)) = contents.single()
+            && let Some(expanded_genus) = state.expanded_genus
+            && !expanded_species.is_empty()
+        {
+            let map_size = genealogy_map_size_from_computed(computed);
+            let parent_center = genus_positions
+                .get(&expanded_genus)
+                .copied()
+                .unwrap_or(Vec2::new(50.0, 50.0));
+            let max_species_alive = expanded_species
+                .iter()
+                .map(|snapshot| snapshot.alive)
+                .max()
+                .unwrap_or(1);
+            let total_visible_species = expanded_species.len();
+            let font = asset_server.load(UI_FONT);
+            commands.entity(content_entity).with_children(|map| {
+                let species_positions = expanded_species
+                    .iter()
+                    .copied()
+                    .enumerate()
+                    .map(|(index, snapshot)| {
+                        let center = genealogy_species_position(
+                            parent_center,
+                            index,
+                            total_visible_species,
+                            map_size,
+                        );
+                        (snapshot, center)
+                    })
+                    .collect::<Vec<_>>();
+                spawn_genealogy_edge_layer(
+                    map,
+                    species_positions
+                        .iter()
+                        .map(|(snapshot, center)| GenealogyEdgeRef {
+                            from: parent_center,
+                            to: *center,
+                            species: snapshot.species,
+                        })
+                        .collect(),
+                );
+                for (index, (snapshot, center)) in species_positions.iter().copied().enumerate() {
+                    spawn_genealogy_species_node_free(
+                        map,
+                        font.clone(),
+                        &asset_server,
+                        &names,
+                        snapshot,
+                        max_species_alive,
+                        state.selected_species == Some(snapshot.species),
+                        center,
+                        parent_center,
+                        index,
+                        expansion_changed,
+                        view.zoom,
+                        map_size,
+                    );
+                }
+            });
+        }
+        state.rendered_branch_revision = branch_signature;
+        state.rendered_expanded_genus = state.expanded_genus;
+    }
+
+    state.rendered_selected_genus = state.selected_genus;
+    state.rendered_selected_species = state.selected_species;
+
+    if let Ok(mut text) = details_text.single_mut() {
+        **text = genealogy_details_text(&state, &stats, &names, &genera);
+    }
+}
+
+fn genealogy_map_navigation_system(
+    mut mouse_wheel: MessageReader<MouseWheel>,
+    mouse: Res<ButtonInput<MouseButton>>,
+    state: Res<GenealogyUiState>,
+    mut view: ResMut<GenealogyMapView>,
+    windows: Query<&Window, With<PrimaryWindow>>,
+    viewport: Query<&RelativeCursorPosition, With<GenealogyMapViewport>>,
+    mut contents: Query<(&ComputedNode, &mut UiTransform), With<GenealogyMapContent>>,
+    mut positioned_nodes: Query<
+        (&GenealogyMapNodePosition, &mut Node),
+        (
+            Without<GenealogyMapContent>,
+            Without<GenealogyMapEdgePosition>,
+        ),
+    >,
+    mut positioned_edges: Query<
+        (&GenealogyMapEdgePosition, &mut Node, &mut UiTransform),
+        (
+            Without<GenealogyMapContent>,
+            Without<GenealogyMapNodePosition>,
+        ),
+    >,
+) {
+    if !state.open {
+        view.dragging = false;
+        view.last_cursor = None;
+        return;
+    }
+
+    let cursor_over_map = viewport
+        .single()
+        .ok()
+        .and_then(|cursor| cursor.normalized)
+        .map(|position| position.x.abs() <= 0.5 && position.y.abs() <= 0.5)
+        .unwrap_or(false);
+
+    for event in mouse_wheel.read() {
+        if !cursor_over_map {
+            continue;
+        }
+        let scale = match event.unit {
+            MouseScrollUnit::Line => 0.12,
+            MouseScrollUnit::Pixel => 0.004,
+        };
+        view.zoom = (view.zoom * (event.y * scale).exp())
+            .clamp(GENEALOGY_MAP_MIN_ZOOM, GENEALOGY_MAP_MAX_ZOOM);
+    }
+
+    let cursor = windows.single().ok().and_then(Window::cursor_position);
+    let drag_pressed = mouse.pressed(MouseButton::Middle) || mouse.pressed(MouseButton::Right);
+    if cursor_over_map && drag_pressed {
+        if let Some(cursor) = cursor {
+            if !view.dragging {
+                view.dragging = true;
+                view.last_cursor = Some(cursor);
+            }
+            if let Some(last_cursor) = view.last_cursor {
+                view.pan += cursor - last_cursor;
+            }
+            view.last_cursor = Some(cursor);
+        }
+    } else {
+        view.dragging = false;
+        view.last_cursor = cursor;
+    }
+
+    let pan_limit = GENEALOGY_MAP_PAN_LIMIT * view.zoom.max(1.0);
+    view.pan = view
+        .pan
+        .clamp(Vec2::splat(-pan_limit), Vec2::splat(pan_limit));
+
+    let mut map_size = genealogy_map_fallback_size();
+    for (computed, mut transform) in &mut contents {
+        map_size = genealogy_map_size_from_computed(computed);
+        transform.translation = Val2::px(view.pan.x, view.pan.y);
+        transform.scale = Vec2::ONE;
+    }
+
+    for (position, mut node) in &mut positioned_nodes {
+        let center = genealogy_zoomed_position(position.center, view.zoom);
+        node.left = percent(center.x);
+        node.top = percent(center.y);
+    }
+
+    for (position, mut node, mut transform) in &mut positioned_edges {
+        let (center, length, angle) =
+            genealogy_edge_geometry(position.from, position.to, view.zoom, map_size);
+        node.left = percent(center.x);
+        node.top = percent(center.y);
+        node.width = px(length);
+        transform.translation = Val2::px(-length * 0.5, -1.0);
+        transform.rotation = Rot2::radians(angle);
+    }
+}
+
+fn update_genealogy_node_frame_visuals(
+    state: Res<GenealogyUiState>,
+    mut frames: Query<(&GenealogyNodeFrame, &mut Node, &mut BorderColor)>,
+) {
+    if !state.open && !state.is_changed() {
+        return;
+    }
+
+    for (frame, mut node, mut border) in &mut frames {
+        let active = match frame.kind {
+            GenealogyNodeKind::Genus(genus) => {
+                state.expanded_genus == Some(genus) || state.selected_genus == Some(genus)
+            }
+            GenealogyNodeKind::Species(species) => state.selected_species == Some(species),
+        };
+        let width = if active {
+            frame.active_width
+        } else {
+            frame.normal_width
+        };
+        node.border = UiRect::all(px(width));
+        *border = BorderColor::all(if active {
+            frame.active_border
+        } else {
+            frame.normal_border
+        });
+    }
+}
+
+fn animate_genealogy_nodes(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut nodes: Query<(Entity, &mut UiTransform, &mut GenealogyNodeAnimation)>,
+) {
+    for (entity, mut transform, mut animation) in &mut nodes {
+        animation.age += time.delta_secs();
+        let t =
+            ((animation.age - animation.delay) / GENEALOGY_SPECIES_EMERGE_SECONDS).clamp(0.0, 1.0);
+        let eased = t * t * (3.0 - 2.0 * t);
+        let drift = animation.from * (1.0 - eased);
+        transform.scale = Vec2::splat(0.24 + 0.76 * eased);
+        transform.translation = Val2::px(animation.base.x + drift.x, animation.base.y + drift.y);
+        if t >= 1.0 {
+            commands.entity(entity).remove::<GenealogyNodeAnimation>();
+        }
+    }
+}
+
+fn genealogy_details_text(
+    state: &GenealogyUiState,
+    stats: &SpeciesLedgerStats,
+    names: &SpeciesNameBook,
+    genera: &[GenealogyGenusSnapshot],
+) -> String {
+    if let Some(species) = state.selected_species
+        && let Some(snapshot) = species_snapshot_by_id(stats, species)
+    {
+        let name = species_name_for(names, species);
+        let genus = species_genus_name_for(names, species);
+        let trend = if snapshot.alive_delta > 0 {
+            format!("+{}", snapshot.alive_delta)
+        } else {
+            snapshot.alive_delta.to_string()
+        };
+        return format!(
+            "{name}\nрод {genus}\n\nживых: {} ({trend})\nтип: {}\nтроф: {}\nразмер {:.1}\nскорость {:.0}\nповорот {:.1}\nвосприятие {:.0}\nлизис {:.0}%",
+            snapshot.alive,
+            species_shape_label_from_id(species),
+            trophic_type_name(snapshot.average_aggressiveness),
+            snapshot.average_size,
+            snapshot.average_speed,
+            snapshot.average_turn,
+            snapshot.average_perception,
+            snapshot.average_lysis,
+        );
+    }
+
+    if let Some(genus_id) = state.selected_genus
+        && let Some(genus) = genera.iter().find(|genus| genus.genus == genus_id)
+    {
+        let genus_name = species_genus_name_for(names, genus.representative_species);
+        let trend = if genus.alive_delta > 0 {
+            format!("+{}", genus.alive_delta)
+        } else {
+            genus.alive_delta.to_string()
+        };
+        return format!(
+            "{genus_name}\n\nживых: {} ({trend})\nвидов в роде: {}\nдоминирующая форма: {}\nсредний троф: {}\nпредставитель: {}",
+            genus.alive,
+            genus.species_count,
+            genus.dominant_shape,
+            trophic_type_name(genus.average_aggressiveness),
+            species_name_for(names, genus.representative_species),
+        );
+    }
+
+    let total_alive: usize = stats.snapshots.iter().map(|snapshot| snapshot.alive).sum();
+    format!(
+        "родов: {}\nвидов: {}\nживых клеток: {}\n\nветвь не выбрана",
+        genera.len(),
+        stats.snapshots.len(),
+        total_alive
+    )
+}
+
+fn update_genealogy_miniature_visuals(
+    mut images: ResMut<Assets<Image>>,
+    mut cache: ResMut<SpeciesMiniatureImageCache>,
+    stats: Res<SpeciesLedgerStats>,
+    state: Res<GenealogyUiState>,
+    mut miniatures: Query<(&GenealogyMiniature, &mut BackgroundColor, &mut BorderColor)>,
+    mut mini_images: Query<(&GenealogyMiniImage, &mut ImageNode)>,
+) {
+    if !state.open {
+        return;
+    }
+    for (marker, mut background, mut border) in &mut miniatures {
+        if species_snapshot_by_id(&stats, marker.species).is_some() {
+            background.0 = species_area_map_color_ui(marker.species, 0.18);
+            *border = BorderColor::all(species_area_map_color_ui(marker.species, 0.95));
+        } else {
+            background.0 = Color::srgb(0.026, 0.030, 0.034);
+            *border = BorderColor::all(Color::srgb(0.18, 0.26, 0.28));
+        }
+    }
+    for (marker, mut image_node) in &mut mini_images {
+        let Some(snapshot) = species_snapshot_by_id(&stats, marker.species) else {
+            image_node.image = Handle::<Image>::default();
+            continue;
+        };
+        let signature = species_miniature_signature(snapshot);
+        let refresh = cache
+            .signatures
+            .get(&marker.species)
+            .copied()
+            .is_none_or(|cached| cached != signature)
+            || !cache.handles.contains_key(&marker.species);
+        if refresh {
+            let handle = images.add(render_species_miniature(snapshot));
+            cache.handles.insert(marker.species, handle);
+            cache.signatures.insert(marker.species, signature);
+        }
+        if let Some(handle) = cache.handles.get(&marker.species) {
+            image_node.image = handle.clone();
+            image_node.color = Color::WHITE;
+        }
+    }
 }
 
 fn update_chronicle_ui(
@@ -7392,19 +11148,25 @@ fn update_species_ledger_miniature_visuals(
     mut cache: ResMut<SpeciesMiniatureImageCache>,
     stats: Res<SpeciesLedgerStats>,
     state: Res<SpeciesLedgerUiState>,
-    mut miniatures: Query<(&SpeciesLedgerMiniature, &mut BackgroundColor)>,
+    mut miniatures: Query<(
+        &SpeciesLedgerMiniature,
+        &mut BackgroundColor,
+        &mut BorderColor,
+    )>,
     mut mini_images: Query<(&SpeciesLedgerMiniImage, &mut ImageNode)>,
 ) {
     if !state.open {
         return;
     }
 
-    for (marker, mut background) in &mut miniatures {
-        background.0 = if species_snapshot_by_id(&stats, marker.species).is_some() {
-            Color::srgb(0.025, 0.045, 0.050)
+    for (marker, mut background, mut border) in &mut miniatures {
+        if species_snapshot_by_id(&stats, marker.species).is_some() {
+            background.0 = species_area_map_color_ui(marker.species, 0.25);
+            *border = BorderColor::all(species_area_map_color_ui(marker.species, 0.95));
         } else {
-            Color::srgb(0.020, 0.025, 0.030)
-        };
+            background.0 = Color::srgb(0.020, 0.025, 0.030);
+            *border = BorderColor::all(Color::srgb(0.16, 0.28, 0.31));
+        }
     }
 
     let mut visible_species = Vec::new();
@@ -8443,14 +12205,160 @@ fn update_species_area_highlight_system(
         *highlight_state = SpeciesAreaHighlightState::default();
         return;
     };
-    if highlight_state.rendered_revision == stats.revision && !highlights.is_empty() {
+    if highlight_state.rendered_revision == stats.area_revision && !highlights.is_empty() {
         return;
     }
     for entity in &highlights {
         commands.entity(entity).despawn();
     }
     spawn_species_area_highlight(&mut commands, &mut meshes, &mut materials, snapshot);
-    highlight_state.rendered_revision = stats.revision;
+    highlight_state.rendered_revision = stats.area_revision;
+}
+
+fn update_species_area_map_system(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    time: Res<Time>,
+    world: Res<WorldState>,
+    stats: Res<SpeciesLedgerStats>,
+    ledger_state: Res<SpeciesLedgerUiState>,
+    mut map_state: ResMut<SpeciesAreaMapState>,
+    map_entities: Query<Entity, With<SpeciesAreaMapEntity>>,
+) {
+    if !map_state.open {
+        if !map_state.tiles.is_empty() || !map_entities.is_empty() {
+            for entity in &map_entities {
+                commands.entity(entity).despawn();
+            }
+            map_state.tiles.clear();
+            map_state.previous_tiles.clear();
+            map_state.legend_items.clear();
+            map_state.displayed_species_count = 0;
+            map_state.total_species_count = 0;
+            map_state.transition_elapsed = 0.0;
+            map_state.initialized = false;
+            map_state.rendered_revision = 0;
+            map_state.rendered_selected_species = None;
+        }
+        return;
+    }
+
+    let selected_species = ledger_state.selected_species;
+    map_state.transition_elapsed =
+        (map_state.transition_elapsed + time.delta_secs()).min(SPECIES_AREA_MAP_TRANSITION_SECONDS);
+    let source_changed = !map_state.initialized
+        || map_state.rendered_revision != stats.area_revision
+        || map_state.rendered_selected_species != selected_species
+        || map_entities.is_empty();
+
+    if source_changed {
+        map_state.previous_tiles = map_state.tiles.clone();
+        let visible_species = species_area_map_visible_species(&stats);
+        let tiles = build_species_area_tiles(&world, &visible_species);
+        let legend_items = species_area_legend_items(&tiles);
+        map_state.tiles = tiles;
+        map_state.legend_items = legend_items;
+        map_state.displayed_species_count = visible_species.len();
+        map_state.total_species_count = stats.snapshots.len();
+        map_state.transition_elapsed = 0.0;
+        map_state.initialized = true;
+        map_state.rendered_revision = stats.area_revision;
+        map_state.rendered_selected_species = selected_species;
+    }
+
+    let transition_progress = if SPECIES_AREA_MAP_TRANSITION_SECONDS <= f32::EPSILON {
+        1.0
+    } else {
+        (map_state.transition_elapsed / SPECIES_AREA_MAP_TRANSITION_SECONDS).clamp(0.0, 1.0)
+    };
+    let animation_active = transition_progress < 1.0;
+    if !source_changed && !animation_active && !map_entities.is_empty() {
+        return;
+    }
+
+    for entity in &map_entities {
+        commands.entity(entity).despawn();
+    }
+
+    spawn_species_area_map_tiles(
+        &mut commands,
+        &mut meshes,
+        &mut materials,
+        &map_state.tiles,
+        &map_state.previous_tiles,
+        selected_species,
+        transition_progress,
+    );
+}
+
+fn compact_species_label(name: &str, max_chars: usize) -> String {
+    if name.chars().count() <= max_chars {
+        return name.to_string();
+    }
+    let mut short = name
+        .chars()
+        .take(max_chars.saturating_sub(3))
+        .collect::<String>();
+    short.push_str("...");
+    short
+}
+
+fn update_species_area_map_legend_ui(
+    names: Res<SpeciesNameBook>,
+    map_state: Res<SpeciesAreaMapState>,
+    mut node_sets: ParamSet<(
+        Query<(&mut Visibility, &mut Node), With<SpeciesAreaMapLegendPanel>>,
+        Query<(&SpeciesAreaMapLegendEntry, &mut Node)>,
+    )>,
+    mut text_sets: ParamSet<(
+        Query<&mut Text, With<SpeciesAreaMapLegendSummaryText>>,
+        Query<(&SpeciesAreaMapLegendText, &mut Text)>,
+    )>,
+    mut swatches: Query<(&SpeciesAreaMapLegendSwatch, &mut BackgroundColor)>,
+) {
+    let show = map_state.open && !map_state.legend_items.is_empty();
+    for (mut visibility, mut node) in &mut node_sets.p0() {
+        *visibility = if show {
+            Visibility::Visible
+        } else {
+            Visibility::Hidden
+        };
+        node.display = if show { Display::Flex } else { Display::None };
+    }
+    if !show {
+        return;
+    }
+
+    if let Ok(mut text) = text_sets.p0().single_mut() {
+        **text = format!(
+            "ТЕРРИТОРИИ: показано {} из {} видов (верхние {:.0}%)",
+            map_state.displayed_species_count,
+            map_state.total_species_count,
+            SPECIES_AREA_MAP_VISIBLE_FRACTION * 100.0
+        );
+    }
+
+    for (entry, mut node) in &mut node_sets.p1() {
+        node.display = if entry.slot < map_state.legend_items.len() {
+            Display::Flex
+        } else {
+            Display::None
+        };
+    }
+    for (swatch, mut background) in &mut swatches {
+        if let Some(item) = map_state.legend_items.get(swatch.slot) {
+            background.0 = species_area_map_color_ui(item.species, 1.0);
+        }
+    }
+    for (label, mut text) in &mut text_sets.p1() {
+        if let Some(item) = map_state.legend_items.get(label.slot) {
+            let name = compact_species_label(&species_name_for(&names, item.species), 14);
+            **text = format!("{name} {:.0}%", item.share * 100.0);
+        } else {
+            **text = String::new();
+        }
+    }
 }
 
 #[allow(dead_code)]
@@ -8627,6 +12535,91 @@ fn species_ledger_scroll_system(
         }
     }
 }
+
+fn genealogy_focus_random_cell(
+    kind: GenealogyNodeKind,
+    world: &WorldState,
+    selected: &mut SelectedCell,
+    focus: &mut SpeciesCameraFocus,
+) -> bool {
+    let matches_kind = |index: usize| match kind {
+        GenealogyNodeKind::Genus(genus) => species_genus_key(world.cells.species[index]) == genus,
+        GenealogyNodeKind::Species(species) => world.cells.species[index] == species,
+    };
+    let alive = (0..world.cells.len())
+        .filter(|&index| matches_kind(index))
+        .count();
+    if alive == 0 {
+        return false;
+    }
+    let mut rng = rand::rng();
+    let target_ordinal = rng.random_range(0..alive);
+    let Some(index) = (0..world.cells.len())
+        .filter(|&index| matches_kind(index))
+        .nth(target_ordinal)
+    else {
+        return false;
+    };
+    selected.cell_id = Some(world.cells.id[index]);
+    focus.active = true;
+    focus.target = Vec2::new(world.cells.x[index], world.cells.y[index]);
+    focus.target_scale = 0.42;
+    true
+}
+
+fn genealogy_node_system(
+    time: Res<Time>,
+    interactions: Query<(&Interaction, &GenealogyNode), Changed<Interaction>>,
+    world: Res<WorldState>,
+    mut state: ResMut<GenealogyUiState>,
+    mut focus: ResMut<SpeciesCameraFocus>,
+    mut selected: ResMut<SelectedCell>,
+    mut species_ui: ResMut<SpeciesLedgerUiState>,
+) {
+    if !state.open {
+        return;
+    }
+    let now = time.elapsed_secs_f64();
+    for (interaction, node) in &interactions {
+        if *interaction != Interaction::Pressed {
+            continue;
+        }
+        let is_double = state.last_click == Some(node.kind) && now - state.last_click_time <= 0.42;
+        state.last_click = Some(node.kind);
+        state.last_click_time = now;
+
+        match node.kind {
+            GenealogyNodeKind::Genus(genus) => {
+                let was_expanded = state.expanded_genus == Some(genus);
+                state.selected_genus = Some(genus);
+                state.selected_species = None;
+                state.expanded_genus = if was_expanded && !is_double {
+                    None
+                } else {
+                    Some(genus)
+                };
+                species_ui.selected_species = None;
+                if is_double
+                    && genealogy_focus_random_cell(node.kind, &world, &mut selected, &mut focus)
+                {
+                    state.open = false;
+                }
+            }
+            GenealogyNodeKind::Species(species) => {
+                state.selected_species = Some(species);
+                state.selected_genus = Some(species_genus_key(species));
+                state.expanded_genus = Some(species_genus_key(species));
+                species_ui.selected_species = Some(species);
+                if is_double
+                    && genealogy_focus_random_cell(node.kind, &world, &mut selected, &mut focus)
+                {
+                    state.open = false;
+                }
+            }
+        }
+    }
+}
+
 fn species_ledger_row_system(
     time: Res<Time>,
     interactions: Query<(&Interaction, &SpeciesLedgerRow), Changed<Interaction>>,

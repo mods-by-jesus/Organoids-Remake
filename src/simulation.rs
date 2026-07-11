@@ -80,29 +80,29 @@ const LYSIS_ACTIVE_THRESHOLD: f32 = 8.0;
 const SPECIES_EPITHET_SLOTS: u32 = 10_000;
 const SPECIES_GENUS_SLOTS: u32 = 1_000;
 const SPECIES_CLASS_STRIDE: u32 = SPECIES_EPITHET_SLOTS * SPECIES_GENUS_SLOTS;
-const TAXONOMY_SPECIES_RADIUS_SCALE: f32 = 8.0;
-const TAXONOMY_GENUS_RADIUS_SCALE: f32 = 5.0;
-const TAXONOMY_SPECIES_OFFSET_BINS: f32 = 5.0;
-const TAXONOMY_GENUS_OFFSET_BINS: f32 = 3.0;
-const TAXONOMY_SPECIES_SECTION_SIZE_BINS: u32 = 6;
+const TAXONOMY_SPECIES_RADIUS_SCALE: f32 = 6.0;
+const TAXONOMY_GENUS_RADIUS_SCALE: f32 = 3.0;
+const TAXONOMY_SPECIES_OFFSET_BINS: f32 = 4.0;
+const TAXONOMY_GENUS_OFFSET_BINS: f32 = 2.0;
+const TAXONOMY_SPECIES_SECTION_SIZE_BINS: u32 = 4;
 const TAXONOMY_GENUS_SECTION_SIZE_BINS: u32 = 3;
-const TAXONOMY_SPECIES_SPEED_BINS: u32 = 7;
+const TAXONOMY_SPECIES_SPEED_BINS: u32 = 4;
 const TAXONOMY_GENUS_SPEED_BINS: u32 = 4;
-const TAXONOMY_SPECIES_TURN_BINS: u32 = 7;
+const TAXONOMY_SPECIES_TURN_BINS: u32 = 4;
 const TAXONOMY_GENUS_TURN_BINS: u32 = 3;
-const TAXONOMY_SPECIES_PERCEPTION_BINS: u32 = 6;
+const TAXONOMY_SPECIES_PERCEPTION_BINS: u32 = 4;
 const TAXONOMY_GENUS_PERCEPTION_BINS: u32 = 3;
-const TAXONOMY_SPECIES_PERCENT_BINS: u32 = 6;
+const TAXONOMY_SPECIES_PERCENT_BINS: u32 = 4;
 const TAXONOMY_GENUS_PERCENT_BINS: u32 = 3;
-const TAXONOMY_SPECIES_MUTATION_BINS: u32 = 5;
+const TAXONOMY_SPECIES_MUTATION_BINS: u32 = 3;
 const TAXONOMY_GENUS_MUTATION_BINS: u32 = 3;
-const TAXONOMY_SPECIES_SIZE_BINS: u32 = 7;
+const TAXONOMY_SPECIES_SIZE_BINS: u32 = 5;
 const TAXONOMY_GENUS_SIZE_BINS: u32 = 4;
-const TAXONOMY_SPECIES_LYSIS_BINS: u32 = 4;
+const TAXONOMY_SPECIES_LYSIS_BINS: u32 = 3;
 const TAXONOMY_GENUS_LYSIS_BINS: u32 = 2;
-const TAXONOMY_SPECIES_SPACING_BINS: u32 = 18;
-const TAXONOMY_GENUS_SPACING_BINS: u32 = 8;
-const TAXONOMY_SPECIES_BEND_BINS: u32 = 8;
+const TAXONOMY_SPECIES_SPACING_BINS: u32 = 8;
+const TAXONOMY_GENUS_SPACING_BINS: u32 = 5;
+const TAXONOMY_SPECIES_BEND_BINS: u32 = 5;
 const TAXONOMY_GENUS_BEND_BINS: u32 = 4;
 const LYSIS_COOLDOWN_MIN: f32 = 0.34;
 const LYSIS_COOLDOWN_MAX: f32 = 1.05;
@@ -114,9 +114,8 @@ const LYSIS_TARGET_RECHECK_MAX: f32 = 0.42;
 const LYSIS_ATTACK_DEFORM_DURATION: f32 = 0.38;
 const LYSIS_HIT_DEFORM_DURATION: f32 = 0.46;
 const LYSIS_PARTICLES_PER_HIT: usize = 8;
-const HIT_FLASH_DECAY: f32 = 4.8;
+const HIT_FLASH_DECAY: f32 = 7.5;
 const HIT_FLASH_VICTIM_GAIN: f32 = 1.0;
-const HIT_FLASH_SELF_GAIN: f32 = 0.34;
 const NO_CELL_TARGET: u64 = u64::MAX;
 const TAIL_LONGITUDINAL_STIFFNESS: f32 = 12.0;
 const TAIL_LATERAL_STIFFNESS: f32 = 5.2;
@@ -156,7 +155,8 @@ const MUTATION_STRENGTH_MAX: f32 = 0.13;
 const MUTATION_POWER_MIN: f32 = 0.25;
 const MUTATION_POWER_MAX: f32 = 0.85;
 pub const CELL_SIZE_GENE_MIN: f32 = 4.0;
-pub const CELL_SIZE_GENE_MAX: f32 = 11.0;
+pub const CELL_SIZE_GENE_MAX: f32 = 110.0;
+const INITIAL_CELL_SIZE_GENE_MAX: f32 = 11.0;
 pub const SPEED_GENE_MIN: f32 = 24.0;
 pub const SPEED_GENE_MAX: f32 = 96.0;
 pub const TURN_GENE_MIN: f32 = 0.45;
@@ -449,6 +449,16 @@ fn strict_gene_bin(value: f32, min: f32, max: f32, bins: u32) -> u32 {
     }
     let normalized = ((value - min) / (max - min).max(0.001)).clamp(0.0, 1.0);
     (normalized * bins as f32).floor() as u32
+}
+
+fn taxonomy_gene_norm(value: f32, min: f32, max: f32) -> f32 {
+    ((value - min) / (max - min).max(0.001)).clamp(0.0, 1.0)
+}
+
+fn taxonomy_size_norm(size: f32) -> f32 {
+    let min = CELL_SIZE_GENE_MIN.max(0.1);
+    let max = CELL_SIZE_GENE_MAX.max(min + 0.1);
+    ((size.max(min) / min).ln() / (max / min).ln().max(0.001)).clamp(0.0, 1.0)
 }
 
 fn lysis_size_damage_multiplier(attacker_biomass: f32, victim_biomass: f32) -> f32 {
@@ -1413,8 +1423,6 @@ impl WorldState {
         self.cells.jelly_intensity[attacker] =
             (self.cells.jelly_intensity[attacker] + 0.16).min(1.0);
         self.cells.jelly_intensity[victim] = (self.cells.jelly_intensity[victim] + 0.38).min(1.0);
-        self.cells.hit_flash[attacker] =
-            (self.cells.hit_flash[attacker] + HIT_FLASH_SELF_GAIN).min(1.0);
         self.cells.hit_flash[victim] =
             (self.cells.hit_flash[victim] + HIT_FLASH_VICTIM_GAIN).min(1.0);
         if self.cells.viability[victim] <= 0.0 {
@@ -4971,7 +4979,8 @@ impl CellStore {
 
         for _cell_index in 0..count {
             let size_gene = rng.random_range(0.0_f32..1.0).powf(1.12);
-            let radius = CELL_SIZE_GENE_MIN + (CELL_SIZE_GENE_MAX - CELL_SIZE_GENE_MIN) * size_gene;
+            let radius =
+                CELL_SIZE_GENE_MIN + (INITIAL_CELL_SIZE_GENE_MAX - CELL_SIZE_GENE_MIN) * size_gene;
             let angle = rng.random_range(0.0..std::f32::consts::TAU);
             let speed = rng.random_range(42.0..72.0);
             let turn_speed = rng.random_range(0.85..2.35);
@@ -5293,6 +5302,11 @@ impl CellStore {
             Self::taxonomy_class_bin(section_shape) + 701 + section as u32 * 29,
         );
 
+        let (min_radius, max_radius) = radii
+            .iter()
+            .fold((f32::MAX, 0.0_f32), |(min_radius, max_radius), radius| {
+                (min_radius.min(*radius), max_radius.max(*radius))
+            });
         let size_ratio = avg / head_avg.max(0.1);
         Self::taxonomy_hash_step(
             species_hash,
@@ -5307,40 +5321,71 @@ impl CellStore {
                 + section as u32 * 31,
         );
 
-        for ray in 0..SOFT_BODY_POINTS {
-            let normalized = radii[ray] / avg;
-            let species_radius = (normalized * TAXONOMY_SPECIES_RADIUS_SCALE)
-                .round()
-                .clamp(2.0, 18.0) as u32;
-            let genus_radius = (normalized * TAXONOMY_GENUS_RADIUS_SCALE)
-                .round()
-                .clamp(1.0, 12.0) as u32;
-            Self::taxonomy_hash_step(
-                species_hash,
-                species_radius + 773 + section as u32 * 53 + ray as u32,
-            );
-            Self::taxonomy_hash_step(
-                genus_hash,
-                genus_radius + 773 + section as u32 * 53 + ray as u32,
-            );
+        let aspect = max_radius / min_radius.max(0.1);
+        let opposite_asymmetry = (0..4)
+            .map(|ray| (radii[ray] - radii[ray + 4]).abs() / avg)
+            .sum::<f32>()
+            / 4.0;
+        let side_asymmetry = (0..SOFT_BODY_POINTS)
+            .map(|ray| {
+                let next = (ray + 1) % SOFT_BODY_POINTS;
+                (radii[ray] - radii[next]).abs() / avg
+            })
+            .sum::<f32>()
+            / SOFT_BODY_POINTS as f32;
+        let long_lobes = radii.iter().filter(|radius| **radius > avg * 1.22).count() as u32;
+        let pinches = radii.iter().filter(|radius| **radius < avg * 0.78).count() as u32;
+        let offset_energy = offsets.iter().map(|offset| offset.abs()).sum::<f32>()
+            / (SOFT_BODY_POINTS as f32 * SOFT_BODY_MAX_ANGLE_OFFSET).max(0.001);
+        let offset_zigzag = (0..SOFT_BODY_POINTS)
+            .map(|ray| (offsets[ray] - offsets[(ray + 1) % SOFT_BODY_POINTS]).abs())
+            .sum::<f32>()
+            / (SOFT_BODY_POINTS as f32 * SOFT_BODY_MAX_ANGLE_OFFSET * 2.0).max(0.001);
 
-            let species_offset = ((offsets[ray] + SOFT_BODY_MAX_ANGLE_OFFSET)
-                / (SOFT_BODY_MAX_ANGLE_OFFSET * 2.0)
-                * TAXONOMY_SPECIES_OFFSET_BINS)
-                .round()
-                .clamp(0.0, TAXONOMY_SPECIES_OFFSET_BINS) as u32;
-            let genus_offset = ((offsets[ray] + SOFT_BODY_MAX_ANGLE_OFFSET)
-                / (SOFT_BODY_MAX_ANGLE_OFFSET * 2.0)
-                * TAXONOMY_GENUS_OFFSET_BINS)
-                .round()
-                .clamp(0.0, TAXONOMY_GENUS_OFFSET_BINS) as u32;
+        let species_shape_bins = [
+            strict_gene_bin(
+                aspect,
+                1.0,
+                3.7,
+                TAXONOMY_SPECIES_RADIUS_SCALE.round() as u32,
+            ),
+            strict_gene_bin(opposite_asymmetry, 0.0, 1.1, 5),
+            strict_gene_bin(side_asymmetry, 0.0, 0.9, 5),
+            long_lobes.min(4),
+            pinches.min(4),
+            strict_gene_bin(
+                offset_energy,
+                0.0,
+                1.0,
+                TAXONOMY_SPECIES_OFFSET_BINS.round() as u32,
+            ),
+            strict_gene_bin(offset_zigzag, 0.0, 1.0, 3),
+        ];
+        for (slot, bin) in species_shape_bins.into_iter().enumerate() {
             Self::taxonomy_hash_step(
                 species_hash,
-                species_offset + 991 + section as u32 * 41 + ray as u32,
+                bin.clamp(0, 31) + 773 + section as u32 * 53 + slot as u32 * 17,
             );
+        }
+
+        let genus_shape_bins = [
+            strict_gene_bin(aspect, 1.0, 3.9, TAXONOMY_GENUS_RADIUS_SCALE.round() as u32),
+            strict_gene_bin(opposite_asymmetry, 0.0, 1.2, 3),
+            strict_gene_bin(side_asymmetry, 0.0, 1.0, 3),
+            (long_lobes / 2).min(3),
+            (pinches / 2).min(3),
+            strict_gene_bin(
+                offset_energy,
+                0.0,
+                1.0,
+                TAXONOMY_GENUS_OFFSET_BINS.round() as u32,
+            ),
+            strict_gene_bin(offset_zigzag, 0.0, 1.0, 2),
+        ];
+        for (slot, bin) in genus_shape_bins.into_iter().enumerate() {
             Self::taxonomy_hash_step(
                 genus_hash,
-                genus_offset + 991 + section as u32 * 41 + ray as u32,
+                bin.clamp(0, 31) + 773 + section as u32 * 53 + slot as u32 * 17,
             );
         }
     }
@@ -5408,88 +5453,64 @@ impl CellStore {
         } else {
             0
         };
+        let speed_n = taxonomy_gene_norm(self.speed[index], SPEED_GENE_MIN, SPEED_GENE_MAX);
+        let turn_n = taxonomy_gene_norm(self.turn_speed[index], TURN_GENE_MIN, TURN_GENE_MAX);
+        let perception_n = taxonomy_gene_norm(
+            self.perception[index],
+            PERCEPTION_GENE_MIN,
+            PERCEPTION_GENE_MAX,
+        );
+        let persistence_n = taxonomy_gene_norm(
+            self.persistence[index],
+            PERSISTENCE_GENE_MIN,
+            PERSISTENCE_GENE_MAX,
+        );
+        let mutation_n = taxonomy_gene_norm(
+            self.mutation_susceptibility[index],
+            0.0,
+            CELL_MUTATION_DISPLAY_MAX,
+        );
+        let aggression_n = taxonomy_gene_norm(
+            self.aggressiveness[index],
+            0.0,
+            CELL_AGGRESSIVENESS_DISPLAY_MAX,
+        );
+        let size_n = taxonomy_size_norm(self.max_base_radius(index));
+
+        let movement_profile = speed_n * 0.42 + turn_n * 0.36 + size_n * 0.22;
+        let behavior_profile =
+            perception_n * 0.38 + persistence_n * 0.28 + aggression_n * 0.22 + mutation_n * 0.12;
+        let heredity_profile = mutation_n * 0.55 + persistence_n * 0.25 + perception_n * 0.20;
+        let predation_profile = if lysis_bin > 0 {
+            4 + lysis_bin.min(4)
+        } else {
+            trophic_bin
+        };
+        let species_movement_bins =
+            ((TAXONOMY_SPECIES_SPEED_BINS + TAXONOMY_SPECIES_TURN_BINS) / 2).max(1);
+        let species_behavior_bins =
+            ((TAXONOMY_SPECIES_PERCEPTION_BINS + TAXONOMY_SPECIES_PERCENT_BINS) / 2).max(1);
         let gene_bins = [
-            strict_gene_bin(
-                self.speed[index],
-                SPEED_GENE_MIN,
-                SPEED_GENE_MAX,
-                TAXONOMY_SPECIES_SPEED_BINS,
-            ),
-            strict_gene_bin(
-                self.turn_speed[index],
-                TURN_GENE_MIN,
-                TURN_GENE_MAX,
-                TAXONOMY_SPECIES_TURN_BINS,
-            ),
-            strict_gene_bin(
-                self.perception[index],
-                PERCEPTION_GENE_MIN,
-                PERCEPTION_GENE_MAX,
-                TAXONOMY_SPECIES_PERCEPTION_BINS,
-            ),
-            strict_gene_bin(
-                self.persistence[index],
-                PERSISTENCE_GENE_MIN,
-                PERSISTENCE_GENE_MAX,
-                TAXONOMY_SPECIES_PERCENT_BINS,
-            ),
-            trophic_bin,
-            lysis_bin,
-            strict_gene_bin(
-                self.mutation_susceptibility[index],
-                0.0,
-                CELL_MUTATION_DISPLAY_MAX,
-                TAXONOMY_SPECIES_MUTATION_BINS,
-            ),
-            strict_gene_bin(
-                self.max_base_radius(index),
-                CELL_SIZE_GENE_MIN,
-                CELL_SIZE_GENE_MAX,
-                TAXONOMY_SPECIES_SIZE_BINS,
-            ),
+            strict_gene_bin(movement_profile, 0.0, 1.0, species_movement_bins),
+            strict_gene_bin(behavior_profile, 0.0, 1.0, species_behavior_bins),
+            strict_gene_bin(heredity_profile, 0.0, 1.0, TAXONOMY_SPECIES_MUTATION_BINS),
+            strict_gene_bin(size_n, 0.0, 1.0, TAXONOMY_SPECIES_SIZE_BINS),
+            predation_profile,
             self.section_count[index] as u32,
         ];
         for (slot, bin) in gene_bins.into_iter().enumerate() {
             Self::taxonomy_hash_step(&mut species_hash, bin.clamp(0, 31) + 97 + slot as u32 * 37);
         }
+        let genus_movement_bins =
+            ((TAXONOMY_GENUS_SPEED_BINS + TAXONOMY_GENUS_TURN_BINS) / 2).max(1);
+        let genus_behavior_bins =
+            ((TAXONOMY_GENUS_PERCEPTION_BINS + TAXONOMY_GENUS_PERCENT_BINS) / 2).max(1);
         let genus_bins = [
-            strict_gene_bin(
-                self.speed[index],
-                SPEED_GENE_MIN,
-                SPEED_GENE_MAX,
-                TAXONOMY_GENUS_SPEED_BINS,
-            ),
-            strict_gene_bin(
-                self.turn_speed[index],
-                TURN_GENE_MIN,
-                TURN_GENE_MAX,
-                TAXONOMY_GENUS_TURN_BINS,
-            ),
-            strict_gene_bin(
-                self.perception[index],
-                PERCEPTION_GENE_MIN,
-                PERCEPTION_GENE_MAX,
-                TAXONOMY_GENUS_PERCEPTION_BINS,
-            ),
-            strict_gene_bin(
-                self.persistence[index],
-                PERSISTENCE_GENE_MIN,
-                PERSISTENCE_GENE_MAX,
-                TAXONOMY_GENUS_PERCENT_BINS,
-            ),
+            strict_gene_bin(movement_profile, 0.0, 1.0, genus_movement_bins),
+            strict_gene_bin(behavior_profile, 0.0, 1.0, genus_behavior_bins),
+            strict_gene_bin(heredity_profile, 0.0, 1.0, TAXONOMY_GENUS_MUTATION_BINS),
+            strict_gene_bin(size_n, 0.0, 1.0, TAXONOMY_GENUS_SIZE_BINS),
             genus_lysis_bin,
-            strict_gene_bin(
-                self.mutation_susceptibility[index],
-                0.0,
-                CELL_MUTATION_DISPLAY_MAX,
-                TAXONOMY_GENUS_MUTATION_BINS,
-            ),
-            strict_gene_bin(
-                self.max_base_radius(index),
-                CELL_SIZE_GENE_MIN,
-                CELL_SIZE_GENE_MAX,
-                TAXONOMY_GENUS_SIZE_BINS,
-            ),
             self.section_count[index] as u32,
         ];
         for bin in genus_bins {
@@ -8000,7 +8021,8 @@ mod tests {
         assert!(50.0 - victim_after > 50.0 - attacker_after);
         assert!(world.cells.lysis_cooldown[0] > 0.0);
         assert_eq!(world.visual_particles.len(), LYSIS_PARTICLES_PER_HIT);
-        assert!(world.cells.hit_flash[1] > world.cells.hit_flash[0]);
+        assert_eq!(world.cells.hit_flash[0], 0.0);
+        assert!(world.cells.hit_flash[1] > 0.0);
         let victim_flash = world.cells.hit_flash[1];
         world.update(0.1);
         assert!(world.cells.hit_flash[1] < victim_flash);
@@ -8573,7 +8595,7 @@ mod tests {
     }
 
     #[test]
-    fn taxonomy_splits_same_coccus_shape_when_genes_diverge_hard() {
+    fn taxonomy_groups_close_cocci_and_splits_hard_gene_profiles() {
         let mut world = WorldState::new(&SimConfig {
             cells: 4,
             food: 0,
@@ -8611,7 +8633,7 @@ mod tests {
             .iter()
             .copied()
             .collect::<std::collections::HashSet<_>>();
-        assert_eq!(species.len(), profiles.len());
+        assert_eq!(species.len(), 3);
     }
 
     #[test]

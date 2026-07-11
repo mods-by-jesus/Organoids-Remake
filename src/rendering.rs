@@ -3,7 +3,7 @@ use crate::simulation::{
     LIQUID_CAUSTIC_STRENGTH, LIQUID_FLOW_SCALE, LIQUID_FLOW_SPEED, LIQUID_VIGNETTE_STRENGTH,
     MEAT_FOOD_COLOR, SimConfig, WorldState, cell_display_color,
 };
-use crate::{MainCamera, SelectedCell};
+use crate::{MainCamera, SelectedCell, SpeciesAreaMapState};
 use bevy::camera::visibility::NoFrustumCulling;
 use bevy::core_pipeline::core_3d::Transparent3d;
 use bevy::ecs::{query::QueryItem, system::SystemParamItem, system::lifetimeless::*};
@@ -286,6 +286,7 @@ pub fn sync_instance_data(
     time: Res<Time>,
     world: Res<WorldState>,
     selected: Res<SelectedCell>,
+    area_map: Res<SpeciesAreaMapState>,
     camera: Query<(&Projection, &Transform), With<MainCamera>>,
     windows: Query<&Window, With<PrimaryWindow>>,
     mut particles: Query<&mut InstanceMaterialData, With<ParticleLayer>>,
@@ -359,13 +360,18 @@ pub fn sync_instance_data(
         let mitosis_split = mitosis * mitosis * (3.0 - 2.0 * mitosis);
         let visual_radius = base_visual_radius * (1.0 + mitosis_split * 1.20);
         let inv_visual_radius = visual_radius.recip();
-        let cell_color = cell_display_color(
+        let mut cell_color = cell_display_color(
             world.cells.species[i],
             world.cells.viability_ratio(i),
             world.cells.aggressiveness[i],
             world.cells.lysis[i],
         );
-        let cell_color = apply_hit_flash_color(cell_color, world.cells.hit_flash[i]);
+        if area_map.open {
+            cell_color[3] *= 0.5;
+        }
+        let hit_flash = world.cells.hit_flash[i];
+        let cell_color = apply_hit_flash_color(cell_color, hit_flash);
+        let hit_flash_alpha = hit_flash_overlay_alpha(hit_flash);
 
         let velocity = Vec2::new(world.cells.vx[i], world.cells.vy[i]);
         let velocity_length = velocity.length();
@@ -421,8 +427,19 @@ pub fn sync_instance_data(
             particles.push(segmented_cell_instance(
                 &world, i, 2.0, cell_color, 10.0, 1.0, 0.0,
             ));
+            if hit_flash_alpha > 0.01 {
+                particles.push(segmented_cell_instance(
+                    &world,
+                    i,
+                    4.75,
+                    [1.0, 1.0, 1.0, hit_flash_alpha],
+                    10.0,
+                    1.025,
+                    0.0,
+                ));
+            }
         } else {
-            particles.push(InstanceData {
+            let instance = InstanceData {
                 pos_radius: [world.cells.x[i], world.cells.y[i], 2.0, visual_radius],
                 color: cell_color,
                 nucleus: [
@@ -459,7 +476,15 @@ pub fn sync_instance_data(
                 section_radii_2: [0.0; 4],
                 section_radii_3: [0.0; 4],
                 section_meta: [0.0, 0.0, 0.0, mitosis],
-            });
+            };
+            particles.push(instance);
+            if hit_flash_alpha > 0.01 {
+                let mut flash_instance = instance;
+                flash_instance.pos_radius[2] = 4.75;
+                flash_instance.pos_radius[3] *= 1.025;
+                flash_instance.color = [1.0, 1.0, 1.0, hit_flash_alpha];
+                particles.push(flash_instance);
+            }
         }
 
         let active_selected = selected.cell_id == Some(world.cells.id[i]);
@@ -1022,16 +1047,20 @@ pub fn sync_instance_data(
 }
 
 fn apply_hit_flash_color(mut color: [f32; 4], flash: f32) -> [f32; 4] {
-    let amount = flash.clamp(0.0, 1.0).powf(0.65) * 0.62;
+    let amount = flash.clamp(0.0, 1.0).powf(0.42);
     if amount <= 0.001 {
         return color;
     }
-    let hit = [1.0, 0.82, 0.68];
     for channel in 0..3 {
-        color[channel] += (hit[channel] - color[channel]) * amount;
+        color[channel] += (1.0 - color[channel]) * amount;
     }
-    color[3] = (color[3] + 0.10 * amount).clamp(0.0, 1.0);
+    color[3] = (color[3] + (1.0 - color[3]) * amount).clamp(0.0, 1.0);
     color
+}
+
+fn hit_flash_overlay_alpha(flash: f32) -> f32 {
+    let amount = flash.clamp(0.0, 1.0).powf(0.30);
+    (amount * 0.92).clamp(0.0, 0.92)
 }
 
 fn segmented_cell_instance(
@@ -1280,9 +1309,9 @@ fn unit_quad_mesh() -> Mesh {
 #[cfg(test)]
 mod tests {
     use super::{
-        BRANCH_RENDER_SEGMENTS, CellWakeTrails, InstanceData, branch_render_depths,
-        branch_segment_depth, section_render_profile, sort_instances_back_to_front,
-        wake_sampling_stride,
+        BRANCH_RENDER_SEGMENTS, CellWakeTrails, InstanceData, apply_hit_flash_color,
+        branch_render_depths, branch_segment_depth, section_render_profile,
+        sort_instances_back_to_front, wake_sampling_stride,
     };
     use bevy::prelude::Vec2;
 
@@ -1319,6 +1348,15 @@ mod tests {
         assert_eq!(wake_sampling_stride(2.0), 2);
         assert_eq!(wake_sampling_stride(4.0), 4);
         assert_eq!(wake_sampling_stride(8.0), 8);
+    }
+
+    #[test]
+    fn hit_flash_turns_dim_cell_bright_white() {
+        let flashed = apply_hit_flash_color([0.3, 0.5, 0.4, 0.45], 1.0);
+        assert!(flashed[0] > 0.99);
+        assert!(flashed[1] > 0.99);
+        assert!(flashed[2] > 0.99);
+        assert!(flashed[3] > 0.99);
     }
 
     #[test]
